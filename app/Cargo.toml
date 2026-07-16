@@ -1,0 +1,34 @@
+[package]
+name = "voicefox-app"
+version.workspace = true
+edition.workspace = true
+default-run = "voicefox"
+
+[[bin]]
+name = "voicefox"
+path = "src/main.rs"
+
+[dependencies]
+lx-core = { path = "../core" }
+lx-source = { path = "../source" }
+lx-player = { path = "../player" }
+lx-lyric = { path = "../lyric" }
+
+tokio.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true
+unicode-width.workspace = true
+image.workspace = true
+reqwest.workspace = true
+clap.workspace = true
+toml.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+dirs.workspace = true
+chrono.workspace = true
+dashmap.workspace = true
+lru.workspace = true

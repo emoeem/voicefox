@@ -1,0 +1,13 @@
+[package]
+name = "lx-player"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+lx-core = { path = "../core" }
+
+tokio.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+thiserror.workspace = true

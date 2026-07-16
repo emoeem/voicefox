@@ -1,0 +1,14 @@
+[package]
+name = "lx-test"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "lx-test"
+path = "main.rs"
+
+[dependencies]
+lx-core = { path = "../core" }
+lx-source = { path = "../source" }
+lx-player = { path = "../player" }
+tokio = { workspace = true }

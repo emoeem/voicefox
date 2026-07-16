@@ -1,0 +1,47 @@
+use std::collections::BTreeSet;
+use std::process::Command;
+
+use lx_core::model::song::SongInfo;
+use lx_core::model::source::{Quality, SourceId};
+use lx_core::traits::source::MusicSource;
+use lx_source::js::engine::JsEngine;
+use lx_source::js::js_source::JsSource;
+
+#[tokio::test]
+async fn loads_user_api_v3_source_and_gets_music_url() {
+    if Command::new("node").arg("--version").output().is_err() {
+        eprintln!("node is unavailable; skipping JS source compatibility test");
+        return;
+    }
+
+    let fixture = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/user_api_v3.js"
+    );
+    let engine = JsEngine::new(fixture).expect("fixture source should initialize");
+    assert!(engine.supports_source("kw"));
+    assert_eq!(
+        engine.supported_qualities("kw"),
+        vec!["128k".to_string(), "320k".to_string()]
+    );
+
+    let source = JsSource::new("fixture".to_string(), engine, "kw".to_string());
+    let mut song = SongInfo::new(
+        "song-1".to_string(),
+        SourceId::Kw,
+        "Test Song".to_string(),
+        "Test Singer".to_string(),
+    );
+    song.qualities = BTreeSet::from([Quality::Low128, Quality::High320]);
+
+    let result = source
+        .get_song_url(&song, Quality::High320)
+        .await
+        .expect("fixture should return a URL");
+
+    assert_eq!(
+        result.url,
+        "https://example.com/kw/320k/song-1.mp3"
+    );
+    assert_eq!(result.quality, Quality::High320);
+}

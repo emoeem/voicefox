@@ -1,0 +1,30 @@
+[package]
+name = "lx-source"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+lx-core = { path = "../core" }
+
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+dirs.workspace = true
+
+# Crypto
+md-5.workspace = true
+sha1.workspace = true
+sha2.workspace = true
+aes.workspace = true
+base64.workspace = true
+rand.workspace = true
+urlencoding.workspace = true
+hex.workspace = true
+cbc.workspace = true
+regex.workspace = true
+flate2 = "1"
+encoding_rs = "0.8"

@@ -1,0 +1,14 @@
+[package]
+name = "lx-lyric"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+lx-core = { path = "../core" }
+lx-source = { path = "../source" }
+
+async-trait.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+regex.workspace = true

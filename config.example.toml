@@ -1,0 +1,41 @@
+[player]
+engine = "mpv"
+quality = "320k"
+volume = 80
+play_mode = "list-loop"
+
+[source]
+enabled = ["kw", "kg", "tx", "wy", "mg"]
+default = "kw"
+auto_toggle = true
+# JS 音源脚本 URL 或本地路径（lx-music user API 协议）
+# 用户可以加载社区维护的音源脚本，例如：
+# js_sources = ["https://ghproxy.net/raw.githubusercontent.com/pdone/lx-music-source/main/juhe/latest.js"]
+# js_sources = ["/home/user/lx-source/latest.js"]
+js_sources = []
+
+[lyric]
+show_translation = true
+show_yrc = true
+offset = 0
+
+[network]
+proxy_url = ""
+timeout = 15
+
+[theme]
+use_dark = true
+accent = "cyan"
+text = "white"
+muted = "dark_gray"
+border = "cyan"
+
+[ui]
+enable_mouse = true
+wrap_navigation = true
+scroll_amount = 3
+aggregate_search = true
+show_cover = true
+max_fps = 20
+
+[keybindings]

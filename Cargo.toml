@@ -1,0 +1,68 @@
+[workspace]
+members = ["core", "source", "player", "lyric", "app", "test"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/emoeem/voicefox"
+
+[workspace.dependencies]
+# Async
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# TUI
+ratatui = "0.29"
+crossterm = "0.28"
+unicode-width = "0.2"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+
+# HTTP
+reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+
+# Crypto
+md-5 = "0.10"
+sha1 = "0.10"
+sha2 = "0.10"
+aes = "0.8"
+base64 = "0.22"
+rand = "0.8"
+urlencoding = "2"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Config paths
+dirs = "6"
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Data structures
+dashmap = "6"
+lru = "0.13"
+
+# Extra crypto
+hex = "0.4"
+cbc = { version = "0.1", features = ["alloc"] }
+
+# Parsing
+regex = "1"
+
+# Lyrics
+# lrc = "0.2"  # future: use lrc crate if compatible
