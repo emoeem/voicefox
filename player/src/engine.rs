@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -93,10 +93,12 @@ impl Player for MpvEngine {
                 }
 
                 // 取出事件接收端并启动事件监听任务
+                let polling = Arc::new(AtomicBool::new(true));
                 if let Some(ipc_event_rx) = ipc.event_receiver() {
                     let event_tx = self.event_tx.clone();
                     let state_tx = self.state_tx.clone();
                     let active_generation = Arc::clone(&self.generation);
+                    let polling = Arc::clone(&polling);
                     tokio::spawn(async move {
                         let mut rx = ipc_event_rx;
                         while let Some(event) = rx.recv().await {
@@ -105,6 +107,7 @@ impl Player for MpvEngine {
                             }
                             match event {
                                 MpvEvent::EndFile => {
+                                    polling.store(false, Ordering::SeqCst);
                                     let _ = event_tx.send(PlayerEvent::Ended);
                                     let _ = state_tx.send(PlayerState::Stopped);
                                 }
@@ -119,9 +122,14 @@ impl Player for MpvEngine {
                 let duration_tx = self.duration_tx.clone();
                 let active_generation = Arc::clone(&self.generation);
                 tokio::spawn(async move {
+                    let mut ticker = tokio::time::interval(Duration::from_millis(50));
+                    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                    let mut tick = 0u32;
                     loop {
-                        tokio::time::sleep(Duration::from_millis(200)).await;
-                        if active_generation.load(Ordering::SeqCst) != generation {
+                        ticker.tick().await;
+                        if active_generation.load(Ordering::SeqCst) != generation
+                            || !polling.load(Ordering::SeqCst)
+                        {
                             break;
                         }
 
@@ -139,23 +147,21 @@ impl Player for MpvEngine {
                             let _ = position_tx.send(Duration::from_secs_f64(secs));
                         }
 
-                        // 查询 duration
-                        let ipc = Arc::clone(&ipc_clone);
-                        let dur_res =
-                            tokio::task::spawn_blocking(move || ipc.get_property("duration"))
-                                .await
-                                .ok()
-                                .and_then(Result::ok);
-
-                        if let Some(ref dur_str) = dur_res
-                            && let Some(secs) = parse_mpv_data(dur_str)
-                        {
-                            let _ = duration_tx.send(Duration::from_secs_f64(secs));
+                        // 总时长变化频率很低，每秒查询一次即可。
+                        if tick.is_multiple_of(20) {
+                            let ipc = Arc::clone(&ipc_clone);
+                            let dur_res =
+                                tokio::task::spawn_blocking(move || ipc.get_property("duration"))
+                                    .await
+                                    .ok()
+                                    .and_then(Result::ok);
+                            if let Some(ref dur_str) = dur_res
+                                && let Some(secs) = parse_mpv_data(dur_str)
+                            {
+                                let _ = duration_tx.send(Duration::from_secs_f64(secs));
+                            }
                         }
-
-                        if pos_res.is_none() && dur_res.is_none() {
-                            break;
-                        }
+                        tick = tick.wrapping_add(1);
                     }
                 });
 
@@ -176,6 +182,7 @@ impl Player for MpvEngine {
     }
 
     fn pause(&self) {
+        let _ = self.state_tx.send(PlayerState::Paused);
         {
             let guard = self.ipc.lock().unwrap();
             if let Some(ref ipc) = *guard
@@ -185,10 +192,10 @@ impl Player for MpvEngine {
                 warn!("mpv pause failed: {}", e);
             }
         }
-        let _ = self.state_tx.send(PlayerState::Paused);
     }
 
     fn resume(&self) {
+        let _ = self.state_tx.send(PlayerState::Playing);
         {
             let guard = self.ipc.lock().unwrap();
             if let Some(ref ipc) = *guard
@@ -198,7 +205,6 @@ impl Player for MpvEngine {
                 warn!("mpv resume failed: {}", e);
             }
         }
-        let _ = self.state_tx.send(PlayerState::Playing);
     }
 
     fn stop(&self) {
@@ -213,6 +219,7 @@ impl Player for MpvEngine {
         }
         let _ = self.state_tx.send(PlayerState::Stopped);
         let _ = self.position_tx.send(Duration::ZERO);
+        let _ = self.duration_tx.send(Duration::ZERO);
     }
 
     fn toggle(&self) {
@@ -225,6 +232,14 @@ impl Player for MpvEngine {
     }
 
     fn seek(&self, position: Duration) {
+        let duration = *self.duration_rx.borrow();
+        let position = if duration.is_zero() {
+            position
+        } else {
+            position.min(duration)
+        };
+        // 先更新本地观察值，让进度条和歌词立即响应，再通知 mpv。
+        let _ = self.position_tx.send(position);
         let cmd = format!(
             "{{\"command\": [\"set_property\", \"time-pos\", {}]}}",
             position.as_secs_f64()
@@ -237,7 +252,6 @@ impl Player for MpvEngine {
                 warn!("mpv seek failed: {}", e);
             }
         }
-        let _ = self.position_tx.send(position);
     }
 
     fn state_watcher(&self) -> watch::Receiver<PlayerState> {

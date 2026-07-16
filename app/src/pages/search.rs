@@ -7,11 +7,20 @@ use lx_core::model::source::SourceId;
 use lx_core::traits::source::SearchResult;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
 
 use crate::context::AppContext;
+
+const SEARCH_SCOPES: &[(Option<SourceId>, &str)] = &[
+    (None, "全部"),
+    (Some(SourceId::Kw), "酷我 kw"),
+    (Some(SourceId::Kg), "酷狗 kg"),
+    (Some(SourceId::Tx), "QQ tx"),
+    (Some(SourceId::Mg), "咪咕 mg"),
+    (Some(SourceId::Wy), "网易 wy"),
+];
 
 pub struct SearchPage {
     pub input: String,
@@ -76,8 +85,8 @@ impl SearchPage {
                 }
                 (KeyModifiers::NONE, KeyCode::Enter) => {
                     let keyword = self.input.trim().to_string();
-                    if !keyword.is_empty()
-                        && !(self.is_searching && self.last_searched_input == keyword)
+                    if !(keyword.is_empty()
+                        || self.is_searching && self.last_searched_input == keyword)
                     {
                         self.last_input_time = std::time::Instant::now();
                         self.last_searched_input = keyword.clone();
@@ -87,12 +96,20 @@ impl SearchPage {
                         };
                     }
                 }
-                (KeyModifiers::NONE, KeyCode::Char(c)) => {
+                (_, KeyCode::Char(c))
+                    if !key
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                {
                     self.input.push(c);
                     self.last_input_time = std::time::Instant::now();
                     self.error_message = None;
                 }
-                (KeyModifiers::NONE, KeyCode::Backspace) => {
+                (_, KeyCode::Backspace)
+                    if !key
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                {
                     self.input.pop();
                     self.last_input_time = std::time::Instant::now();
                     self.error_message = None;
@@ -166,10 +183,23 @@ impl SearchPage {
                     }
                 }
             }
-            (KeyModifiers::NONE, KeyCode::PageUp) if !self.results.is_empty() => {
+            (KeyModifiers::NONE, KeyCode::Home) | (KeyModifiers::NONE, KeyCode::Char('g')) => {
+                self.selected = 0;
+            }
+            (KeyModifiers::NONE, KeyCode::End)
+            | (KeyModifiers::NONE, KeyCode::Char('G'))
+            | (KeyModifiers::SHIFT, KeyCode::Char('G')) => {
+                self.selected = self.results.len().saturating_sub(1);
+            }
+            (KeyModifiers::CONTROL, KeyCode::Char('u')) | (KeyModifiers::NONE, KeyCode::PageUp)
+                if !self.results.is_empty() =>
+            {
                 self.selected = self.selected.saturating_sub(10);
             }
-            (KeyModifiers::NONE, KeyCode::PageDown) if !self.results.is_empty() => {
+            (KeyModifiers::CONTROL, KeyCode::Char('d'))
+            | (KeyModifiers::NONE, KeyCode::PageDown)
+                if !self.results.is_empty() =>
+            {
                 self.selected = (self.selected + 10).min(self.results.len().saturating_sub(1));
                 if self.selected + 1 == self.results.len() && self.can_load_more() {
                     return AppAction::SearchMore {
@@ -200,20 +230,22 @@ impl SearchPage {
     }
 
     fn cycle_source(&mut self, direction: isize) -> AppAction {
-        const SCOPES: &[Option<SourceId>] = &[
-            None,
-            Some(SourceId::Kw),
-            Some(SourceId::Kg),
-            Some(SourceId::Tx),
-            Some(SourceId::Mg),
-            Some(SourceId::Wy),
-        ];
-        let current = SCOPES
+        let current = SEARCH_SCOPES
             .iter()
-            .position(|scope| *scope == self.source_filter)
+            .position(|(scope, _)| *scope == self.source_filter)
             .unwrap_or(0);
-        let next = (current as isize + direction).rem_euclid(SCOPES.len() as isize) as usize;
-        self.source_filter = SCOPES[next];
+        let next = (current as isize + direction).rem_euclid(SEARCH_SCOPES.len() as isize) as usize;
+        self.select_source(next)
+    }
+
+    fn select_source(&mut self, index: usize) -> AppAction {
+        let Some((source, _)) = SEARCH_SCOPES.get(index).copied() else {
+            return AppAction::None;
+        };
+        if self.source_filter == source && self.result_source_filter == source {
+            return AppAction::None;
+        }
+        self.source_filter = source;
         self.error_message = None;
         self.close_variants();
 
@@ -320,7 +352,11 @@ impl SearchPage {
         let accent = crate::theme::accent(ctx);
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(3), Constraint::Min(0)])
+            .constraints([
+                Constraint::Length(3),
+                Constraint::Length(1),
+                Constraint::Min(0),
+            ])
             .split(area);
 
         // 搜索输入区
@@ -332,7 +368,7 @@ impl SearchPage {
         let input_block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::new().fg(if self.input_mode {
-                Color::Green
+                crate::theme::green(ctx)
             } else {
                 accent
             }))
@@ -344,8 +380,7 @@ impl SearchPage {
                 .unwrap()
                 .as_millis()
                 / 500)
-                % 2
-                == 0
+                .is_multiple_of(2)
         {
             "█"
         } else {
@@ -361,6 +396,8 @@ impl SearchPage {
         Paragraph::new(input_line)
             .block(input_block)
             .render(chunks[0], buf);
+
+        self.render_source_tabs(chunks[1], buf, ctx);
 
         // 搜索结果区
         let result_title = if self.is_searching && self.results.is_empty() {
@@ -385,8 +422,8 @@ impl SearchPage {
         let result_block = Block::default().borders(Borders::ALL).title(result_title);
         let result_block = result_block.border_style(Style::new().fg(crate::theme::border(ctx)));
 
-        let inner_area = result_block.inner(chunks[1]);
-        result_block.render(chunks[1], buf);
+        let inner_area = result_block.inner(chunks[2]);
+        result_block.render(chunks[2], buf);
 
         if self.results.is_empty() {
             let message = self
@@ -395,7 +432,7 @@ impl SearchPage {
                 .unwrap_or("输入关键词开始搜索");
             Paragraph::new(message)
                 .style(Style::new().fg(if self.error_message.is_some() {
-                    Color::Red
+                    crate::theme::red(ctx)
                 } else {
                     crate::theme::muted(ctx)
                 }))
@@ -422,7 +459,7 @@ impl SearchPage {
             inner_area.height.saturating_sub(1),
         );
 
-        let selected_style = Style::new().bg(accent).fg(Color::Black);
+        let selected_style = Style::new().bg(accent).fg(crate::theme::selection_fg(ctx));
         let normal_style = Style::new().fg(crate::theme::text(ctx));
 
         let visible_height = list_area.height as usize;
@@ -462,6 +499,38 @@ impl SearchPage {
         self.render_variant_picker(area, buf, ctx);
     }
 
+    fn render_source_tabs(&self, area: Rect, buf: &mut Buffer, ctx: &AppContext) {
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+        let selected = SEARCH_SCOPES
+            .iter()
+            .position(|(scope, _)| *scope == self.source_filter)
+            .unwrap_or(0);
+        for (index, tab_area) in source_tab_areas(area).iter().copied().enumerate() {
+            let label = if area.width >= 66 {
+                SEARCH_SCOPES[index].1
+            } else {
+                SEARCH_SCOPES[index]
+                    .0
+                    .map(|source| source.as_str())
+                    .unwrap_or("all")
+            };
+            let style = if index == selected {
+                Style::new()
+                    .fg(crate::theme::selection_fg(ctx))
+                    .bg(crate::theme::accent(ctx))
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::new().fg(crate::theme::muted(ctx))
+            };
+            Paragraph::new(Line::from(Span::styled(label, style)))
+                .alignment(ratatui::layout::Alignment::Center)
+                .style(style)
+                .render(tab_area, buf);
+        }
+    }
+
     pub fn handle_mouse(&mut self, event: MouseEvent, area: Rect, activate: bool) -> AppAction {
         if !self.variant_indices.is_empty() {
             return self.handle_variant_mouse(event, area, activate);
@@ -469,13 +538,26 @@ impl SearchPage {
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(3), Constraint::Min(0)])
+            .constraints([
+                Constraint::Length(3),
+                Constraint::Length(1),
+                Constraint::Min(0),
+            ])
             .split(area);
         if chunks[0].contains((event.column, event.row).into())
             && matches!(event.kind, MouseEventKind::Down(MouseButton::Left))
         {
             self.input_mode = true;
             return AppAction::None;
+        }
+        if chunks[1].contains((event.column, event.row).into())
+            && matches!(event.kind, MouseEventKind::Down(MouseButton::Left))
+            && let Some(index) = source_tab_areas(chunks[1])
+                .iter()
+                .position(|tab| tab.contains((event.column, event.row).into()))
+        {
+            self.input_mode = false;
+            return self.select_source(index);
         }
 
         match event.kind {
@@ -494,7 +576,7 @@ impl SearchPage {
                 }
             }
             MouseEventKind::Down(MouseButton::Left) => {
-                let inner = Block::default().borders(Borders::ALL).inner(chunks[1]);
+                let inner = Block::default().borders(Borders::ALL).inner(chunks[2]);
                 let list_y = inner.y.saturating_add(1);
                 if event.row >= list_y && event.row < inner.bottom() {
                     let index = self.scroll_offset + event.row.saturating_sub(list_y) as usize;
@@ -551,6 +633,14 @@ impl SearchPage {
                 } else if self.wrap_navigation {
                     self.variant_selected = 0;
                 }
+            }
+            (KeyModifiers::NONE, KeyCode::Home) | (KeyModifiers::NONE, KeyCode::Char('g')) => {
+                self.variant_selected = 0;
+            }
+            (KeyModifiers::NONE, KeyCode::End)
+            | (KeyModifiers::NONE, KeyCode::Char('G'))
+            | (KeyModifiers::SHIFT, KeyCode::Char('G')) => {
+                self.variant_selected = self.variant_indices.len().saturating_sub(1);
             }
             (KeyModifiers::NONE, KeyCode::Enter) => {
                 if let Some(index) = self.variant_indices.get(self.variant_selected).copied() {
@@ -646,7 +736,7 @@ impl SearchPage {
             };
             let style = if row == self.variant_selected {
                 Style::new()
-                    .fg(Color::Black)
+                    .fg(crate::theme::selection_fg(ctx))
                     .bg(crate::theme::accent(ctx))
                     .add_modifier(Modifier::BOLD)
             } else {
@@ -662,6 +752,16 @@ impl SearchPage {
             );
         }
     }
+}
+
+fn source_tab_areas(area: Rect) -> std::rc::Rc<[Rect]> {
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints(std::iter::repeat_n(
+            Constraint::Ratio(1, SEARCH_SCOPES.len() as u32),
+            SEARCH_SCOPES.len(),
+        ))
+        .split(area)
 }
 
 fn variant_popup(area: Rect, count: usize) -> Rect {
@@ -742,6 +842,23 @@ mod tests {
 
         assert_eq!(page.source_filter, Some(SourceId::Kw));
         assert!(matches!(action, AppAction::None));
+    }
+
+    #[test]
+    fn source_tab_selects_single_source_and_starts_search() {
+        let mut page = SearchPage::new(None, true, 3);
+        page.input = "晴天".to_string();
+
+        let action = page.select_source(2);
+
+        assert_eq!(page.source_filter, Some(SourceId::Kg));
+        assert!(matches!(
+            action,
+            AppAction::Search {
+                source: Some(SourceId::Kg),
+                ..
+            }
+        ));
     }
 
     #[test]

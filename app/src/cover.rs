@@ -6,6 +6,7 @@ use image::RgbaImage;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
+use reqwest::header::{ACCEPT, REFERER};
 
 #[derive(Debug, Clone, Copy)]
 struct CoverCell {
@@ -20,9 +21,18 @@ struct RenderCache {
     cells: Vec<CoverCell>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CoverState {
+    Empty,
+    Loading,
+    Ready,
+    Unavailable(String),
+}
+
 pub struct CoverService {
     client: reqwest::Client,
     image: RwLock<Option<Arc<RgbaImage>>>,
+    state: RwLock<CoverState>,
     cache: Mutex<Option<RenderCache>>,
     request_id: AtomicU64,
 }
@@ -37,6 +47,7 @@ impl CoverService {
         Self {
             client,
             image: RwLock::new(None),
+            state: RwLock::new(CoverState::Empty),
             cache: Mutex::new(None),
             request_id: AtomicU64::new(0),
         }
@@ -45,6 +56,7 @@ impl CoverService {
     pub fn clear(&self) {
         self.request_id.fetch_add(1, Ordering::SeqCst);
         *self.image.write().unwrap() = None;
+        *self.state.write().unwrap() = CoverState::Empty;
         *self.cache.lock().unwrap() = None;
     }
 
@@ -52,17 +64,64 @@ impl CoverService {
         self.image.read().unwrap().is_some()
     }
 
+    pub fn state(&self) -> CoverState {
+        self.state.read().unwrap().clone()
+    }
+
     pub async fn load(&self, url: Option<String>) -> Result<(), String> {
         let request_id = self.request_id.fetch_add(1, Ordering::SeqCst) + 1;
         *self.image.write().unwrap() = None;
         *self.cache.lock().unwrap() = None;
 
-        let Some(url) = url.filter(|url| !url.trim().is_empty()) else {
+        let Some(url) = url
+            .map(|url| normalize_url(&url))
+            .filter(|url| !url.trim().is_empty())
+        else {
+            *self.state.write().unwrap() =
+                CoverState::Unavailable("当前音源没有返回封面".to_string());
             return Ok(());
         };
-        let bytes = self
+        *self.state.write().unwrap() = CoverState::Loading;
+
+        let mut last_error = "封面请求失败".to_string();
+        for attempt in 0..3 {
+            if self.request_id.load(Ordering::SeqCst) != request_id {
+                return Ok(());
+            }
+
+            match self.download_and_decode(&url).await {
+                Ok(image) => {
+                    if self.request_id.load(Ordering::SeqCst) == request_id {
+                        *self.image.write().unwrap() = Some(Arc::new(image));
+                        *self.state.write().unwrap() = CoverState::Ready;
+                        *self.cache.lock().unwrap() = None;
+                    }
+                    return Ok(());
+                }
+                Err(error) => {
+                    last_error = error;
+                    if attempt < 2 {
+                        tokio::time::sleep(Duration::from_millis(150 * (attempt + 1))).await;
+                    }
+                }
+            }
+        }
+
+        if self.request_id.load(Ordering::SeqCst) == request_id {
+            *self.state.write().unwrap() = CoverState::Unavailable(last_error.clone());
+        }
+        Err(last_error)
+    }
+
+    async fn download_and_decode(&self, url: &str) -> Result<RgbaImage, String> {
+        let mut request = self
             .client
             .get(url)
+            .header(ACCEPT, "image/avif,image/webp,image/apng,image/*,*/*;q=0.8");
+        if let Some(referer) = cover_referer(url) {
+            request = request.header(REFERER, referer);
+        }
+        let bytes = request
             .send()
             .await
             .map_err(|error| error.to_string())?
@@ -71,19 +130,13 @@ impl CoverService {
             .bytes()
             .await
             .map_err(|error| error.to_string())?;
-        let image = tokio::task::spawn_blocking(move || {
+        tokio::task::spawn_blocking(move || {
             image::load_from_memory(&bytes)
                 .map(|image| image.to_rgba8())
                 .map_err(|error| error.to_string())
         })
         .await
-        .map_err(|error| error.to_string())??;
-
-        if self.request_id.load(Ordering::SeqCst) == request_id {
-            *self.image.write().unwrap() = Some(Arc::new(image));
-            *self.cache.lock().unwrap() = None;
-        }
-        Ok(())
+        .map_err(|error| error.to_string())?
     }
 
     pub fn render(&self, area: Rect, buf: &mut Buffer) {
@@ -114,6 +167,29 @@ impl CoverService {
                     .set_bg(cell.background);
             }
         }
+    }
+}
+
+fn normalize_url(url: &str) -> String {
+    let url = url.trim();
+    if url.starts_with("//") {
+        format!("https:{url}")
+    } else {
+        url.to_string()
+    }
+}
+
+fn cover_referer(url: &str) -> Option<&'static str> {
+    if url.contains("kuwo.cn") {
+        Some("https://www.kuwo.cn/")
+    } else if url.contains("kugou.com") {
+        Some("https://www.kugou.com/")
+    } else if url.contains("qq.com") {
+        Some("https://y.qq.com/")
+    } else if url.contains("music.163.com") || url.contains("126.net") {
+        Some("https://music.163.com/")
+    } else {
+        None
     }
 }
 
@@ -190,7 +266,7 @@ fn pixel_at(
 
 #[cfg(test)]
 mod tests {
-    use super::build_cache;
+    use super::{build_cache, cover_referer, normalize_url};
     use image::{Rgba, RgbaImage};
 
     #[test]
@@ -202,5 +278,21 @@ mod tests {
         assert_eq!(cache.width, 12);
         assert_eq!(cache.height, 7);
         assert_eq!(cache.cells.len(), 84);
+    }
+
+    #[test]
+    fn normalizes_protocol_relative_cover_urls() {
+        assert_eq!(
+            normalize_url("//example.com/cover.webp"),
+            "https://example.com/cover.webp"
+        );
+    }
+
+    #[test]
+    fn adds_platform_referer_for_known_cover_hosts() {
+        assert_eq!(
+            cover_referer("https://img1.kuwo.cn/star/albumcover.jpg"),
+            Some("https://www.kuwo.cn/")
+        );
     }
 }

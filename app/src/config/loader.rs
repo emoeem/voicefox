@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use lx_core::model::config::Config;
+use lx_core::model::config::{Config, ThemeConfig};
 
 /// 加载配置：优先读用户配置文件，否则用默认值
 pub fn load(custom_path: &str) -> anyhow::Result<(Config, PathBuf)> {
@@ -9,7 +9,8 @@ pub fn load(custom_path: &str) -> anyhow::Result<(Config, PathBuf)> {
 
     match fs::read_to_string(&config_path) {
         Ok(content) => {
-            let config: Config = toml::from_str(&content)?;
+            let mut config: Config = toml::from_str(&content)?;
+            migrate_legacy_theme(&mut config);
             Ok((config, config_path))
         }
         Err(_) => {
@@ -22,6 +23,17 @@ pub fn load(custom_path: &str) -> anyhow::Result<(Config, PathBuf)> {
             fs::write(&config_path, toml_str)?;
             Ok((config, config_path))
         }
+    }
+}
+
+fn migrate_legacy_theme(config: &mut Config) {
+    let theme = &config.theme;
+    let uses_original_defaults = theme.accent.eq_ignore_ascii_case("cyan")
+        && theme.text.eq_ignore_ascii_case("white")
+        && theme.muted.eq_ignore_ascii_case("dark_gray")
+        && theme.border.eq_ignore_ascii_case("cyan");
+    if uses_original_defaults {
+        config.theme = ThemeConfig::default();
     }
 }
 
@@ -54,4 +66,24 @@ pub fn save(config: &Config, path: &std::path::Path) -> anyhow::Result<()> {
     }
     std::fs::write(path, toml_str)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::migrate_legacy_theme;
+    use lx_core::model::config::Config;
+
+    #[test]
+    fn migrates_the_original_default_theme_to_mocha() {
+        let mut config = Config::default();
+        config.theme.accent = "cyan".into();
+        config.theme.text = "white".into();
+        config.theme.muted = "dark_gray".into();
+        config.theme.border = "cyan".into();
+
+        migrate_legacy_theme(&mut config);
+
+        assert_eq!(config.theme.base, "#1e1e2e");
+        assert_eq!(config.theme.accent, "#cba6f7");
+    }
 }

@@ -6,7 +6,7 @@ use lx_core::model::song::SongInfo;
 use lx_core::model::source::SourceId;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 
@@ -106,6 +106,30 @@ impl LeaderboardPage {
                     }
                 }
             }
+            (KeyModifiers::NONE, KeyCode::Home) | (KeyModifiers::NONE, KeyCode::Char('g')) => {
+                self.selected = 0;
+            }
+            (KeyModifiers::NONE, KeyCode::End)
+            | (KeyModifiers::NONE, KeyCode::Char('G'))
+            | (KeyModifiers::SHIFT, KeyCode::Char('G')) => {
+                self.selected = if self.selected_board.is_some() {
+                    self.songs.len().saturating_sub(1)
+                } else {
+                    self.boards.len().saturating_sub(1)
+                };
+            }
+            (KeyModifiers::CONTROL, KeyCode::Char('u')) | (KeyModifiers::NONE, KeyCode::PageUp) => {
+                self.selected = self.selected.saturating_sub(10);
+            }
+            (KeyModifiers::CONTROL, KeyCode::Char('d'))
+            | (KeyModifiers::NONE, KeyCode::PageDown) => {
+                let len = if self.selected_board.is_some() {
+                    self.songs.len()
+                } else {
+                    self.boards.len()
+                };
+                self.selected = (self.selected + 10).min(len.saturating_sub(1));
+            }
             (KeyModifiers::NONE, KeyCode::Enter) | (KeyModifiers::NONE, KeyCode::Char('\r')) => {
                 if self.selected_board.is_some() && !self.songs.is_empty() {
                     let songs = self.songs.clone();
@@ -140,15 +164,13 @@ impl LeaderboardPage {
                 self.loading = false;
                 self.error_message = None;
             }
-            (KeyModifiers::NONE, KeyCode::Esc) => {
-                if self.selected_board.is_some() {
-                    self.selected_board = None;
-                    self.songs.clear();
-                    self.selected = 0;
-                    self.loaded = false;
-                    self.loading = false;
-                    self.error_message = None;
-                }
+            (KeyModifiers::NONE, KeyCode::Esc) if self.selected_board.is_some() => {
+                self.selected_board = None;
+                self.songs.clear();
+                self.selected = 0;
+                self.loaded = false;
+                self.loading = false;
+                self.error_message = None;
             }
             _ => {}
         }
@@ -209,7 +231,7 @@ impl LeaderboardPage {
 
         let selected_style = Style::new()
             .bg(accent)
-            .fg(Color::Black)
+            .fg(crate::theme::selection_fg(ctx))
             .add_modifier(Modifier::BOLD);
         let normal_style = Style::new().fg(crate::theme::text(ctx));
 
@@ -260,7 +282,7 @@ impl LeaderboardPage {
 
         if let Some(error) = &self.error_message {
             Paragraph::new(format!("加载失败: {}", error))
-                .style(Style::new().fg(Color::Red))
+                .style(Style::new().fg(crate::theme::red(ctx)))
                 .render(song_inner, buf);
         } else if self.loading {
             Paragraph::new("加载中...")
@@ -277,7 +299,7 @@ impl LeaderboardPage {
         } else if !self.songs.is_empty() {
             let selected_style = Style::new()
                 .bg(accent)
-                .fg(Color::Black)
+                .fg(crate::theme::selection_fg(ctx))
                 .add_modifier(Modifier::BOLD);
             let normal_style = Style::new().fg(crate::theme::text(ctx));
 

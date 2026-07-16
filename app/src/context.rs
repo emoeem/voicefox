@@ -60,6 +60,9 @@ impl AppContext {
         let lyric_service = Arc::new(LyricService::new(Arc::new(
             lx_lyric::fetcher::SourceLyricFetcher::new(source_manager.clone()),
         )));
+        lyric_service.set_translation_enabled(config.lyric.show_translation);
+        lyric_service.set_yrc_enabled(config.lyric.show_yrc);
+        lyric_service.set_offset_ms(config.lyric.offset);
         let cover_service = Arc::new(CoverService::new());
         let play_mode = crate::playlist::mode::PlayMode::from_config(&config.player.play_mode);
         let playlist = Arc::new(PlaylistManager::new(play_mode));

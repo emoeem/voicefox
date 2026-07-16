@@ -48,5 +48,7 @@ pub struct LyricState {
     pub lines: Vec<LyricLine>,
     pub translation: Option<String>,
     pub yrc_words: Vec<YrcWord>,
+    /// 当前播放器位置（毫秒），用于逐字高亮。
+    pub position_ms: u64,
     pub is_empty: bool,
 }

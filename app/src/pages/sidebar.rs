@@ -3,7 +3,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 
@@ -53,11 +53,11 @@ pub fn render(area: Rect, buf: &mut Buffer, active: NavTab, ctx: &crate::context
     for (tab, tab_area) in NavTab::ALL.into_iter().zip(chunks.iter().copied()) {
         let style = if tab == active {
             Style::new()
-                .fg(Color::Black)
+                .fg(crate::theme::selection_fg(ctx))
                 .bg(accent)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::new().fg(Color::Gray)
+            Style::new().fg(crate::theme::subtext0(ctx))
         };
         Paragraph::new(Line::from(Span::styled(
             format!(" {} ", tab.label()),

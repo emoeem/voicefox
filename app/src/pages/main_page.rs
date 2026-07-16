@@ -4,7 +4,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent,
 use lx_core::events::AppAction;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 
@@ -58,8 +58,17 @@ impl MainPage {
             (KeyModifiers::NONE, KeyCode::Home) | (KeyModifiers::NONE, KeyCode::Char('g')) => {
                 self.selected = 0;
             }
-            (KeyModifiers::NONE, KeyCode::End) | (KeyModifiers::SHIFT, KeyCode::Char('G')) => {
+            (KeyModifiers::NONE, KeyCode::End)
+            | (KeyModifiers::NONE, KeyCode::Char('G'))
+            | (KeyModifiers::SHIFT, KeyCode::Char('G')) => {
                 self.selected = songs.len().saturating_sub(1);
+            }
+            (KeyModifiers::CONTROL, KeyCode::Char('u')) | (KeyModifiers::NONE, KeyCode::PageUp) => {
+                self.selected = self.selected.saturating_sub(5);
+            }
+            (KeyModifiers::CONTROL, KeyCode::Char('d'))
+            | (KeyModifiers::NONE, KeyCode::PageDown) => {
+                self.selected = (self.selected + 5).min(songs.len().saturating_sub(1));
             }
             (KeyModifiers::SHIFT, KeyCode::Up) | (KeyModifiers::SHIFT, KeyCode::Char('K')) => {
                 if self.selected > 0 {
@@ -238,7 +247,7 @@ impl MainPage {
             };
             if index == self.selected {
                 style = Style::new()
-                    .fg(Color::Black)
+                    .fg(crate::theme::selection_fg(ctx))
                     .bg(accent)
                     .add_modifier(Modifier::BOLD);
             }
@@ -287,6 +296,7 @@ fn render_cover_placeholder(area: Rect, buf: &mut Buffer, ctx: &AppContext) {
         ctx.cover_service.render(inner, buf);
         return;
     }
+    let cover_state = ctx.cover_service.state();
     let song = ctx.current_song.read().unwrap();
     let lines = song.as_ref().map_or_else(
         || {
@@ -313,9 +323,21 @@ fn render_cover_placeholder(area: Rect, buf: &mut Buffer, ctx: &AppContext) {
                 )),
                 Line::from(""),
                 Line::from(Span::styled(
-                    song.cover_url.as_deref().unwrap_or("封面加载待命"),
+                    match &cover_state {
+                        crate::cover::CoverState::Loading => "封面加载中...",
+                        crate::cover::CoverState::Unavailable(_) => "封面不可用",
+                        crate::cover::CoverState::Empty => "等待播放",
+                        crate::cover::CoverState::Ready => "封面已就绪",
+                    },
                     Style::new().fg(crate::theme::muted(ctx)),
                 )),
+                match &cover_state {
+                    crate::cover::CoverState::Unavailable(error) => Line::from(Span::styled(
+                        error.chars().take(inner.width as usize).collect::<String>(),
+                        Style::new().fg(crate::theme::overlay0(ctx)),
+                    )),
+                    _ => Line::from(""),
+                },
             ]
         },
     );

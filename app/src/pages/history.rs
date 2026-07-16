@@ -4,7 +4,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent,
 use lx_core::events::AppAction;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 
@@ -41,7 +41,10 @@ pub fn render(
         *selected = 0;
     }
 
-    let selected_style = Style::new().bg(crate::theme::accent(ctx)).fg(Color::Black);
+    let selected_style = Style::new()
+        .bg(crate::theme::accent(ctx))
+        .fg(crate::theme::selection_fg(ctx))
+        .add_modifier(Modifier::BOLD);
     let normal_style = Style::new().fg(crate::theme::text(ctx));
 
     if inner.height == 0 {
@@ -73,12 +76,11 @@ pub fn render(
     *scroll = (*scroll).min(total.saturating_sub(visible_height));
 
     let end = (*scroll + visible_height).min(total);
-    for i in *scroll..end {
+    for (i, song) in history.iter().enumerate().take(end).skip(*scroll) {
         let row = i - *scroll;
         if row as u16 >= list.height {
             break;
         }
-        let song = &history[i];
         let text = super::components::song_table::row(song, i, list.width);
         let line_area = Rect::new(list.x, list.y + row as u16, list.width, 1);
         let style = if i == *selected {
@@ -112,12 +114,26 @@ pub fn handle_input(key: &KeyEvent, ctx: &AppContext, selected: &mut usize) -> A
                 }
             }
         }
-        (KeyModifiers::NONE, KeyCode::Enter) | (KeyModifiers::NONE, KeyCode::Char('\r')) => {
-            if !history.is_empty() && *selected < history.len() {
-                let songs = history.clone();
-                let index = *selected;
-                return AppAction::PlaySong { songs, index };
-            }
+        (KeyModifiers::NONE, KeyCode::Home) | (KeyModifiers::NONE, KeyCode::Char('g')) => {
+            *selected = 0;
+        }
+        (KeyModifiers::NONE, KeyCode::End)
+        | (KeyModifiers::NONE, KeyCode::Char('G'))
+        | (KeyModifiers::SHIFT, KeyCode::Char('G')) => {
+            *selected = history.len().saturating_sub(1);
+        }
+        (KeyModifiers::CONTROL, KeyCode::Char('u')) | (KeyModifiers::NONE, KeyCode::PageUp) => {
+            *selected = selected.saturating_sub(10);
+        }
+        (KeyModifiers::CONTROL, KeyCode::Char('d')) | (KeyModifiers::NONE, KeyCode::PageDown) => {
+            *selected = (*selected + 10).min(history.len().saturating_sub(1));
+        }
+        (KeyModifiers::NONE, KeyCode::Enter) | (KeyModifiers::NONE, KeyCode::Char('\r'))
+            if !history.is_empty() && *selected < history.len() =>
+        {
+            let songs = history.clone();
+            let index = *selected;
+            return AppAction::PlaySong { songs, index };
         }
         _ => {}
     }

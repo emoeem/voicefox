@@ -1,7 +1,7 @@
 use lx_core::model::source::PlayerState;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 
@@ -39,7 +39,9 @@ pub fn render(area: Rect, buf: &mut Buffer, ctx: &AppContext) {
     Paragraph::new(vec![
         Line::from(Span::styled(
             format!("[{}]", state_label),
-            Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            Style::new()
+                .fg(crate::theme::yellow(ctx))
+                .add_modifier(Modifier::BOLD),
         )),
         Line::from(format!(
             "{} / {}",

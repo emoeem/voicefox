@@ -33,9 +33,7 @@ impl JsSource {
         song.extra
             .get("source")
             .cloned()
-            .or_else(|| {
-                (song.source != SourceId::Local).then(|| song.source.as_str().to_string())
-            })
+            .or_else(|| (song.source != SourceId::Local).then(|| song.source.as_str().to_string()))
             .unwrap_or_else(|| self.default_source.clone())
     }
 
@@ -144,10 +142,7 @@ impl JsSource {
             let mut quality_info = serde_json::Map::new();
             quality_info.insert("size".into(), serde_json::Value::Null);
             if let Some(hash) = hash {
-                quality_info.insert(
-                    "hash".into(),
-                    serde_json::Value::String(hash.to_string()),
-                );
+                quality_info.insert("hash".into(), serde_json::Value::String(hash.to_string()));
             }
 
             let mut quality_item = quality_info.clone();
@@ -162,16 +157,12 @@ impl JsSource {
             );
         }
         info.insert("types".into(), serde_json::Value::Array(types));
-        info.insert(
-            "_types".into(),
-            serde_json::Value::Object(types_by_quality),
-        );
+        info.insert("_types".into(), serde_json::Value::Object(types_by_quality));
         info.insert(
             "typeUrl".into(),
             serde_json::Value::Object(serde_json::Map::new()),
         );
-        info.entry("otherSource")
-            .or_insert(serde_json::Value::Null);
+        info.entry("otherSource").or_insert(serde_json::Value::Null);
         info.entry("lrc").or_insert(serde_json::Value::Null);
 
         if let Some(cover_url) = &song.cover_url {
@@ -227,10 +218,7 @@ fn quality_candidates(quality: Quality) -> &'static [(&'static str, Quality)] {
             ("320k", Quality::High320),
             ("128k", Quality::Low128),
         ],
-        Quality::High320 => &[
-            ("320k", Quality::High320),
-            ("128k", Quality::Low128),
-        ],
+        Quality::High320 => &[("320k", Quality::High320), ("128k", Quality::Low128)],
         Quality::Low128 => &[("128k", Quality::Low128)],
     }
 }
@@ -269,11 +257,7 @@ impl MusicSource for JsSource {
         .unwrap_or_else(|error| Err(SearchError::Other(error.to_string())))
     }
 
-    async fn get_song_url(
-        &self,
-        song: &SongInfo,
-        quality: Quality,
-    ) -> Result<SongUrl, FetchError> {
+    async fn get_song_url(&self, song: &SongInfo, quality: Quality) -> Result<SongUrl, FetchError> {
         let engine = Arc::clone(&self.engine);
         let duration = song.duration;
         let source = self.get_source(song);
@@ -285,9 +269,7 @@ impl MusicSource for JsSource {
                     .lock()
                     .map_err(|error| FetchError::Other(error.to_string()))?;
                 if !guard.supports_source(&source) {
-                    return Err(FetchError::Other(format!(
-                        "JS 音源不支持平台 {source}"
-                    )));
+                    return Err(FetchError::Other(format!("JS 音源不支持平台 {source}")));
                 }
                 guard.supported_qualities(&source)
             };
@@ -324,10 +306,7 @@ impl MusicSource for JsSource {
                         url,
                         quality: actual_quality,
                         duration,
-                        cover_url: result["pic"]
-                            .as_str()
-                            .or_else(|| result["data"]["pic"].as_str())
-                            .map(str::to_string),
+                        cover_url: extract_named_image_url(&result),
                         qualities: declared_qualities
                             .iter()
                             .filter_map(|quality| match quality.as_str() {
@@ -384,13 +363,7 @@ impl MusicSource for JsSource {
 
         tokio::task::spawn_blocking(move || {
             match Self::call_with_retry(&engine, "pic", &source, &info) {
-                Ok(result) => result
-                    .as_str()
-                    .or_else(|| result["url"].as_str())
-                    .or_else(|| result["data"].as_str())
-                    .filter(|url| !url.is_empty())
-                    .map(str::to_string)
-                    .ok_or(FetchError::NotFound),
+                Ok(result) => extract_cover_response_url(&result).ok_or(FetchError::NotFound),
                 Err(error) => Err(FetchError::Other(error)),
             }
         })
@@ -416,6 +389,68 @@ fn get_str<'a>(val: &'a serde_json::Value, keys: &[&str]) -> Option<&'a str> {
     })
 }
 
+fn normalize_remote_url(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.starts_with("//") {
+        Some(format!("https:{value}"))
+    } else if value.starts_with("http://") || value.starts_with("https://") {
+        Some(value.to_string())
+    } else {
+        None
+    }
+}
+
+fn extract_named_image_url(value: &serde_json::Value) -> Option<String> {
+    const IMAGE_KEYS: &[&str] = &[
+        "pic",
+        "img",
+        "cover",
+        "image",
+        "picUrl",
+        "coverUrl",
+        "imageUrl",
+        "albumPic",
+        "albumPicUrl",
+    ];
+
+    match value {
+        serde_json::Value::Object(object) => {
+            for key in IMAGE_KEYS {
+                if let Some(url) = object
+                    .get(*key)
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(normalize_remote_url)
+                {
+                    return Some(url);
+                }
+            }
+            object.values().find_map(extract_named_image_url)
+        }
+        serde_json::Value::Array(values) => values.iter().find_map(extract_named_image_url),
+        _ => None,
+    }
+}
+
+fn extract_cover_response_url(value: &serde_json::Value) -> Option<String> {
+    if let Some(url) = value.as_str().and_then(normalize_remote_url) {
+        return Some(url);
+    }
+    if let Some(url) = value
+        .get("url")
+        .and_then(serde_json::Value::as_str)
+        .and_then(normalize_remote_url)
+    {
+        return Some(url);
+    }
+    if let Some(url) = extract_named_image_url(value) {
+        return Some(url);
+    }
+    ["data", "result", "body"]
+        .iter()
+        .filter_map(|key| value.get(*key))
+        .find_map(extract_cover_response_url)
+}
+
 fn get_duration(value: &serde_json::Value) -> Duration {
     if let Some(seconds) = value.as_u64() {
         return Duration::from_secs(seconds);
@@ -424,8 +459,14 @@ fn get_duration(value: &serde_json::Value) -> Duration {
         return Duration::ZERO;
     };
     let mut parts = text.split(':').rev();
-    let seconds = parts.next().and_then(|part| part.parse::<u64>().ok()).unwrap_or(0);
-    let minutes = parts.next().and_then(|part| part.parse::<u64>().ok()).unwrap_or(0);
+    let seconds = parts
+        .next()
+        .and_then(|part| part.parse::<u64>().ok())
+        .unwrap_or(0);
+    let minutes = parts
+        .next()
+        .and_then(|part| part.parse::<u64>().ok())
+        .unwrap_or(0);
     Duration::from_secs(minutes * 60 + seconds)
 }
 
@@ -496,9 +537,7 @@ fn parse_js_search_result(result: &serde_json::Value) -> Result<SearchResult, Se
                 }
             }
         }
-        if let Some(pic) = get_str(item, &["cover", "pic", "img", "picUrl", "coverUrl"]) {
-            song.cover_url = Some(pic.to_string());
-        }
+        song.cover_url = extract_named_image_url(item);
         items.push(song);
     }
 
@@ -508,4 +547,38 @@ fn parse_js_search_result(result: &serde_json::Value) -> Result<SearchResult, Se
         total,
         has_more,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{extract_cover_response_url, extract_named_image_url};
+
+    #[test]
+    fn extracts_nested_cover_from_music_url_response() {
+        let value = serde_json::json!({
+            "url": "https://example.com/audio.flac",
+            "data": {
+                "cover": {
+                    "picUrl": "//img.example.com/cover.webp"
+                }
+            }
+        });
+
+        assert_eq!(
+            extract_named_image_url(&value).as_deref(),
+            Some("https://img.example.com/cover.webp")
+        );
+    }
+
+    #[test]
+    fn extracts_common_pic_action_response_shapes() {
+        for value in [
+            serde_json::json!("https://img.example.com/a.jpg"),
+            serde_json::json!({"url": "https://img.example.com/b.jpg"}),
+            serde_json::json!({"data": {"img": "https://img.example.com/c.jpg"}}),
+            serde_json::json!({"result": {"coverUrl": "//img.example.com/d.jpg"}}),
+        ] {
+            assert!(extract_cover_response_url(&value).is_some());
+        }
+    }
 }

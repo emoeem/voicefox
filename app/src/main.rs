@@ -27,6 +27,7 @@ use lx_core::traits::player::PlayerEvent;
 use lx_core::traits::source::SongUrl;
 use ratatui::DefaultTerminal;
 use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
+use ratatui::style::Style;
 use tokio::sync::mpsc;
 
 use context::AppContext;
@@ -179,8 +180,7 @@ fn run_app(
     let settings_page = Arc::new(std::sync::Mutex::new(pages::settings::SettingsPage::new()));
     let mut main_page = pages::main_page::MainPage::new();
     let mut leaderboard = pages::leaderboard::LeaderboardPage::new();
-    let mut favorites_selected: usize = 0;
-    let mut favorites_scroll: usize = 0;
+    let mut favorites_page = pages::favorites::FavoritesPage::new();
     let mut history_selected: usize = 0;
     let mut history_scroll: usize = 0;
     let mut ui_areas = UiAreas::default();
@@ -283,7 +283,75 @@ fn run_app(
             needs_render = true;
         }
 
-        // === 1. 事件驱动：轮询终端事件（借鉴 rmpc 模式：超时做周期维护） ===
+        // === 1. 周期维护 ===
+        // 这些工作必须独立于终端事件执行，否则持续按键或拖动鼠标会让
+        // 搜索防抖、歌词同步和进度渲染长期得不到运行机会。
+        if active_tab == NavTab::Search {
+            let action = {
+                let mut sp = search_page.lock().unwrap();
+                sp.tick()
+            };
+            if let Some(action) = action {
+                execute_action(
+                    action,
+                    &ctx,
+                    &rt,
+                    &action_tx,
+                    &search_page,
+                    &settings_page,
+                    &search_seq,
+                );
+                needs_render = true;
+            }
+        }
+
+        if last_notification_cleanup.elapsed() >= Duration::from_millis(250) {
+            let mut notifs = ctx.notifications.write().unwrap();
+            let previous_len = notifs.len();
+            notifs.retain(|notification| !notification.is_expired(Duration::from_secs(5)));
+            if notifs.len() != previous_len {
+                needs_render = true;
+            }
+            last_notification_cleanup = Instant::now();
+        }
+
+        if last_periodic_render.elapsed() >= render_interval {
+            ctx.lyric_service.update_position(*ctx.position.borrow());
+            let state = *ctx.player_state.borrow();
+            let input_active = active_tab == NavTab::Search
+                && search_page.lock().unwrap().input_mode
+                || active_tab == NavTab::Settings && settings_page.lock().unwrap().input_mode
+                || active_tab == NavTab::Favorites && favorites_page.input_mode();
+            let notification_active = !ctx.notifications.read().unwrap().is_empty();
+            needs_render |= matches!(
+                state,
+                lx_core::model::source::PlayerState::Playing
+                    | lx_core::model::source::PlayerState::Loading
+            ) || input_active
+                || notification_active;
+            last_periodic_render = Instant::now();
+        }
+
+        // 在读取下一个事件前先补画上一轮状态。这样即使 key repeat 每轮都
+        // 触发 continue，界面也不会被连续输入饿死。
+        if needs_render {
+            draw_app(
+                terminal,
+                &ctx,
+                active_tab,
+                &search_page,
+                &settings_page,
+                &mut main_page,
+                &mut leaderboard,
+                &mut favorites_page,
+                &mut history_selected,
+                &mut history_scroll,
+                &mut ui_areas,
+            )?;
+            needs_render = false;
+        }
+
+        // === 2. 事件驱动：轮询终端事件 ===
         let terminal_event = if event::poll(Duration::from_millis(50)).unwrap_or(false) {
             event::read().ok()
         } else {
@@ -298,13 +366,19 @@ fn run_app(
                 active_tab == NavTab::Settings && settings_page.lock().unwrap().input_mode;
             let search_input_mode =
                 active_tab == NavTab::Search && search_page.lock().unwrap().input_mode;
-            let text_input_active = settings_input_mode || search_input_mode;
-            if !text_input_active {
-                if let Some(tab) = pages::sidebar::handle_input(&key) {
-                    active_tab = tab;
-                    needs_render = true;
-                    continue;
-                }
+            let favorites_input_mode =
+                active_tab == NavTab::Favorites && favorites_page.input_mode();
+            let text_input_active =
+                settings_input_mode || search_input_mode || favorites_input_mode;
+            let favorites_filter_key =
+                active_tab == NavTab::Favorites && matches!(key.code, KeyCode::Char('/'));
+            if !text_input_active
+                && !favorites_filter_key
+                && let Some(tab) = pages::sidebar::handle_input(&key)
+            {
+                active_tab = tab;
+                needs_render = true;
+                continue;
             }
 
             // 1b. 全局快捷键
@@ -316,7 +390,7 @@ fn run_app(
                     continue;
                 }
                 (KeyModifiers::NONE, KeyCode::Char('n')) if !text_input_active => {
-                    if let Some((songs, index)) = ctx.playlist.next_entry() {
+                    if let Some((songs, index)) = ctx.playlist.next_manual_entry() {
                         execute_action(
                             AppAction::PlaySong { songs, index },
                             &ctx,
@@ -331,7 +405,7 @@ fn run_app(
                     continue;
                 }
                 (KeyModifiers::SHIFT, KeyCode::Char('>')) if !text_input_active => {
-                    if let Some((songs, index)) = ctx.playlist.next_entry() {
+                    if let Some((songs, index)) = ctx.playlist.next_manual_entry() {
                         execute_action(
                             AppAction::PlaySong { songs, index },
                             &ctx,
@@ -346,7 +420,7 @@ fn run_app(
                     continue;
                 }
                 (KeyModifiers::NONE, KeyCode::Char('b')) if !text_input_active => {
-                    if let Some((songs, index)) = ctx.playlist.prev_entry() {
+                    if let Some((songs, index)) = ctx.playlist.prev_manual_entry() {
                         execute_action(
                             AppAction::PlaySong { songs, index },
                             &ctx,
@@ -361,7 +435,7 @@ fn run_app(
                     continue;
                 }
                 (KeyModifiers::SHIFT, KeyCode::Char('<')) if !text_input_active => {
-                    if let Some((songs, index)) = ctx.playlist.prev_entry() {
+                    if let Some((songs, index)) = ctx.playlist.prev_manual_entry() {
                         execute_action(
                             AppAction::PlaySong { songs, index },
                             &ctx,
@@ -392,13 +466,17 @@ fn run_app(
                     needs_render = true;
                     continue;
                 }
-                (KeyModifiers::NONE, KeyCode::Right) if !text_input_active => {
+                (KeyModifiers::NONE, KeyCode::Right)
+                    if !text_input_active && active_tab != NavTab::Search =>
+                {
                     let pos = *ctx.position.borrow();
                     ctx.player.seek(pos + Duration::from_secs(5));
                     needs_render = true;
                     continue;
                 }
-                (KeyModifiers::NONE, KeyCode::Left) if !text_input_active => {
+                (KeyModifiers::NONE, KeyCode::Left)
+                    if !text_input_active && active_tab != NavTab::Search =>
+                {
                     let pos = *ctx.position.borrow();
                     if pos > Duration::from_secs(5) {
                         ctx.player.seek(pos - Duration::from_secs(5));
@@ -472,6 +550,7 @@ fn run_app(
                     if !settings_input_mode
                         && active_tab != NavTab::Main
                         && active_tab != NavTab::Search
+                        && active_tab != NavTab::Favorites
                         && !(active_tab == NavTab::Leaderboard
                             && leaderboard.selected_board.is_some()) =>
                 {
@@ -549,35 +628,37 @@ fn run_app(
                     } else if action_is_none(&action) {
                         // 检查是否需要异步加载榜单歌曲
                         if !leaderboard.loading
-                            && leaderboard.selected_board.is_some()
                             && !leaderboard.loaded
+                            && let Some(board_index) = leaderboard.selected_board
                         {
-                            if let Some(board_index) = leaderboard.selected_board {
-                                let (board_id, board_source) = leaderboard
-                                    .boards
-                                    .get(board_index)
-                                    .map(|board| (board.id.clone(), board.source))
-                                    .unwrap_or_else(|| {
-                                        (String::new(), lx_core::model::source::SourceId::Kg)
-                                    });
-                                leaderboard.begin_loading();
-                                leaderboard_request_id = leaderboard_request_id.wrapping_add(1);
-                                spawn_leaderboard_search(
-                                    leaderboard_request_id,
-                                    board_index,
-                                    board_id,
-                                    board_source,
-                                    Arc::clone(&ctx.source_manager),
-                                    leaderboard_tx.clone(),
-                                    &rt,
-                                );
-                            }
+                            let (board_id, board_source) = leaderboard
+                                .boards
+                                .get(board_index)
+                                .map(|board| (board.id.clone(), board.source))
+                                .unwrap_or_else(|| {
+                                    (String::new(), lx_core::model::source::SourceId::Kg)
+                                });
+                            leaderboard.begin_loading();
+                            leaderboard_request_id = leaderboard_request_id.wrapping_add(1);
+                            spawn_leaderboard_search(
+                                leaderboard_request_id,
+                                board_index,
+                                board_id,
+                                board_source,
+                                Arc::clone(&ctx.source_manager),
+                                leaderboard_tx.clone(),
+                                &rt,
+                            );
                         }
                     }
                 }
                 NavTab::Favorites => {
-                    let action =
-                        pages::favorites::handle_input(&key, &ctx, &mut favorites_selected);
+                    let action = favorites_page.handle_input(&key, &ctx);
+                    if matches!(action, AppAction::GoBack) {
+                        active_tab = NavTab::Main;
+                        needs_render = true;
+                        continue;
+                    }
                     // 播放时自动切换到主页，让用户看到播放信息
                     if matches!(action, AppAction::PlaySong { .. }) {
                         active_tab = NavTab::Main;
@@ -670,14 +751,9 @@ fn run_app(
                     NavTab::Leaderboard => {
                         leaderboard.handle_mouse(mouse, ui_areas.content, activate, &ctx)
                     }
-                    NavTab::Favorites => pages::favorites::handle_mouse(
-                        mouse,
-                        ui_areas.content,
-                        &ctx,
-                        &mut favorites_selected,
-                        favorites_scroll,
-                        activate,
-                    ),
+                    NavTab::Favorites => {
+                        favorites_page.handle_mouse(mouse, ui_areas.content, &ctx, activate)
+                    }
                     NavTab::History => pages::history::handle_mouse(
                         mouse,
                         ui_areas.content,
@@ -734,130 +810,106 @@ fn run_app(
                 }
             }
             needs_render = true;
-        } else {
-            // === 2. 无终端事件时：周期维护工作 ===
-
-            // 2a. 搜索防抖 tick
-            if active_tab == NavTab::Search {
-                let action = {
-                    let mut sp = search_page.lock().unwrap();
-                    sp.tick()
-                };
-                if let Some(action) = action {
-                    execute_action(
-                        action,
-                        &ctx,
-                        &rt,
-                        &action_tx,
-                        &search_page,
-                        &settings_page,
-                        &search_seq,
-                    );
-                    needs_render = true;
-                }
-            }
-
-            // 2b. 清理过期通知
-            if last_notification_cleanup.elapsed() >= Duration::from_millis(250) {
-                let mut notifs = ctx.notifications.write().unwrap();
-                let previous_len = notifs.len();
-                notifs.retain(|notification| !notification.is_expired(Duration::from_secs(5)));
-                if notifs.len() != previous_len {
-                    needs_render = true;
-                }
-                last_notification_cleanup = Instant::now();
-            }
-
-            // 2c. 按最大帧率更新播放进度和输入光标
-            if last_periodic_render.elapsed() >= render_interval {
-                ctx.lyric_service.update_position(*ctx.position.borrow());
-                let state = *ctx.player_state.borrow();
-                let input_active = active_tab == NavTab::Search
-                    && search_page.lock().unwrap().input_mode
-                    || active_tab == NavTab::Settings && settings_page.lock().unwrap().input_mode;
-                let notification_active = !ctx.notifications.read().unwrap().is_empty();
-                needs_render |= matches!(
-                    state,
-                    lx_core::model::source::PlayerState::Playing
-                        | lx_core::model::source::PlayerState::Loading
-                ) || input_active
-                    || notification_active;
-                last_periodic_render = Instant::now();
-            }
         }
 
-        // === 3. 事件驱动渲染：仅在需要时 draw ===
+        // === 3. 当前事件未提前 continue 时立即渲染 ===
         if needs_render {
-            terminal.draw(|frame| {
-                let area = frame.area();
-                let main_chunks = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints([
-                        Constraint::Length(4), // header
-                        Constraint::Length(3), // tabs
-                        Constraint::Min(3),    // tab content
-                        Constraint::Length(1), // progress bar
-                        Constraint::Length(1), // status bar
-                    ])
-                    .split(area);
-
-                components::header::render(main_chunks[0], frame.buffer_mut(), &ctx);
-                pages::sidebar::render(main_chunks[1], frame.buffer_mut(), active_tab, &ctx);
-                let content_area = main_chunks[2];
-                ui_areas = UiAreas {
-                    tabs: main_chunks[1],
-                    content: content_area,
-                    progress: main_chunks[3],
-                };
-
-                // 渲染内容区
-                match active_tab {
-                    NavTab::Search => {
-                        let mut sp = search_page.lock().unwrap();
-                        sp.render(content_area, frame.buffer_mut(), &ctx);
-                    }
-                    NavTab::Main => {
-                        main_page.render(content_area, frame.buffer_mut(), &ctx);
-                    }
-                    NavTab::Leaderboard => {
-                        leaderboard.render(content_area, frame.buffer_mut(), &ctx);
-                    }
-                    NavTab::Favorites => {
-                        pages::favorites::render(
-                            content_area,
-                            frame.buffer_mut(),
-                            &ctx,
-                            &mut favorites_selected,
-                            &mut favorites_scroll,
-                        );
-                    }
-                    NavTab::History => {
-                        pages::history::render(
-                            content_area,
-                            frame.buffer_mut(),
-                            &ctx,
-                            &mut history_selected,
-                            &mut history_scroll,
-                        );
-                    }
-                    NavTab::Settings => {
-                        let mut sp = settings_page.lock().unwrap();
-                        sp.render(content_area, frame.buffer_mut(), &ctx);
-                    }
-                }
-
-                // 进度条
-                components::progress_bar::render(main_chunks[3], frame.buffer_mut(), &ctx);
-
-                // 状态栏
-                components::status_bar::render(main_chunks[4], frame.buffer_mut(), &ctx);
-
-                // 通知浮层（在状态栏上方覆盖）
-                components::notification::render(main_chunks[4], frame.buffer_mut(), &ctx);
-            })?;
+            draw_app(
+                terminal,
+                &ctx,
+                active_tab,
+                &search_page,
+                &settings_page,
+                &mut main_page,
+                &mut leaderboard,
+                &mut favorites_page,
+                &mut history_selected,
+                &mut history_scroll,
+                &mut ui_areas,
+            )?;
             needs_render = false;
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_app(
+    terminal: &mut DefaultTerminal,
+    ctx: &AppContext,
+    active_tab: NavTab,
+    search_page: &Arc<std::sync::Mutex<pages::search::SearchPage>>,
+    settings_page: &Arc<std::sync::Mutex<pages::settings::SettingsPage>>,
+    main_page: &mut pages::main_page::MainPage,
+    leaderboard: &mut pages::leaderboard::LeaderboardPage,
+    favorites_page: &mut pages::favorites::FavoritesPage,
+    history_selected: &mut usize,
+    history_scroll: &mut usize,
+    ui_areas: &mut UiAreas,
+) -> anyhow::Result<()> {
+    terminal.draw(|frame| {
+        let area = frame.area();
+        frame.render_widget(
+            ratatui::widgets::Block::default().style(
+                Style::new()
+                    .bg(crate::theme::base(ctx))
+                    .fg(crate::theme::text(ctx)),
+            ),
+            area,
+        );
+        let main_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(4), // header
+                Constraint::Length(3), // tabs
+                Constraint::Min(3),    // tab content
+                Constraint::Length(1), // progress bar
+                Constraint::Length(1), // status bar
+            ])
+            .split(area);
+
+        components::header::render(main_chunks[0], frame.buffer_mut(), ctx);
+        pages::sidebar::render(main_chunks[1], frame.buffer_mut(), active_tab, ctx);
+        let content_area = main_chunks[2];
+        *ui_areas = UiAreas {
+            tabs: main_chunks[1],
+            content: content_area,
+            progress: main_chunks[3],
+        };
+
+        match active_tab {
+            NavTab::Search => {
+                let mut sp = search_page.lock().unwrap();
+                sp.render(content_area, frame.buffer_mut(), ctx);
+            }
+            NavTab::Main => {
+                main_page.render(content_area, frame.buffer_mut(), ctx);
+            }
+            NavTab::Leaderboard => {
+                leaderboard.render(content_area, frame.buffer_mut(), ctx);
+            }
+            NavTab::Favorites => {
+                favorites_page.render(content_area, frame.buffer_mut(), ctx);
+            }
+            NavTab::History => {
+                pages::history::render(
+                    content_area,
+                    frame.buffer_mut(),
+                    ctx,
+                    history_selected,
+                    history_scroll,
+                );
+            }
+            NavTab::Settings => {
+                let mut sp = settings_page.lock().unwrap();
+                sp.render(content_area, frame.buffer_mut(), ctx);
+            }
+        }
+
+        components::progress_bar::render(main_chunks[3], frame.buffer_mut(), ctx);
+        components::status_bar::render(main_chunks[4], frame.buffer_mut(), ctx);
+        components::notification::render(main_chunks[4], frame.buffer_mut(), ctx);
+    })?;
+    Ok(())
 }
 
 #[allow(dead_code)]
@@ -955,6 +1007,25 @@ fn execute_action(
                 let source_mgr = Arc::clone(&ctx.source_manager);
                 let player = Arc::clone(&ctx.player);
                 let lyric_service = Arc::clone(&ctx.lyric_service);
+                let lyric_song = song.clone();
+                let lyric_position = ctx.position.clone();
+                let lyric_tx = action_tx.clone();
+                rt.spawn(async move {
+                    let result = tokio::time::timeout(
+                        Duration::from_secs(15),
+                        lyric_service.load(&lyric_song, lyric_generation),
+                    )
+                    .await;
+                    match result {
+                        Err(error) => tracing::warn!("load lyric timeout: {}", error),
+                        Ok(Err(error)) => tracing::warn!("load lyric failed: {}", error),
+                        Ok(Ok(())) => {}
+                    }
+                    // 歌词请求通常会跨过数百毫秒甚至数秒，必须用完成时的
+                    // 播放位置重新定位，而不是从第一行开始显示。
+                    lyric_service.update_position(*lyric_position.borrow());
+                    let _ = lyric_tx.send(AppAction::None);
+                });
                 let current_song = Arc::clone(&ctx.current_song);
                 let play_request_id = Arc::clone(&ctx.play_request_id);
                 let quality = ctx.config.read().unwrap().player.quality;
@@ -1030,9 +1101,6 @@ fn execute_action(
                         resolved_song.name, resolved_song.singer
                     ))));
 
-                    if let Err(error) = lyric_service.load(&resolved_song, lyric_generation).await {
-                        tracing::warn!("load lyric failed: {}", error);
-                    }
                     if show_cover
                         && let Err(error) =
                             cover_service.load(resolved_song.cover_url.clone()).await
@@ -1221,6 +1289,7 @@ fn spawn_js_source_loader(
 }
 
 /// 异步搜索（直接 async，不用 spawn_blocking——reqwest 是真正 async 的）
+#[allow(clippy::too_many_arguments)]
 fn spawn_search(
     keyword: String,
     page: u32,

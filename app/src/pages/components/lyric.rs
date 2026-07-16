@@ -5,7 +5,7 @@
 use ratatui::buffer::Buffer;
 use ratatui::layout::Alignment;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -61,21 +61,32 @@ pub fn render(area: Rect, buf: &mut Buffer, ctx: &AppContext) {
         let line = &state.lines[line_idx];
         let distance = (line_idx as isize - current as isize).unsigned_abs();
 
+        if line_idx == current && !state.yrc_words.is_empty() {
+            render_karaoke_line(
+                Rect::new(inner.x, y, inner.width, 1),
+                buf,
+                ctx,
+                &state.yrc_words,
+                state.position_ms,
+            );
+            continue;
+        }
+
         let (prefix, style) = if line_idx == current {
             (
                 "❯ ",
                 Style::new()
-                    .fg(crate::theme::accent(ctx))
+                    .fg(crate::theme::lavender(ctx))
                     .add_modifier(Modifier::BOLD),
             )
         } else {
-            let gray = match distance {
-                1 => Color::Rgb(180, 180, 180),
-                2 => Color::Rgb(140, 140, 140),
-                3..=4 => Color::Rgb(100, 100, 100),
-                _ => Color::Rgb(70, 70, 70),
+            let color = match distance {
+                1 => crate::theme::subtext1(ctx),
+                2 => crate::theme::subtext0(ctx),
+                3..=4 => crate::theme::overlay1(ctx),
+                _ => crate::theme::overlay0(ctx),
             };
-            ("  ", Style::new().fg(gray))
+            ("  ", Style::new().fg(color))
         };
 
         let text = format!(
@@ -94,12 +105,46 @@ pub fn render(area: Rect, buf: &mut Buffer, ctx: &AppContext) {
         Paragraph::new(Line::from(Span::styled(
             text,
             Style::new()
-                .fg(Color::Rgb(183, 138, 82))
+                .fg(crate::theme::teal(ctx))
                 .add_modifier(Modifier::ITALIC),
         )))
         .alignment(Alignment::Center)
         .render(Rect::new(inner.x, y, inner.width, 1), buf);
     }
+}
+
+fn render_karaoke_line(
+    area: Rect,
+    buf: &mut Buffer,
+    ctx: &AppContext,
+    words: &[lx_core::model::lyric::YrcWord],
+    position_ms: u64,
+) {
+    let mut spans = vec![Span::styled(
+        "❯ ",
+        Style::new()
+            .fg(crate::theme::lavender(ctx))
+            .add_modifier(Modifier::BOLD),
+    )];
+    spans.extend(words.iter().map(|word| {
+        let end = word.start.saturating_add(word.duration.max(1));
+        let style = if position_ms >= end {
+            Style::new()
+                .fg(crate::theme::lavender(ctx))
+                .add_modifier(Modifier::BOLD)
+        } else if position_ms >= word.start {
+            Style::new()
+                .fg(crate::theme::peach(ctx))
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+        } else {
+            Style::new().fg(crate::theme::overlay1(ctx))
+        };
+        Span::styled(word.text.clone(), style)
+    }));
+
+    Paragraph::new(Line::from(spans))
+        .alignment(Alignment::Center)
+        .render(area, buf);
 }
 
 fn truncate(s: &str, max: usize) -> String {

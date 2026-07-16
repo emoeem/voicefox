@@ -3,7 +3,7 @@
 use crate::context::AppContext;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
 use std::time::Duration;
@@ -34,7 +34,7 @@ pub fn render(area: Rect, buf: &mut Buffer, ctx: &AppContext) {
             format_duration(position),
             format_duration(duration)
         ))
-        .style(Style::new().fg(Color::Gray))
+        .style(Style::new().fg(crate::theme::subtext0(ctx)))
         .render(area, buf);
         return;
     }
@@ -45,13 +45,16 @@ pub fn render(area: Rect, buf: &mut Buffer, ctx: &AppContext) {
     let bar_spans = vec![
         Span::styled(
             format!(" {} ", format_duration(position)),
-            Style::new().fg(Color::Gray),
+            Style::new().fg(crate::theme::subtext0(ctx)),
         ),
         Span::styled("█".repeat(filled), Style::new().fg(accent)),
-        Span::styled("░".repeat(empty), Style::new().fg(Color::DarkGray)),
+        Span::styled(
+            "░".repeat(empty),
+            Style::new().fg(crate::theme::surface1(ctx)),
+        ),
         Span::styled(
             format!(" {}", format_duration(duration)),
-            Style::new().fg(Color::Gray),
+            Style::new().fg(crate::theme::subtext0(ctx)),
         ),
     ];
 

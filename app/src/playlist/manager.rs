@@ -88,14 +88,26 @@ impl PlaylistManager {
         Some((list.clone(), next))
     }
 
-    pub fn prev_entry(&self) -> Option<(Vec<SongInfo>, usize)> {
+    pub fn next_manual_entry(&self) -> Option<(Vec<SongInfo>, usize)> {
         let list = self.current_list.lock().unwrap();
         if list.is_empty() {
             return None;
         }
         let mut index = self.current_index.lock().unwrap();
         let mode = *self.play_mode.lock().unwrap();
-        let previous = mode.prev_index(*index, list.len())?;
+        let next = mode.manual_next_index(*index, list.len())?;
+        *index = next;
+        Some((list.clone(), next))
+    }
+
+    pub fn prev_manual_entry(&self) -> Option<(Vec<SongInfo>, usize)> {
+        let list = self.current_list.lock().unwrap();
+        if list.is_empty() {
+            return None;
+        }
+        let mut index = self.current_index.lock().unwrap();
+        let mode = *self.play_mode.lock().unwrap();
+        let previous = mode.manual_prev_index(*index, list.len())?;
         *index = previous;
         Some((list.clone(), previous))
     }

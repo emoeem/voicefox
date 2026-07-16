@@ -128,17 +128,28 @@ impl SettingsPage {
                         ctx.cover_service.clear();
                     }
                 }
+                (KeyModifiers::NONE, KeyCode::Char('m')) => {
+                    let mode = ctx.playlist.cycle_mode();
+                    let result = {
+                        let mut config = ctx.config.write().unwrap();
+                        config.player.play_mode = mode.as_config().to_string();
+                        crate::config::loader::save(&config, &ctx.config_path)
+                    };
+                    self.status_msg = Some(match result {
+                        Ok(()) => format!("播放模式: {}", mode.label()),
+                        Err(error) => format!("播放模式已切换，但保存失败: {}", error),
+                    });
+                }
                 (KeyModifiers::NONE, KeyCode::Char('p')) => {
                     self.update_config(ctx, |config| {
                         config.theme.accent = match config.theme.accent.as_str() {
-                            "cyan" => "blue",
-                            "blue" => "green",
-                            "green" => "magenta",
-                            "magenta" => "yellow",
-                            _ => "cyan",
+                            "#cba6f7" => "#89b4fa",
+                            "#89b4fa" => "#94e2d5",
+                            "#94e2d5" => "#f5c2e7",
+                            "#f5c2e7" => "#fab387",
+                            _ => "#cba6f7",
                         }
                         .to_string();
-                        config.theme.border = config.theme.accent.clone();
                     });
                 }
                 _ => {}
@@ -173,14 +184,19 @@ impl SettingsPage {
         let options_block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::new().fg(crate::theme::border(ctx)))
-            .title(" 界面与播放 · t/g/w/c/p ");
+            .title(" 界面与播放 · t/g/w/c/m/p ");
         let options_inner = options_block.inner(chunks[0]);
         options_block.render(chunks[0], buf);
         let options = vec![
-            setting_line("鼠标控制", config.ui.enable_mouse, "t", accent),
-            setting_line("聚合搜索", config.ui.aggregate_search, "g", accent),
-            setting_line("循环导航", config.ui.wrap_navigation, "w", accent),
-            setting_line("封面显示", config.ui.show_cover, "c", accent),
+            setting_line("鼠标控制", config.ui.enable_mouse, "t", accent, muted),
+            setting_line("聚合搜索", config.ui.aggregate_search, "g", accent, muted),
+            setting_line("循环导航", config.ui.wrap_navigation, "w", accent, muted),
+            setting_line("封面显示", config.ui.show_cover, "c", accent, muted),
+            Line::from(vec![
+                Span::styled(" [m] ", Style::new().fg(muted)),
+                Span::raw("播放模式   "),
+                Span::styled(ctx.playlist.mode().label(), Style::new().fg(accent)),
+            ]),
             Line::from(vec![
                 Span::styled(" [p] ", Style::new().fg(muted)),
                 Span::raw(format!("主题强调色  {}", config.theme.accent)),
@@ -205,11 +221,14 @@ impl SettingsPage {
         source_block.render(chunks[1], buf);
         if source_inner.height > 0 {
             let source_state = if ctx.source_manager.has_js_source() {
-                ("已就绪，播放/歌词/封面由 JS 音源解析", Color::Green)
+                (
+                    "已就绪，播放/歌词/封面由 JS 音源解析",
+                    crate::theme::green(ctx),
+                )
             } else if sources.is_empty() {
-                ("尚未导入 JS 音源", Color::Yellow)
+                ("尚未导入 JS 音源", crate::theme::yellow(ctx))
             } else {
-                ("加载中或加载失败", Color::Yellow)
+                ("加载中或加载失败", crate::theme::yellow(ctx))
             };
             Paragraph::new(Line::from(Span::styled(
                 format!(" {}", source_state.0),
@@ -239,7 +258,7 @@ impl SettingsPage {
                 let status = if cached { "cached" } else { "download" };
                 let style = if index == self.selected_source {
                     Style::new()
-                        .fg(Color::Black)
+                        .fg(crate::theme::selection_fg(ctx))
                         .bg(accent)
                         .add_modifier(Modifier::BOLD)
                 } else {
@@ -263,7 +282,7 @@ impl SettingsPage {
         {
             Paragraph::new(Line::from(Span::styled(
                 format!(" {}", msg),
-                Style::new().fg(Color::Yellow),
+                Style::new().fg(crate::theme::yellow(ctx)),
             )))
             .render(
                 Rect::new(
@@ -287,7 +306,7 @@ impl SettingsPage {
             Clear.render(input_area, buf);
             let input_block = Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::new().fg(Color::Green))
+                .border_style(Style::new().fg(crate::theme::green(ctx)))
                 .title("输入 JS 音源 URL 或本地路径");
 
             let inner = input_block.inner(input_area);
@@ -297,8 +316,7 @@ impl SettingsPage {
                 .unwrap()
                 .as_millis()
                 / 500)
-                % 2
-                == 0
+                .is_multiple_of(2)
             {
                 "█"
             } else {
@@ -330,7 +348,8 @@ impl SettingsPage {
                         1 => Some('g'),
                         2 => Some('w'),
                         3 => Some('c'),
-                        4 => Some('p'),
+                        4 => Some('m'),
+                        5 => Some('p'),
                         _ => None,
                     };
                     if let Some(key) = key {
@@ -362,13 +381,13 @@ fn enabled(value: bool) -> &'static str {
     if value { "开启" } else { "关闭" }
 }
 
-fn setting_line(label: &str, value: bool, key: &str, accent: Color) -> Line<'static> {
+fn setting_line(label: &str, value: bool, key: &str, accent: Color, muted: Color) -> Line<'static> {
     Line::from(vec![
-        Span::styled(format!(" [{key}] "), Style::new().fg(Color::DarkGray)),
+        Span::styled(format!(" [{key}] "), Style::new().fg(muted)),
         Span::raw(format!("{label:<10} ")),
         Span::styled(
             if value { "[x]" } else { "[ ]" },
-            Style::new().fg(if value { accent } else { Color::DarkGray }),
+            Style::new().fg(if value { accent } else { muted }),
         ),
     ])
 }
@@ -382,7 +401,7 @@ fn settings_chunks(area: Rect) -> std::rc::Rc<[Rect]> {
     } else {
         Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(10.min(area.height)), Constraint::Min(0)])
+            .constraints([Constraint::Length(12.min(area.height)), Constraint::Min(0)])
             .split(area)
     }
 }
