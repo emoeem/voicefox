@@ -392,6 +392,22 @@ fn run_app(
                     needs_render = true;
                     continue;
                 }
+                (KeyModifiers::NONE, KeyCode::Right) if !text_input_active => {
+                    let pos = *ctx.position.borrow();
+                    ctx.player.seek(pos + Duration::from_secs(5));
+                    needs_render = true;
+                    continue;
+                }
+                (KeyModifiers::NONE, KeyCode::Left) if !text_input_active => {
+                    let pos = *ctx.position.borrow();
+                    if pos > Duration::from_secs(5) {
+                        ctx.player.seek(pos - Duration::from_secs(5));
+                    } else {
+                        ctx.player.seek(Duration::ZERO);
+                    }
+                    needs_render = true;
+                    continue;
+                }
                 (KeyModifiers::NONE, KeyCode::Char(']')) if !text_input_active => {
                     let pos = *ctx.position.borrow();
                     ctx.player.seek(pos + Duration::from_secs(5));
@@ -405,6 +421,16 @@ fn run_app(
                     } else {
                         ctx.player.seek(Duration::ZERO);
                     }
+                    needs_render = true;
+                    continue;
+                }
+                (KeyModifiers::NONE, KeyCode::Up) if active_tab == NavTab::Main => {
+                    ctx.player.volume_up(5);
+                    needs_render = true;
+                    continue;
+                }
+                (KeyModifiers::NONE, KeyCode::Down) if active_tab == NavTab::Main => {
+                    ctx.player.volume_down(5);
                     needs_render = true;
                     continue;
                 }
