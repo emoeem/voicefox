@@ -120,6 +120,8 @@ voicefox
 
 首次启动会自动创建默认配置文件 `~/.config/voicefox/config.toml`。
 
+完整的快捷键说明见 [KEYBINDINGS.md](KEYBINDINGS.md)。
+
 ### 键盘快捷键
 
 #### 全局快捷键（任意页面）
