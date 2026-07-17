@@ -20,6 +20,7 @@ const SEARCH_SCOPES: &[(Option<SourceId>, &str)] = &[
     (Some(SourceId::Tx), "QQ tx"),
     (Some(SourceId::Mg), "咪咕 mg"),
     (Some(SourceId::Wy), "网易 wy"),
+    (Some(SourceId::Local), "本地 local"),
 ];
 
 pub struct SearchPage {
@@ -63,7 +64,7 @@ impl SearchPage {
             has_more: false,
             error_message: None,
             current_page: 0,
-            input_mode: true,
+            input_mode: false,
             source_filter,
             result_source_filter: None,
             variant_indices: Vec::new(),
