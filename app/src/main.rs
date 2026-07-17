@@ -183,6 +183,8 @@ fn run_app(
     let mut favorites_page = pages::favorites::FavoritesPage::new();
     let mut history_selected: usize = 0;
     let mut history_scroll: usize = 0;
+    let mut local_selected: usize = 0;
+    let mut local_scroll: usize = 0;
     let mut ui_areas = UiAreas::default();
     let mut click_tracker = ClickTracker::default();
 
@@ -353,6 +355,8 @@ fn run_app(
                 &mut favorites_page,
                 &mut history_selected,
                 &mut history_scroll,
+                &mut local_selected,
+                &mut local_scroll,
                 &mut ui_areas,
             )?;
             needs_render = false;
@@ -723,25 +727,61 @@ fn run_app(
                     );
                 }
                 NavTab::LocalMusic => {
-                    // 本地音乐：按 r 重新扫描
-                    if matches!((key.modifiers, key.code), (KeyModifiers::NONE, KeyCode::Char('r'))) {
-                        let paths = ctx.config.read().unwrap().local_music.paths.clone();
-                        let max_depth = ctx.config.read().unwrap().local_music.max_depth;
-                        let local_src = ctx.source_manager.local_source();
-                        let errors = local_src.scan(&paths, max_depth);
-                        if errors.is_empty() {
-                            let count = local_src.all_songs().len();
-                            ctx.notifications.write().unwrap().push_back(
-                                Notification::info(format!("本地音乐扫描完成，共 {} 首", count)),
-                            );
-                        } else {
-                            for err in &errors {
+                    let local_src = ctx.source_manager.local_source();
+                    let songs = local_src.all_songs();
+                    match (key.modifiers, key.code) {
+                        (KeyModifiers::NONE, KeyCode::Char('r')) => {
+                            let paths = ctx.config.read().unwrap().local_music.paths.clone();
+                            let max_depth = ctx.config.read().unwrap().local_music.max_depth;
+                            let errors = local_src.scan(&paths, max_depth);
+                            if errors.is_empty() {
+                                let count = local_src.all_songs().len();
                                 ctx.notifications.write().unwrap().push_back(
-                                    Notification::error(err.clone()),
+                                    Notification::info(format!("本地音乐扫描完成，共 {} 首", count)),
+                                );
+                            } else {
+                                for err in &errors {
+                                    ctx.notifications.write().unwrap().push_back(
+                                        Notification::error(err.clone()),
+                                    );
+                                }
+                            }
+                            local_selected = 0;
+                            local_scroll = 0;
+                        }
+                        (KeyModifiers::NONE, KeyCode::Up) | (KeyModifiers::NONE, KeyCode::Char('k')) => {
+                            if !songs.is_empty() {
+                                local_selected = local_selected.saturating_sub(1);
+                            }
+                        }
+                        (KeyModifiers::NONE, KeyCode::Down) | (KeyModifiers::NONE, KeyCode::Char('j')) => {
+                            if !songs.is_empty() && local_selected + 1 < songs.len() {
+                                local_selected += 1;
+                            }
+                        }
+                        (KeyModifiers::NONE, KeyCode::Home) | (KeyModifiers::NONE, KeyCode::Char('g')) => {
+                            local_selected = 0;
+                        }
+                        (KeyModifiers::NONE, KeyCode::End)
+                        | (KeyModifiers::NONE, KeyCode::Char('G'))
+                        | (KeyModifiers::SHIFT, KeyCode::Char('G')) => {
+                            local_selected = songs.len().saturating_sub(1);
+                        }
+                        (KeyModifiers::CONTROL, KeyCode::Char('u')) | (KeyModifiers::NONE, KeyCode::PageUp) => {
+                            local_selected = local_selected.saturating_sub(10);
+                        }
+                        (KeyModifiers::CONTROL, KeyCode::Char('d')) | (KeyModifiers::NONE, KeyCode::PageDown) => {
+                            local_selected = (local_selected + 10).min(songs.len().saturating_sub(1));
+                        }
+                        (KeyModifiers::NONE, KeyCode::Enter) | (KeyModifiers::NONE, KeyCode::Char('\r')) => {
+                            if !songs.is_empty() && local_selected < songs.len() {
+                                execute_action(
+                                    AppAction::PlaySong { songs, index: local_selected },
+                                    &ctx, &rt, &action_tx, &search_page, &settings_page, &search_seq,
                                 );
                             }
                         }
-                        needs_render = true;
+                        _ => {}
                     }
                 }
             }
@@ -857,6 +897,8 @@ fn run_app(
                 &mut favorites_page,
                 &mut history_selected,
                 &mut history_scroll,
+                &mut local_selected,
+                &mut local_scroll,
                 &mut ui_areas,
             )?;
             needs_render = false;
@@ -876,6 +918,8 @@ fn draw_app(
     favorites_page: &mut pages::favorites::FavoritesPage,
     history_selected: &mut usize,
     history_scroll: &mut usize,
+    local_selected: &mut usize,
+    local_scroll: &mut usize,
     ui_areas: &mut UiAreas,
 ) -> anyhow::Result<()> {
     terminal.draw(|frame| {
@@ -936,7 +980,6 @@ fn draw_app(
                 sp.render(content_area, frame.buffer_mut(), ctx);
             }
             NavTab::LocalMusic => {
-                // 显示本地音乐状态
                 use ratatui::widgets::{Block, Borders, Paragraph, Widget};
                 use ratatui::style::{Style, Color};
                 use ratatui::text::{Line, Span};
@@ -944,56 +987,67 @@ fn draw_app(
                 let local_src = ctx.source_manager.local_source();
                 let paths = ctx.config.read().unwrap().local_music.paths.clone();
                 let songs = local_src.all_songs();
-                let loaded = local_src.loaded_paths();
-
-                let mut lines = vec![
-                    Line::from(Span::styled(
-                        "📁 本地音乐",
-                        Style::new().fg(Color::Cyan).add_modifier(ratatui::style::Modifier::BOLD),
-                    )),
-                    Line::from(""),
-                ];
-
-                if paths.is_empty() {
-                    lines.push(Line::from(Span::styled(
-                        "   未配置音乐目录，请在设置（7）中添加",
-                        Style::new().fg(Color::DarkGray),
-                    )));
-                } else {
-                    for p in &paths {
-                        let mark = if loaded.iter().any(|lp| lp.to_string_lossy().as_ref() == p.as_str()) {
-                            "✓"
-                        } else {
-                            " "
-                        };
-                        lines.push(Line::from(Span::styled(
-                            format!("   {} {}", mark, p),
-                            Style::new().fg(Color::Gray),
-                        )));
-                    }
-                    lines.push(Line::from(""));
-                    lines.push(Line::from(Span::styled(
-                        format!("   共 {} 首歌曲", songs.len()),
-                        Style::new().fg(Color::Green),
-                    )));
-                    lines.push(Line::from(""));
-                    lines.push(Line::from(Span::styled(
-                        "   按 r 重新扫描目录",
-                        Style::new().fg(Color::DarkGray),
-                    )));
-                    lines.push(Line::from(Span::styled(
-                        "   切换到搜索页（2）可搜索本地歌曲",
-                        Style::new().fg(Color::DarkGray),
-                    )));
-                }
 
                 let block = Block::default()
                     .borders(Borders::ALL)
                     .border_style(Style::new().fg(crate::theme::muted(ctx)))
-                    .title("本地音乐");
+                    .title(format!("本地音乐 ({} 首)", songs.len()));
                 let inner = block.inner(content_area);
                 block.render(content_area, frame.buffer_mut());
-                Paragraph::new(lines).render(inner, frame.buffer_mut());
+
+                if inner.height < 2 { return; }
+
+                if paths.is_empty() {
+                    Paragraph::new(Line::from(
+                        " 未配置音乐目录，请在设置（7）中添加"
+                    )).style(Style::new().fg(Color::DarkGray))
+                    .render(inner, frame.buffer_mut());
+                    return;
+                }
+
+                if songs.is_empty() {
+                    Paragraph::new(Line::from(
+                        " 目录下未找到音频文件，按 r 重新扫描"
+                    )).style(Style::new().fg(Color::DarkGray))
+                    .render(inner, frame.buffer_mut());
+                    return;
+                }
+
+                // 显示歌曲列表标题
+                let header = pages::components::song_table::header(inner.width);
+                Paragraph::new(Line::from(Span::styled(
+                    header,
+                    Style::new().fg(crate::theme::text(ctx)).add_modifier(ratatui::style::Modifier::BOLD),
+                ))).render(Rect::new(inner.x, inner.y, inner.width, 1), frame.buffer_mut());
+
+                if inner.height < 3 { return; }
+
+                // 显示歌曲列表
+                let visible_height = (inner.height.saturating_sub(2)) as usize;
+                let sel = *local_selected;
+                let mut sc = *local_scroll;
+
+                if sel >= sc + visible_height {
+                    sc = sel.saturating_sub(visible_height.saturating_sub(1));
+                } else if sel < sc {
+                    sc = sel;
+                }
+                sc = sc.min(songs.len().saturating_sub(visible_height));
+                *local_scroll = sc;
+
+                let end = (sc + visible_height).min(songs.len());
+                for i in sc..end {
+                    let row = i - sc;
+                    let song = &songs[i];
+                    let text = pages::components::song_table::row(song, i, inner.width);
+                    let line_area = Rect::new(inner.x, inner.y + 1 + row as u16, inner.width, 1);
+                    let style = if i == sel {
+                        Style::new().bg(crate::theme::accent(ctx)).fg(crate::theme::selection_fg(ctx))
+                    } else {
+                        Style::new().fg(crate::theme::text(ctx))
+                    };
+                    Paragraph::new(Line::from(Span::styled(text, style))).render(line_area, frame.buffer_mut());
+                }
             }
         }
 
