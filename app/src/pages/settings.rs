@@ -171,7 +171,7 @@ impl SettingsPage {
                         .to_string();
                     });
                 }
-                (KeyModifiers::NONE, KeyCode::Tab) => {
+                (KeyModifiers::NONE, KeyCode::Char('s')) => {
                     self.focus = if self.focus == "js" { "local" } else { "js" }.to_string();
                 }
                 _ => {}
@@ -416,7 +416,7 @@ impl SettingsPage {
         let local_block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::new().fg(if self.focus == "local" { accent } else { crate::theme::border(ctx) }))
-            .title(" 本地音乐目录 · Tab 切换 / a 添加 / d 删除 / r 扫描 ");
+            .title(" 本地音乐目录 · s 切换 / a 添加 / d 删除 / r 扫描 ");
         let local_inner = local_block.inner(chunks[2]);
         local_block.render(chunks[2], buf);
 
