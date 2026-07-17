@@ -114,22 +114,34 @@ impl CoverService {
     }
 
     async fn download_and_decode(&self, url: &str) -> Result<RgbaImage, String> {
-        let mut request = self
-            .client
-            .get(url)
-            .header(ACCEPT, "image/avif,image/webp,image/apng,image/*,*/*;q=0.8");
-        if let Some(referer) = cover_referer(url) {
-            request = request.header(REFERER, referer);
-        }
-        let bytes = request
-            .send()
+        let bytes: Vec<u8> = if url.starts_with('/') || url.starts_with("file://") {
+            let path = url.strip_prefix("file://").unwrap_or(url);
+            tokio::task::spawn_blocking({
+                let path = path.to_string();
+                move || std::fs::read(&path).map_err(|e| format!("读取本地封面失败: {}", e))
+            })
             .await
-            .map_err(|error| error.to_string())?
-            .error_for_status()
-            .map_err(|error| error.to_string())?
-            .bytes()
-            .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e)?
+        } else {
+            let mut request = self
+                .client
+                .get(url)
+                .header(ACCEPT, "image/avif,image/webp,image/apng,image/*,*/*;q=0.8");
+            if let Some(referer) = cover_referer(url) {
+                request = request.header(REFERER, referer);
+            }
+            request
+                .send()
+                .await
+                .map_err(|error| error.to_string())?
+                .error_for_status()
+                .map_err(|error| error.to_string())?
+                .bytes()
+                .await
+                .map_err(|error| error.to_string())?
+                .to_vec()
+        };
         tokio::task::spawn_blocking(move || {
             image::load_from_memory(&bytes)
                 .map(|image| image.to_rgba8())
