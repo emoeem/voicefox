@@ -188,12 +188,21 @@ impl SourceManager {
         }
     }
 
-    /// 对内置搜索结果使用已导入的 JS 音源获取播放地址。
+    /// 获取歌曲播放地址。
+    /// 本地歌曲直接走本地音源，在线歌曲使用 JS 音源。
     pub async fn get_song_url(
         &self,
         song: &SongInfo,
         quality: Quality,
     ) -> Result<SongUrl, FetchError> {
+        // 本地歌曲走本地音源
+        if song.source == SourceId::Local {
+            if let Some(local_src) = self.sources.get(&SourceId::Local) {
+                return local_src.get_song_url(song, quality).await;
+            }
+            return Err(FetchError::Other("本地音源不可用".to_string()));
+        }
+        // 在线歌曲使用 JS 音源
         let js_source = self
             .js_source
             .read()
