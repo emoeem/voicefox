@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
 
 env:
   CARGO_TERM_COLOR: always
@@ -31,26 +31,20 @@ jobs:
           name: voicefox-linux-x86_64
           path: target/release/voicefox
 
-  # ── Windows 交叉编译 ──
+  # ── Windows 构建（使用 Windows 原生 runner） ──
   build-windows:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust Windows target
-        run: rustup target add x86_64-pc-windows-gnu
-
-      - name: Install MinGW
-        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64
-
       - name: Build
-        run: cargo build --release --target x86_64-pc-windows-gnu
+        run: cargo build --release --verbose
 
       - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
           name: voicefox-windows-x86_64.exe
-          path: target/x86_64-pc-windows-gnu/release/voicefox.exe
+          path: target/release/voicefox.exe
 
   # ── macOS 构建 ──
   build-macos:
@@ -59,6 +53,8 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install dependencies
+        env:
+          HOMEBREW_NO_REQUIRE_TAP_TRUST: 1
         run: brew install mpv
 
       - name: Build
