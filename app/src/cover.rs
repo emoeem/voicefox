@@ -1,5 +1,5 @@
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::RwLock;
 use std::time::Duration;
 
 use ratatui::buffer::Buffer;
@@ -65,11 +65,6 @@ impl CoverService {
 
     pub fn state(&self) -> CoverState {
         self.state.read().unwrap().clone()
-    }
-
-    /// 获取当前封面路径
-    pub fn image_path(&self) -> Option<String> {
-        self.image_path.read().unwrap().clone()
     }
 
     pub async fn load(&self, url: Option<String>) -> Result<(), String> {

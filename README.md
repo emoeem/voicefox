@@ -386,6 +386,14 @@ voicefox/
 - 🖱️ 鼠标支持（点击切换标签页、拖拽进度条）
 - ⚙️ 完整的设置页面
 
+## ☕ 赞助
+
+如果 voicefox 对你的工作和生活有帮助，欢迎请我喝杯咖啡 ❤️
+
+| 支付宝 | 微信 |
+|--------|------|
+| <img src=".github/alipay.jpg" width="200" alt="支付宝收款码"> | <img src=".github/wechat.png" width="200" alt="微信收款码"> |
+
 ## 许可证
 
 MIT
