@@ -21,8 +21,9 @@ use crossterm::event::{
     MouseButton, MouseEvent, MouseEventKind,
 };
 use lx_core::events::{AppAction, Notification};
+use lx_core::model::leaderboard::LeaderboardInfo;
 use lx_core::model::song::SongInfo;
-use lx_core::model::source::Quality;
+use lx_core::model::source::{Quality, SourceId};
 use lx_core::traits::player::PlayerEvent;
 use lx_core::traits::source::SongUrl;
 use ratatui::DefaultTerminal;
@@ -34,10 +35,18 @@ use context::AppContext;
 use pages::components;
 use pages::sidebar::NavTab;
 
-struct LeaderboardResponse {
-    request_id: u64,
-    board_index: usize,
-    result: Result<Vec<lx_core::model::song::SongInfo>, String>,
+enum LeaderboardResponse {
+    Boards {
+        request_id: u64,
+        source: SourceId,
+        result: Result<Vec<LeaderboardInfo>, String>,
+    },
+    Songs {
+        request_id: u64,
+        source: SourceId,
+        board_id: String,
+        result: Result<Vec<SongInfo>, String>,
+    },
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -180,7 +189,8 @@ fn run_app(
     )));
     let settings_page = Arc::new(std::sync::Mutex::new(pages::settings::SettingsPage::new()));
     let mut main_page = pages::main_page::MainPage::new();
-    let mut leaderboard = pages::leaderboard::LeaderboardPage::new();
+    let mut leaderboard =
+        pages::leaderboard::LeaderboardPage::new(ctx.source_manager.leaderboard_sources());
     let mut favorites_page = pages::favorites::FavoritesPage::new();
     let mut history_selected: usize = 0;
     let mut history_scroll: usize = 0;
@@ -288,22 +298,69 @@ fn run_app(
         }
         // 排行榜异步结果
         while let Ok(response) = leaderboard_rx.try_recv() {
-            if response.request_id != leaderboard_request_id
-                || leaderboard.selected_board != Some(response.board_index)
-            {
-                continue;
-            }
-            match response.result {
-                Ok(songs) => leaderboard.update_songs(songs),
-                Err(error) => {
-                    leaderboard.update_error(error.clone());
-                    ctx.notifications
-                        .write()
-                        .unwrap()
-                        .push_back(Notification::error(format!("加载榜单失败: {}", error)));
+            match response {
+                LeaderboardResponse::Boards {
+                    request_id,
+                    source,
+                    result,
+                } if request_id == leaderboard_request_id
+                    && leaderboard.current_source() == Some(source) =>
+                {
+                    match result {
+                        Ok(boards) => leaderboard.update_boards(source, boards),
+                        Err(error) => {
+                            let request =
+                                pages::leaderboard::LeaderboardLoadRequest::Boards { source };
+                            leaderboard.update_error(&request, error.clone());
+                            ctx.notifications
+                                .write()
+                                .unwrap()
+                                .push_back(Notification::error(format!(
+                                    "加载榜单目录失败: {error}"
+                                )));
+                        }
+                    }
+                    needs_render = true;
                 }
+                LeaderboardResponse::Songs {
+                    request_id,
+                    source,
+                    board_id,
+                    result,
+                } if request_id == leaderboard_request_id
+                    && leaderboard.current_source() == Some(source)
+                    && leaderboard.current_board().map(|board| board.id.as_str())
+                        == Some(board_id.as_str()) =>
+                {
+                    match result {
+                        Ok(songs) => leaderboard.update_songs(source, &board_id, songs),
+                        Err(error) => {
+                            let request = pages::leaderboard::LeaderboardLoadRequest::Songs {
+                                source,
+                                board_id,
+                            };
+                            leaderboard.update_error(&request, error.clone());
+                            ctx.notifications
+                                .write()
+                                .unwrap()
+                                .push_back(Notification::error(format!(
+                                    "加载榜单歌曲失败: {error}"
+                                )));
+                        }
+                    }
+                    needs_render = true;
+                }
+                _ => {}
             }
-            needs_render = true;
+        }
+        if active_tab == NavTab::Leaderboard {
+            maybe_spawn_leaderboard_load(
+                &mut leaderboard,
+                &mut leaderboard_request_id,
+                Arc::clone(&ctx.source_manager),
+                leaderboard_tx.clone(),
+                &rt,
+            );
         }
 
         // === 1. 周期维护 ===
@@ -492,7 +549,9 @@ fn run_app(
                     continue;
                 }
                 (KeyModifiers::NONE, KeyCode::Right)
-                    if !text_input_active && active_tab != NavTab::Search =>
+                    if !text_input_active
+                        && active_tab != NavTab::Search
+                        && active_tab != NavTab::Leaderboard =>
                 {
                     let pos = *ctx.position.borrow();
                     ctx.player.seek(pos + Duration::from_secs(5));
@@ -500,7 +559,9 @@ fn run_app(
                     continue;
                 }
                 (KeyModifiers::NONE, KeyCode::Left)
-                    if !text_input_active && active_tab != NavTab::Search =>
+                    if !text_input_active
+                        && active_tab != NavTab::Search
+                        && active_tab != NavTab::Leaderboard =>
                 {
                     let pos = *ctx.position.borrow();
                     if pos > Duration::from_secs(5) {
@@ -511,13 +572,17 @@ fn run_app(
                     needs_render = true;
                     continue;
                 }
-                (KeyModifiers::NONE, KeyCode::Char(']')) if !text_input_active => {
+                (KeyModifiers::NONE, KeyCode::Char(']'))
+                    if !text_input_active && active_tab != NavTab::Leaderboard =>
+                {
                     let pos = *ctx.position.borrow();
                     ctx.player.seek(pos + Duration::from_secs(5));
                     needs_render = true;
                     continue;
                 }
-                (KeyModifiers::NONE, KeyCode::Char('[')) if !text_input_active => {
+                (KeyModifiers::NONE, KeyCode::Char('['))
+                    if !text_input_active && active_tab != NavTab::Leaderboard =>
+                {
                     let pos = *ctx.position.borrow();
                     if pos > Duration::from_secs(5) {
                         ctx.player.seek(pos - Duration::from_secs(5));
@@ -642,42 +707,15 @@ fn run_app(
                 }
                 NavTab::Leaderboard => {
                     let action = leaderboard.handle_input(&key, &ctx);
-                    if let AppAction::PlaySong { songs: _, index: _ } = action.clone() {
-                        execute_action(
-                            action,
-                            &ctx,
-                            &rt,
-                            &action_tx,
-                            &search_page,
-                            &settings_page,
-                            &search_seq,
-                        );
-                    } else if action_is_none(&action) {
-                        // 检查是否需要异步加载榜单歌曲
-                        if !leaderboard.loading
-                            && !leaderboard.loaded
-                            && let Some(board_index) = leaderboard.selected_board
-                        {
-                            let (board_id, board_source) = leaderboard
-                                .boards
-                                .get(board_index)
-                                .map(|board| (board.id.clone(), board.source))
-                                .unwrap_or_else(|| {
-                                    (String::new(), lx_core::model::source::SourceId::Kg)
-                                });
-                            leaderboard.begin_loading();
-                            leaderboard_request_id = leaderboard_request_id.wrapping_add(1);
-                            spawn_leaderboard_search(
-                                leaderboard_request_id,
-                                board_index,
-                                board_id,
-                                board_source,
-                                Arc::clone(&ctx.source_manager),
-                                leaderboard_tx.clone(),
-                                &rt,
-                            );
-                        }
-                    }
+                    execute_action(
+                        action,
+                        &ctx,
+                        &rt,
+                        &action_tx,
+                        &search_page,
+                        &settings_page,
+                        &search_seq,
+                    );
                 }
                 NavTab::Favorites => {
                     let action = favorites_page.handle_input(&key, &ctx);
@@ -881,32 +919,18 @@ fn run_app(
                     &settings_page,
                     &search_seq,
                 );
-
-                if active_tab == NavTab::Leaderboard
-                    && !leaderboard.loading
-                    && leaderboard.selected_board.is_some()
-                    && !leaderboard.loaded
-                    && let Some(board_index) = leaderboard.selected_board
-                {
-                    let (board_id, board_source) = leaderboard
-                        .boards
-                        .get(board_index)
-                        .map(|board| (board.id.clone(), board.source))
-                        .unwrap_or_else(|| (String::new(), lx_core::model::source::SourceId::Kg));
-                    leaderboard.begin_loading();
-                    leaderboard_request_id = leaderboard_request_id.wrapping_add(1);
-                    spawn_leaderboard_search(
-                        leaderboard_request_id,
-                        board_index,
-                        board_id,
-                        board_source,
-                        Arc::clone(&ctx.source_manager),
-                        leaderboard_tx.clone(),
-                        &rt,
-                    );
-                }
             }
             needs_render = true;
+        }
+
+        if active_tab == NavTab::Leaderboard {
+            maybe_spawn_leaderboard_load(
+                &mut leaderboard,
+                &mut leaderboard_request_id,
+                Arc::clone(&ctx.source_manager),
+                leaderboard_tx.clone(),
+                &rt,
+            );
         }
 
         // === 3. 当前事件未提前 continue 时立即渲染 ===
@@ -1108,11 +1132,6 @@ fn draw_app(
         ctx.cover_service.clear_display();
     }
     Ok(())
-}
-
-#[allow(dead_code)]
-fn action_is_none(action: &AppAction) -> bool {
-    matches!(action, AppAction::None)
 }
 
 /// 执行一个 AppAction（简化版，不再处理 Navigate/GoBack）
@@ -1466,7 +1485,7 @@ async fn resolve_playable_song(
         return Ok(None);
     }
     if !auto_toggle {
-        return Err(format!("JS 音源获取播放地址失败: {}", direct_error));
+        return Err(format!("获取播放地址失败: {}", direct_error));
     }
 
     let candidates = source_manager.find_music(&song).await;
@@ -1492,7 +1511,7 @@ async fn resolve_playable_song(
     }
 
     Err(format!(
-        "JS 音源获取播放地址失败，换源后仍不可用: {}",
+        "获取播放地址失败，换源后仍不可用: {}",
         direct_error
     ))
 }
@@ -1607,31 +1626,65 @@ fn spawn_search(
     });
 }
 
-/// 异步加载排行榜歌曲
-fn spawn_leaderboard_search(
+fn maybe_spawn_leaderboard_load(
+    leaderboard: &mut pages::leaderboard::LeaderboardPage,
+    request_id: &mut u64,
+    source_manager: Arc<lx_source::manager::SourceManager>,
+    leaderboard_tx: mpsc::UnboundedSender<LeaderboardResponse>,
+    rt: &tokio::runtime::Runtime,
+) {
+    let Some(request) = leaderboard.next_load_request() else {
+        return;
+    };
+    leaderboard.begin_loading(&request);
+    *request_id = request_id.wrapping_add(1);
+    spawn_leaderboard_request(*request_id, request, source_manager, leaderboard_tx, rt);
+}
+
+/// 异步加载排行榜目录或歌曲。
+fn spawn_leaderboard_request(
     request_id: u64,
-    board_index: usize,
-    board_id: String,
-    source: lx_core::model::source::SourceId,
+    request: pages::leaderboard::LeaderboardLoadRequest,
     source_manager: Arc<lx_source::manager::SourceManager>,
     leaderboard_tx: mpsc::UnboundedSender<LeaderboardResponse>,
     rt: &tokio::runtime::Runtime,
 ) {
     rt.spawn(async move {
-        let result = tokio::time::timeout(
-            Duration::from_secs(12),
-            source_manager.leaderboard(source, &board_id, 1, 100),
-        )
-        .await;
-        let result = match result {
-            Ok(Ok(search_result)) => Ok(search_result.items),
-            Ok(Err(error)) => Err(error.to_string()),
-            Err(_) => Err("请求超时，请稍后重试".to_string()),
+        let response = match request {
+            pages::leaderboard::LeaderboardLoadRequest::Boards { source } => {
+                let result = tokio::time::timeout(
+                    Duration::from_secs(12),
+                    source_manager.leaderboard_boards(source),
+                )
+                .await;
+                LeaderboardResponse::Boards {
+                    request_id,
+                    source,
+                    result: match result {
+                        Ok(Ok(boards)) => Ok(boards),
+                        Ok(Err(error)) => Err(error.to_string()),
+                        Err(_) => Err("请求超时，请稍后重试".to_string()),
+                    },
+                }
+            }
+            pages::leaderboard::LeaderboardLoadRequest::Songs { source, board_id } => {
+                let result = tokio::time::timeout(
+                    Duration::from_secs(12),
+                    source_manager.leaderboard(source, &board_id, 1, 300),
+                )
+                .await;
+                LeaderboardResponse::Songs {
+                    request_id,
+                    source,
+                    board_id,
+                    result: match result {
+                        Ok(Ok(search_result)) => Ok(search_result.items),
+                        Ok(Err(error)) => Err(error.to_string()),
+                        Err(_) => Err("请求超时，请稍后重试".to_string()),
+                    },
+                }
+            }
         };
-        let _ = leaderboard_tx.send(LeaderboardResponse {
-            request_id,
-            board_index,
-            result,
-        });
+        let _ = leaderboard_tx.send(response);
     });
 }

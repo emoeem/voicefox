@@ -3,8 +3,8 @@
 
 use lx_core::model::source::Quality;
 use lx_core::traits::source::MusicSource;
-use lx_source::kw::KwSource;
 use lx_source::kg::KgSource;
+use lx_source::kw::KwSource;
 use lx_source::mg::MgSource;
 use lx_source::tx::TxSource;
 use lx_source::wy::WySource;
@@ -15,8 +15,11 @@ async fn main() {
 
     // 1. 测试 mpv
     print!("[1/7] mpv 可用性 ... ");
-    match std::process::Command::new("mpv").arg("--version")
-        .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status()
+    match std::process::Command::new("mpv")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
     {
         Ok(s) if s.success() => println!("✅ mpv 已安装"),
         _ => println!("❌ mpv 未安装 - 播放功能无法使用"),
@@ -39,8 +42,11 @@ async fn main() {
 
     // 7. JS 源可用性
     print!("[7/7] Node.js 可用性 ... ");
-    match std::process::Command::new("node").arg("--version")
-        .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status()
+    match std::process::Command::new("node")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
     {
         Ok(s) if s.success() => println!("✅ Node.js 已安装"),
         _ => println!("⚠ Node.js 未安装 - JS 音源功能无法使用"),
@@ -57,10 +63,13 @@ async fn main() {
     } else {
         println!("✅ 扫描完成，共 {} 首", songs.len());
         for s in songs.iter().take(5) {
-            println!("   {} - {} ({}:{:02})",
-                s.name, s.singer,
+            println!(
+                "   {} - {} ({}:{:02})",
+                s.name,
+                s.singer,
                 s.duration.as_secs() / 60,
-                s.duration.as_secs() % 60);
+                s.duration.as_secs() % 60
+            );
         }
         if songs.len() > 5 {
             println!("   ... 还有 {} 首", songs.len() - 5);
@@ -78,9 +87,11 @@ async fn test_source(name: &str, source: &dyn MusicSource) {
                 println!("❌ 返回 0 条结果");
             } else {
                 let s = &result.items[0];
-                println!("✅ {} 条, 第一首: {} - {} (id={})",
-                    result.total, s.name, s.singer, s.id);
-                
+                println!(
+                    "✅ {} 条, 第一首: {} - {} (id={})",
+                    result.total, s.name, s.singer, s.id
+                );
+
                 // 测试获取 URL
                 print!("        获取播放URL ... ");
                 match source.get_song_url(s, Quality::High320).await {
@@ -90,7 +101,9 @@ async fn test_source(name: &str, source: &dyn MusicSource) {
                         } else {
                             let short = if url.url.len() > 60 {
                                 format!("{}...", &url.url[..57])
-                            } else { url.url.clone() };
+                            } else {
+                                url.url.clone()
+                            };
                             println!("✅ {}", short);
                         }
                     }
@@ -113,5 +126,36 @@ async fn test_source(name: &str, source: &dyn MusicSource) {
             }
         }
         Err(e) => println!("❌ {}", e),
+    }
+
+    print!("      {} 排行榜目录 ... ", name);
+    match source.get_leaderboard_boards().await {
+        Ok(boards) if !boards.is_empty() => {
+            let board = &boards[0];
+            println!(
+                "✅ {} 个, 第一个: {}{}",
+                boards.len(),
+                board.name,
+                board
+                    .update
+                    .as_deref()
+                    .map(|update| format!(" ({update})"))
+                    .unwrap_or_default()
+            );
+            print!("        获取榜单歌曲 ... ");
+            match source.get_leaderboard(&board.id, 1, 3).await {
+                Ok(result) if !result.items.is_empty() => {
+                    let song = &result.items[0];
+                    println!(
+                        "✅ {} 条, 第一首: {} - {}",
+                        result.total, song.name, song.singer
+                    );
+                }
+                Ok(_) => println!("❌ 返回 0 条结果"),
+                Err(error) => println!("❌ {error}"),
+            }
+        }
+        Ok(_) => println!("❌ 返回 0 个榜单"),
+        Err(error) => println!("❌ {error}"),
     }
 }

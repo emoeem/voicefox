@@ -3,7 +3,7 @@
 //! GET https://songsearch.kugou.com/song_search_v2
 //! 参数: keyword, page, pagesize, platform=WebFilter, filter=2
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::time::Duration;
 
 use lx_core::model::song::SongInfo;
@@ -20,9 +20,76 @@ fn add_quality_if_positive(qualities: &mut BTreeSet<Quality>, size: i64, quality
     }
 }
 
-/// 从 JSON Value 提取 i64（兼容数字类型）
+/// 从 JSON Value 提取 i64（兼容字符串和数字类型）
 fn json_i64(value: &Value) -> i64 {
-    value.as_i64().unwrap_or(0)
+    value
+        .as_i64()
+        .or_else(|| value.as_str().and_then(|value| value.parse().ok()))
+        .unwrap_or(0)
+}
+
+fn value_string(value: &Value) -> String {
+    value
+        .as_str()
+        .map(str::to_string)
+        .or_else(|| value.as_i64().map(|value| value.to_string()))
+        .or_else(|| value.as_u64().map(|value| value.to_string()))
+        .unwrap_or_default()
+}
+
+fn parse_song(item: &Value) -> Option<SongInfo> {
+    let song_id = value_string(&item["Audioid"]);
+    if song_id.is_empty() {
+        return None;
+    }
+    let name = item["SongName"].as_str().unwrap_or("").to_string();
+
+    let singer = match &item["Singers"] {
+        Value::Array(singers) => singers
+            .iter()
+            .filter_map(|singer| singer["name"].as_str())
+            .collect::<Vec<_>>()
+            .join("、"),
+        _ => String::new(),
+    };
+
+    let album_name = item["AlbumName"].as_str().unwrap_or("").to_string();
+    let album_id = value_string(&item["AlbumID"]);
+    let duration_secs = json_i64(&item["Duration"]).max(json_i64(&item["_interval"])) as u64;
+
+    let mut qualities = BTreeSet::new();
+    add_quality_if_positive(&mut qualities, json_i64(&item["FileSize"]), Quality::Low128);
+    add_quality_if_positive(
+        &mut qualities,
+        json_i64(&item["HQFileSize"]),
+        Quality::High320,
+    );
+    add_quality_if_positive(&mut qualities, json_i64(&item["SQFileSize"]), Quality::Flac);
+    add_quality_if_positive(
+        &mut qualities,
+        json_i64(&item["ResFileSize"]),
+        Quality::Flac24,
+    );
+
+    let mut extra = HashMap::new();
+    for (source_key, extra_key) in [
+        ("FileHash", "FileHash"),
+        ("HQFileHash", "HQFileHash"),
+        ("SQFileHash", "SQFileHash"),
+        ("ResFileHash", "ResFileHash"),
+    ] {
+        if let Some(hash) = item[source_key].as_str().filter(|hash| !hash.is_empty()) {
+            extra.insert(extra_key.to_string(), hash.to_string());
+        }
+    }
+
+    let mut song = SongInfo::new(song_id, SourceId::Kg, name, singer);
+    song.album_name = album_name;
+    song.album_id = album_id;
+    song.duration = Duration::from_secs(duration_secs);
+    song.qualities = qualities;
+    song.extra = extra;
+    Some(song)
 }
 
 pub async fn search(keyword: &str, page: u32, limit: u32) -> Result<SearchResult, SearchError> {
@@ -67,63 +134,21 @@ pub async fn search(keyword: &str, page: u32, limit: u32) -> Result<SearchResult
     };
 
     let mut items = Vec::with_capacity(lists.len());
-
+    let mut seen = HashSet::new();
     for item in lists {
-        let song_id = item["Audioid"].as_str().unwrap_or("").to_string();
-        let name = item["SongName"].as_str().unwrap_or("").to_string();
-
-        // 歌手名：用 、 连接
-        let singer = match &item["Singers"] {
-            Value::Array(singers) => {
-                let names: Vec<&str> = singers.iter().filter_map(|s| s["name"].as_str()).collect();
-                names.join("、")
+        for candidate in std::iter::once(item).chain(item["Grp"].as_array().into_iter().flatten()) {
+            let key = format!(
+                "{}:{}",
+                value_string(&candidate["Audioid"]),
+                candidate["FileHash"].as_str().unwrap_or_default()
+            );
+            if key == ":" || !seen.insert(key) {
+                continue;
             }
-            _ => String::new(),
-        };
-
-        let album_name = item["AlbumName"].as_str().unwrap_or("").to_string();
-        let album_id = item["AlbumID"].as_str().unwrap_or("").to_string();
-
-        // 时长（秒）→ Duration
-        let duration_secs = json_i64(&item["Duration"]) as u64;
-        let interval = json_i64(&item["_interval"]) as u64;
-
-        // 音质列表——通过文件大小判断
-        let mut qualities = BTreeSet::new();
-        let file_size = json_i64(&item["FileSize"]);
-        let hq_file_size = json_i64(&item["HQFileSize"]);
-        let sq_file_size = json_i64(&item["SQFileSize"]);
-        let res_file_size = json_i64(&item["ResFileSize"]);
-
-        add_quality_if_positive(&mut qualities, file_size, Quality::Low128);
-        add_quality_if_positive(&mut qualities, hq_file_size, Quality::High320);
-        add_quality_if_positive(&mut qualities, sq_file_size, Quality::Flac);
-        add_quality_if_positive(&mut qualities, res_file_size, Quality::Flac24);
-
-        // extra: 存储各音质 hash
-        use std::collections::HashMap;
-        let mut extra = HashMap::new();
-        if let Some(h) = item["FileHash"].as_str() {
-            extra.insert("FileHash".to_string(), h.to_string());
+            if let Some(song) = parse_song(candidate) {
+                items.push(song);
+            }
         }
-        if let Some(h) = item["HQFileHash"].as_str() {
-            extra.insert("HQFileHash".to_string(), h.to_string());
-        }
-        if let Some(h) = item["SQFileHash"].as_str() {
-            extra.insert("SQFileHash".to_string(), h.to_string());
-        }
-        if let Some(h) = item["ResFileHash"].as_str() {
-            extra.insert("ResFileHash".to_string(), h.to_string());
-        }
-
-        let mut song = SongInfo::new(song_id, SourceId::Kg, name, singer);
-        song.album_name = album_name;
-        song.album_id = album_id;
-        song.duration = Duration::from_secs(duration_secs.max(interval));
-        song.qualities = qualities;
-        song.extra = extra;
-
-        items.push(song);
     }
 
     // 判断是否还有更多结果

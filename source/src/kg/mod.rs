@@ -10,6 +10,7 @@ pub mod url;
 
 use async_trait::async_trait;
 
+use lx_core::model::leaderboard::LeaderboardInfo;
 use lx_core::model::lyric::LyricData;
 use lx_core::model::song::SongInfo;
 use lx_core::model::source::{Quality, SourceId};
@@ -68,5 +69,18 @@ impl MusicSource for KgSource {
             Quality::Flac,
             Quality::Flac24,
         ]
+    }
+
+    async fn get_leaderboard_boards(&self) -> Result<Vec<LeaderboardInfo>, SearchError> {
+        leaderboard::get_boards().await
+    }
+
+    async fn get_leaderboard(
+        &self,
+        id: &str,
+        page: u32,
+        limit: u32,
+    ) -> Result<SearchResult, SearchError> {
+        leaderboard::get_list(id, page, limit).await
     }
 }

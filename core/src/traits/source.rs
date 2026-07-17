@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use std::time::Duration;
 
+use crate::model::leaderboard::LeaderboardInfo;
 use crate::model::lyric::LyricData;
 use crate::model::playlist::{Playlist, Tag};
 use crate::model::song::SongInfo;
@@ -33,7 +34,12 @@ pub trait MusicSource: Send + Sync {
     fn name(&self) -> &str;
 
     /// 搜索歌曲
-    async fn search(&self, keyword: &str, page: u32, limit: u32) -> Result<SearchResult, SearchError>;
+    async fn search(
+        &self,
+        keyword: &str,
+        page: u32,
+        limit: u32,
+    ) -> Result<SearchResult, SearchError>;
     /// 获取播放 URL
     async fn get_song_url(&self, song: &SongInfo, quality: Quality) -> Result<SongUrl, FetchError>;
     /// 获取歌词
@@ -51,8 +57,23 @@ pub trait MusicSource: Send + Sync {
     async fn get_playlists(&self, _tag_id: &str, _page: u32) -> Result<Vec<Playlist>, FetchError> {
         Ok(vec![])
     }
-    async fn get_playlist_detail(&self, _id: &str, _page: u32) -> Result<Vec<SongInfo>, FetchError> {
+    async fn get_playlist_detail(
+        &self,
+        _id: &str,
+        _page: u32,
+    ) -> Result<Vec<SongInfo>, FetchError> {
         Ok(vec![])
+    }
+    async fn get_leaderboard_boards(&self) -> Result<Vec<LeaderboardInfo>, SearchError> {
+        Err(SearchError::Other("该音源不支持排行榜".to_string()))
+    }
+    async fn get_leaderboard(
+        &self,
+        _id: &str,
+        _page: u32,
+        _limit: u32,
+    ) -> Result<SearchResult, SearchError> {
+        Err(SearchError::Other("该音源不支持排行榜".to_string()))
     }
 }
 

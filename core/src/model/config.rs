@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 
 use super::source::{Quality, SourceId};
 
+pub const CURRENT_CONFIG_VERSION: u32 = 1;
+
 /// 播放器配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -195,9 +197,11 @@ pub struct LocalMusicConfig {
 }
 
 /// 应用完整配置
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
+    #[serde(default = "legacy_config_version")]
+    pub version: u32,
     pub player: PlayerConfig,
     pub source: SourceConfig,
     pub lyric: LyricConfig,
@@ -207,4 +211,23 @@ pub struct Config {
     pub ui: UiConfig,
     #[serde(default)]
     pub local_music: LocalMusicConfig,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            version: CURRENT_CONFIG_VERSION,
+            player: PlayerConfig::default(),
+            source: SourceConfig::default(),
+            lyric: LyricConfig::default(),
+            network: NetworkConfig::default(),
+            theme: ThemeConfig::default(),
+            ui: UiConfig::default(),
+            local_music: LocalMusicConfig::default(),
+        }
+    }
+}
+
+fn legacy_config_version() -> u32 {
+    0
 }

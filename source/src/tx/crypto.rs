@@ -60,9 +60,8 @@ mod tests {
 
     #[test]
     fn test_zzc_sign_non_empty() {
-        let data = r#"{"test": "hello"}"#;
+        let data = r#"{"test":"hello"}"#;
         let sign = zzc_sign(data);
-        assert!(!sign.is_empty());
-        assert!(sign.starts_with("zzc"));
+        assert_eq!(sign, "zzc8cbd808brhsjkhrcde4fogzsjczmgmobi8c73809f");
     }
 }

@@ -5,6 +5,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use lx_core::model::leaderboard::LeaderboardInfo;
 use lx_core::model::lyric::LyricData;
 use lx_core::model::song::SongInfo;
 use lx_core::model::source::{Quality, SourceId};
@@ -227,17 +228,41 @@ impl SourceManager {
         page: u32,
         limit: u32,
     ) -> Result<SearchResult, SearchError> {
-        match source {
-            SourceId::Kg => crate::kg::leaderboard::get_list(board_id, page, limit).await,
-            _ => Err(SearchError::Other(format!(
-                "暂不支持 {} 排行榜",
+        self.online_source(source)?
+            .get_leaderboard(board_id, page, limit)
+            .await
+    }
+
+    pub async fn leaderboard_boards(
+        &self,
+        source: SourceId,
+    ) -> Result<Vec<LeaderboardInfo>, SearchError> {
+        self.online_source(source)?.get_leaderboard_boards().await
+    }
+
+    pub fn leaderboard_sources(&self) -> Vec<SourceId> {
+        SourceId::all_online()
+            .iter()
+            .copied()
+            .filter(|source| self.enabled.contains(source) && self.sources.contains_key(source))
+            .collect()
+    }
+
+    fn online_source(&self, source: SourceId) -> Result<Arc<dyn MusicSource>, SearchError> {
+        if source == SourceId::Local || !self.enabled.contains(&source) {
+            return Err(SearchError::Other(format!(
+                "音源 {} 未启用",
                 source.as_str()
-            ))),
+            )));
         }
+        self.sources
+            .get(&source)
+            .map(Arc::clone)
+            .ok_or_else(|| SearchError::Other("音源不可用".to_string()))
     }
 
     /// 获取歌曲播放地址。
-    /// 本地歌曲直接走本地音源，在线歌曲使用 JS 音源。
+    /// 在线歌曲优先使用 JS 音源，失败或未导入时回退到对应内置音源。
     pub async fn get_song_url(
         &self,
         song: &SongInfo,
@@ -250,18 +275,40 @@ impl SourceManager {
             }
             return Err(FetchError::Other("本地音源不可用".to_string()));
         }
-        // 在线歌曲使用 JS 音源
+        // 在线歌曲优先使用 JS 音源。
         let js_source = self
             .js_source
             .read()
             .unwrap()
             .source
             .as_ref()
+            .map(Arc::clone);
+        let js_error = if let Some(js_source) = js_source {
+            match js_source.get_song_url(song, quality).await {
+                Ok(result) => return Ok(result),
+                Err(error) => Some(error),
+            }
+        } else {
+            None
+        };
+
+        let source = self
+            .sources
+            .get(&song.source)
             .map(Arc::clone)
-            .ok_or_else(|| {
-                FetchError::Other("尚未导入可用的 JS 音源，请先在设置中导入音源".to_string())
-            })?;
-        js_source.get_song_url(song, quality).await
+            .ok_or_else(|| FetchError::Other("歌曲来源不可用".to_string()))?;
+        match source.get_song_url(song, quality).await {
+            Ok(result) => Ok(result),
+            Err(builtin_error) => {
+                if let Some(js_error) = js_error {
+                    Err(FetchError::Other(format!(
+                        "JS 音源失败: {js_error}; 内置音源失败: {builtin_error}"
+                    )))
+                } else {
+                    Err(builtin_error)
+                }
+            }
+        }
     }
 
     /// 优先使用已导入的 lx-music JS 音源获取歌词，空结果时回退到内置搜索源。

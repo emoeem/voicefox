@@ -1,6 +1,6 @@
 //! mg 签名工具
 
-use std::time::{UNIX_EPOCH, SystemTime};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::super::crypto;
 
@@ -15,13 +15,9 @@ pub fn mg_sign(keyword: &str) -> (String, String) {
         .as_millis()
         .to_string();
 
-    // 第一次 MD5
-    let sign = format!("{}{}{}", keyword, signature_md5, "yyapp2d16148780a1dcc7408e06336b98cfd50");
-    let sign = crypto::md5(&sign);
-
-    // 第二次 MD5
-    let sign = format!("{}{}{}", sign, device_id, timestamp);
-    let sign = crypto::md5(&sign);
+    let sign = crypto::md5(&format!(
+        "{keyword}{signature_md5}yyapp2d16148780a1dcc7408e06336b98cfd50{device_id}{timestamp}"
+    ));
 
     (sign, timestamp)
 }

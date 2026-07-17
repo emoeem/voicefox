@@ -3,12 +3,61 @@
 use std::collections::{BTreeSet, HashMap};
 use std::time::Duration;
 
+use lx_core::model::leaderboard::LeaderboardInfo;
 use lx_core::model::song::SongInfo;
 use lx_core::model::source::{Quality, SourceId};
 use lx_core::traits::source::{SearchError, SearchResult};
 use serde_json::Value;
 
 use crate::http;
+
+pub async fn get_boards() -> Result<Vec<LeaderboardInfo>, SearchError> {
+    let json: Value = http::client()
+        .get("http://mobilecdnbj.kugou.com/api/v5/rank/list?version=9108&plat=0&showtype=2&parentid=0&apiver=6&area_code=1&withsong=1")
+        .send()
+        .await
+        .map_err(|error| SearchError::Network(error.to_string()))?
+        .json()
+        .await
+        .map_err(|error| SearchError::Parse(error.to_string()))?;
+    if json["errcode"].as_i64().unwrap_or(-1) != 0 {
+        return Err(SearchError::Api(
+            json["error"]
+                .as_str()
+                .unwrap_or("酷狗榜单目录请求失败")
+                .to_string(),
+        ));
+    }
+
+    let raw_boards = json["data"]["info"]
+        .as_array()
+        .ok_or_else(|| SearchError::Parse("酷狗榜单目录为空".to_string()))?;
+    let boards = raw_boards
+        .iter()
+        .filter(|board| board["isvol"].as_i64() == Some(1))
+        .filter_map(|board| {
+            let id = value_string(&board["rankid"]);
+            let name = board["rankname"].as_str()?.trim().to_string();
+            if id.is_empty() || name.is_empty() {
+                return None;
+            }
+            let mut info = LeaderboardInfo::new(id, name, SourceId::Kg);
+            let frequency = board["update_frequency"].as_str().unwrap_or_default();
+            let date = board["rank_id_publish_date"].as_str().unwrap_or_default();
+            info.update = match (frequency.is_empty(), date.is_empty()) {
+                (false, false) => Some(format!("{frequency} · {date}")),
+                (false, true) => Some(frequency.to_string()),
+                (true, false) => Some(date.to_string()),
+                (true, true) => None,
+            };
+            Some(info)
+        })
+        .collect::<Vec<_>>();
+    if boards.is_empty() {
+        return Err(SearchError::Parse("酷狗未返回可用榜单".to_string()));
+    }
+    Ok(boards)
+}
 
 pub async fn get_list(rank_id: &str, page: u32, limit: u32) -> Result<SearchResult, SearchError> {
     let url = format!(
@@ -53,6 +102,10 @@ pub async fn get_list(rank_id: &str, page: u32, limit: u32) -> Result<SearchResu
         song.album_name = item["remark"].as_str().unwrap_or_default().to_string();
         song.album_id = value_string(&item["album_id"]);
         song.duration = Duration::from_secs(item["duration"].as_u64().unwrap_or_default());
+        song.cover_url = item["album_sizable_cover"]
+            .as_str()
+            .filter(|url| !url.is_empty())
+            .map(|url| url.replace("{size}", "500"));
 
         let mut qualities = BTreeSet::new();
         let mut extra = HashMap::new();

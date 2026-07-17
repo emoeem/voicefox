@@ -1,7 +1,8 @@
 use std::fs;
 use std::path::PathBuf;
 
-use lx_core::model::config::{Config, ThemeConfig};
+use lx_core::model::config::{CURRENT_CONFIG_VERSION, Config, ThemeConfig};
+use lx_core::model::source::SourceId;
 
 /// 加载配置：优先读用户配置文件，否则用默认值
 pub fn load(custom_path: &str) -> anyhow::Result<(Config, PathBuf)> {
@@ -10,7 +11,9 @@ pub fn load(custom_path: &str) -> anyhow::Result<(Config, PathBuf)> {
     match fs::read_to_string(&config_path) {
         Ok(content) => {
             let mut config: Config = toml::from_str(&content)?;
-            migrate_legacy_theme(&mut config);
+            if migrate_legacy_config(&mut config) {
+                save(&config, &config_path)?;
+            }
             Ok((config, config_path))
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -27,7 +30,19 @@ pub fn load(custom_path: &str) -> anyhow::Result<(Config, PathBuf)> {
     }
 }
 
-fn migrate_legacy_theme(config: &mut Config) {
+fn migrate_legacy_config(config: &mut Config) -> bool {
+    let mut changed = migrate_legacy_theme(config);
+    if config.version < CURRENT_CONFIG_VERSION {
+        if config.source.enabled == [SourceId::Kw] {
+            config.source.enabled = SourceId::all_online().to_vec();
+        }
+        config.version = CURRENT_CONFIG_VERSION;
+        changed = true;
+    }
+    changed
+}
+
+fn migrate_legacy_theme(config: &mut Config) -> bool {
     let theme = &config.theme;
     let uses_original_defaults = theme.accent.eq_ignore_ascii_case("cyan")
         && theme.text.eq_ignore_ascii_case("white")
@@ -36,6 +51,7 @@ fn migrate_legacy_theme(config: &mut Config) {
     if uses_original_defaults {
         config.theme = ThemeConfig::default();
     }
+    uses_original_defaults
 }
 
 /// 获取配置文件路径: ~/.config/voicefox/config.toml
@@ -71,21 +87,38 @@ pub fn save(config: &Config, path: &std::path::Path) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{load, migrate_legacy_theme};
-    use lx_core::model::config::Config;
+    use super::{load, migrate_legacy_config};
+    use lx_core::model::config::{CURRENT_CONFIG_VERSION, Config};
+    use lx_core::model::source::SourceId;
 
     #[test]
     fn migrates_the_original_default_theme_to_mocha() {
         let mut config = Config::default();
+        config.version = 0;
         config.theme.accent = "cyan".into();
         config.theme.text = "white".into();
         config.theme.muted = "dark_gray".into();
         config.theme.border = "cyan".into();
 
-        migrate_legacy_theme(&mut config);
+        migrate_legacy_config(&mut config);
 
         assert_eq!(config.theme.base, "#1e1e2e");
         assert_eq!(config.theme.accent, "#cba6f7");
+    }
+
+    #[test]
+    fn expands_the_original_kw_only_source_default_once() {
+        let mut config = Config::default();
+        config.version = 0;
+        config.source.enabled = vec![SourceId::Kw];
+
+        assert!(migrate_legacy_config(&mut config));
+        assert_eq!(config.version, CURRENT_CONFIG_VERSION);
+        assert_eq!(config.source.enabled, SourceId::all_online());
+
+        config.source.enabled = vec![SourceId::Kw];
+        assert!(!migrate_legacy_config(&mut config));
+        assert_eq!(config.source.enabled, vec![SourceId::Kw]);
     }
 
     #[test]
@@ -106,6 +139,8 @@ mod tests {
         assert_eq!(config.player.volume, 42);
         assert_eq!(config.player.engine, "mpv");
         assert_eq!(config.network.timeout, 15);
+        assert_eq!(config.version, CURRENT_CONFIG_VERSION);
+        assert_eq!(config.source.enabled, SourceId::all_online());
         let _ = std::fs::remove_file(path);
     }
 }
