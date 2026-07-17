@@ -37,8 +37,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Check compilation
+        run: cargo check --release 2>&1
+
       - name: Build
-        run: cargo build --release --verbose
+        run: cargo build --release 2>&1
 
       - name: Upload binary
         uses: actions/upload-artifact@v4
