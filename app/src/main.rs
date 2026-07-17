@@ -1069,6 +1069,8 @@ fn draw_app(
     // 在 Kitty 终端中显示封面（draw 之后，浮动在 TUI 上方）
     if active_tab == NavTab::Main {
         ctx.cover_service.display_kitty(ui_areas.cover);
+    } else {
+        ctx.cover_service.clear_display();
     }
     Ok(())
 }

@@ -21,6 +21,10 @@ pub struct CoverService {
     image_path: RwLock<Option<String>>,
     state: RwLock<CoverState>,
     request_id: AtomicU64,
+    /// 封面版本号，每次加载新封面时递增。display_kitty 只在新版本时传输图片。
+    display_gen: AtomicU64,
+    /// 已显示到终端的版本号
+    displayed_gen: AtomicU64,
 }
 
 impl CoverService {
@@ -35,6 +39,8 @@ impl CoverService {
             image_path: RwLock::new(None),
             state: RwLock::new(CoverState::Empty),
             request_id: AtomicU64::new(0),
+            display_gen: AtomicU64::new(0),
+            displayed_gen: AtomicU64::new(0),
         }
     }
 
@@ -106,6 +112,7 @@ impl CoverService {
             if let Some(ref path) = result_path {
                 *self.image_path.write().unwrap() = Some(path.clone());
                 *self.state.write().unwrap() = CoverState::Ready;
+                self.display_gen.fetch_add(1, Ordering::SeqCst);
             } else {
                 *self.state.write().unwrap() = CoverState::Unavailable(last_error.clone());
             }
@@ -190,7 +197,12 @@ impl CoverService {
     pub fn display_kitty(&self, area: Rect) {
         use std::io::Write;
 
-        if area.width == 0 || area.height == 0 {
+        let current_gen = self.display_gen.load(Ordering::SeqCst);
+        if current_gen == 0 || area.width == 0 || area.height == 0 {
+            return;
+        }
+        // 如果版本没变，说明同一张图已经显示过了，跳过
+        if current_gen == self.displayed_gen.load(Ordering::SeqCst) {
             return;
         }
 
@@ -216,6 +228,16 @@ impl CoverService {
         };
 
         let _ = viuer::print_from_file(&path, &config);
+        let _ = std::io::stdout().flush();
+
+        self.displayed_gen.store(current_gen, Ordering::SeqCst);
+    }
+
+    /// 清除终端中的封面图片
+    pub fn clear_display(&self) {
+        use std::io::Write;
+        self.displayed_gen.store(0, Ordering::SeqCst);
+        let _ = std::io::stdout().write_all(b"\x1b_Ga=d\x1b\\");
         let _ = std::io::stdout().flush();
     }
 }
