@@ -370,7 +370,7 @@ fn run_app(
             let key = *key;
             // 1a. 侧边栏全局快捷键 (/, 1-5) — 输入模式下跳过
             let settings_input_mode =
-                active_tab == NavTab::Settings && settings_page.lock().unwrap().input_mode;
+                active_tab == NavTab::Settings && settings_page.lock().unwrap().any_input_active();
             let search_input_mode =
                 active_tab == NavTab::Search && search_page.lock().unwrap().input_mode;
             let favorites_input_mode =

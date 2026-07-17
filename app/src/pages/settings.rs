@@ -50,6 +50,11 @@ pub struct SettingsPage {
 }
 
 impl SettingsPage {
+    /// 检查是否有任何输入模式激活（JS 源输入或本地路径输入）
+    pub fn any_input_active(&self) -> bool {
+        self.input_mode || self.local_path_mode
+    }
+
     pub fn new() -> Self {
         Self {
             input_url: String::new(),
@@ -336,7 +341,7 @@ impl SettingsPage {
 
         let source_block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::new().fg(crate::theme::border(ctx)))
+            .border_style(Style::new().fg(if self.focus == "js" { accent } else { crate::theme::border(ctx) }))
             .title(" lx-music JS 音源 · a 添加 / d 删除 ");
         let source_inner = source_block.inner(chunks[1]);
         source_block.render(chunks[1], buf);
