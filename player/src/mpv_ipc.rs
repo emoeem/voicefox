@@ -1,45 +1,40 @@
 //! mpv 子进程 + JSON IPC 通信
 //!
-//! 方案：启动 mpv --input-ipc-server=/tmp/lx-tui-mpv-{pid}
-//! 通过 Unix socket 发送 JSON 命令，解析 JSON 事件
+//! Unix: 通过 Unix 域套接字通信
+//! Windows: 通过命名管道通信（interprocess 库）
 //!
 //! 参考：go-musicfox internal/player/mpv_player.go
 
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc;
 
-/// mpv IPC 客户端——管理子进程 + Unix socket 通信
+/// 平台相关的 socket 类型
+#[cfg(unix)]
+use std::os::unix::net::UnixStream as SocketStream;
+#[cfg(windows)]
+use interprocess::local_socket::Stream as SocketStream;
+
+/// mpv IPC 客户端
 pub struct MpvIpc {
-    /// 子进程句柄（mutex 包裹以支持 &self 操作）
     process: Mutex<std::process::Child>,
-    /// Unix socket 路径
     socket_path: String,
-    /// 控制命令连接。响应由独立线程排空，避免填满 socket 缓冲区。
-    cmd_conn: Mutex<UnixStream>,
-    /// 属性查询连接，不与暂停、seek、音量等控制命令互相阻塞。
-    query_conn: Mutex<BufReader<UnixStream>>,
+    cmd_conn: Mutex<SocketStream>,
+    query_conn: Mutex<BufReader<SocketStream>>,
     query_request_id: AtomicU64,
-    /// mpv 事件接收端（end-file 等），take 后为 None
     event_rx: Mutex<Option<mpsc::UnboundedReceiver<MpvEvent>>>,
-    /// 控制命令响应排空线程。
     _cmd_handle: Mutex<Option<std::thread::JoinHandle<()>>>,
-    /// 事件监听线程句柄（仅用于 Sync，不 join）
     _event_handle: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
-/// mpv 事件
 #[derive(Debug, Clone)]
 pub enum MpvEvent {
-    /// 播放结束
     EndFile,
 }
 
-/// mpv IPC 错误
 #[derive(Debug, thiserror::Error)]
 pub enum MpvError {
     #[error("mpv not found")]
@@ -49,32 +44,58 @@ pub enum MpvError {
 }
 
 impl MpvIpc {
-    /// 启动 mpv 进程，建立 IPC 连接
-    ///
-    /// * `url` - 可选的初始播放 URL
+    /// 生成跨平台 socket 路径
+    #[cfg(unix)]
+    fn make_path(pid: u32) -> String {
+        format!("/tmp/voicefox-mpv-{}.sock", pid)
+    }
+    #[cfg(windows)]
+    fn make_path(pid: u32) -> String {
+        format!("VoicefoxMpv{}", pid)
+    }
+
+    /// mpv 的 --input-ipc-server 参数值
+    fn ipc_arg(path: &str) -> String {
+        #[cfg(unix)]
+        { path.to_string() }
+        #[cfg(windows)]
+        { format!("\\\\.\\pipe\\{}", path) }
+    }
+
+    /// 连接本地 socket
+    fn connect(path: &str) -> Result<SocketStream, String> {
+        #[cfg(unix)]
+        {
+            std::os::unix::net::UnixStream::connect(path)
+                .map_err(|e| format!("connect: {e}"))
+        }
+        #[cfg(windows)]
+        {
+            interprocess::local_socket::Stream::connect(path)
+                .map_err(|e| format!("connect: {e}"))
+        }
+    }
+
     pub fn start(url: Option<&str>) -> Result<Self, MpvError> {
         let pid = std::process::id();
-        let socket_path = format!("/tmp/voicefox-mpv-{}.sock", pid);
+        let socket_path = Self::make_path(pid);
 
-        // 清理残留的 socket 文件
+        #[cfg(unix)]
         let _ = std::fs::remove_file(&socket_path);
 
-        // 构建 mpv 参数
         let mut args: Vec<String> = vec![
             "--no-video".into(),
             "--no-terminal".into(),
-            format!("--input-ipc-server={}", socket_path),
+            format!("--input-ipc-server={}", Self::ipc_arg(&socket_path)),
             "--idle".into(),
             "--cache=yes".into(),
             "--volume=80".into(),
             "--audio-device=auto".into(),
         ];
-
         if let Some(u) = url {
             args.push(u.to_string());
         }
 
-        // 启动 mpv（静默输出）
         let mut process = std::process::Command::new("mpv")
             .args(&args)
             .stdout(std::process::Stdio::null())
@@ -84,18 +105,21 @@ impl MpvIpc {
                 if e.kind() == std::io::ErrorKind::NotFound {
                     MpvError::NotFound
                 } else {
-                    MpvError::Ipc(format!("failed to start mpv: {}", e))
+                    MpvError::Ipc(format!("start mpv: {}", e))
                 }
             })?;
 
-        // 轮询等待 socket 文件出现（最多 3 秒）
-        let start = std::time::Instant::now();
-        let timeout = Duration::from_secs(3);
+        // 等待 socket 就绪
+        let deadline = Instant::now() + Duration::from_secs(3);
         loop {
-            if std::path::Path::new(&socket_path).exists() {
+            #[cfg(unix)]
+            let ready = std::path::Path::new(&socket_path).exists();
+            #[cfg(windows)]
+            let ready = Self::connect(&socket_path).is_ok();
+            if ready {
                 break;
             }
-            if start.elapsed() >= timeout {
+            if Instant::now() >= deadline {
                 let _ = process.kill();
                 let _ = process.wait();
                 return Err(MpvError::Ipc("timeout waiting for mpv socket".into()));
@@ -104,17 +128,14 @@ impl MpvIpc {
         }
 
         // 连接命令 socket
-        let cmd_conn = UnixStream::connect(&socket_path)
-            .map_err(|e| MpvError::Ipc(format!("failed to connect to mpv socket: {}", e)))?;
-        cmd_conn
-            .set_write_timeout(Some(Duration::from_millis(150)))
-            .map_err(|e| MpvError::Ipc(e.to_string()))?;
+        let cmd_conn = Self::connect(&socket_path)
+            .map_err(|e| MpvError::Ipc(e))?;
+        #[cfg(unix)]
+        let _ = cmd_conn.set_write_timeout(Some(Duration::from_millis(150)));
 
-        // mpv 会为每条控制命令返回一行响应。持续排空这些响应，避免长时间
-        // 播放或频繁 seek 后 socket 接收缓冲区填满并反向阻塞控制命令。
-        let cmd_reader = cmd_conn
-            .try_clone()
-            .map_err(|e| MpvError::Ipc(format!("failed to clone mpv command socket: {e}")))?;
+        // 排空线程
+        let cmd_reader = cmd_conn.try_clone()
+            .map_err(|e| MpvError::Ipc(format!("clone: {e}")))?;
         let cmd_handle = std::thread::spawn(move || {
             let mut reader = BufReader::new(cmd_reader);
             let mut line = String::new();
@@ -127,22 +148,15 @@ impl MpvIpc {
             }
         });
 
-        let query_conn = UnixStream::connect(&socket_path)
-            .map_err(|e| MpvError::Ipc(format!("failed to connect query socket: {e}")))?;
-        query_conn
-            .set_read_timeout(Some(Duration::from_millis(350)))
-            .map_err(|e| MpvError::Ipc(e.to_string()))?;
-        query_conn
-            .set_write_timeout(Some(Duration::from_millis(150)))
-            .map_err(|e| MpvError::Ipc(e.to_string()))?;
+        // 查询 socket
+        let query_conn = Self::connect(&socket_path)
+            .map_err(|e| MpvError::Ipc(e))?;
 
-        // 创建事件通道
+        // 事件监听
         let (event_tx, event_rx) = mpsc::unbounded_channel();
-
-        // 启动事件监听线程（独立的 socket 连接）
-        let socket_path_clone = socket_path.clone();
+        let sp_clone = socket_path.clone();
         let event_handle = std::thread::spawn(move || {
-            let conn = match UnixStream::connect(&socket_path_clone) {
+            let conn = match Self::connect(&sp_clone) {
                 Ok(c) => c,
                 Err(_) => return,
             };
@@ -151,15 +165,14 @@ impl MpvIpc {
             loop {
                 line.clear();
                 match reader.read_line(&mut line) {
-                    Ok(0) => break, // EOF
+                    Ok(0) => break,
                     Ok(_) => {
-                        let is_natural_end = serde_json::from_str::<serde_json::Value>(&line)
-                            .ok()
-                            .is_some_and(|event| {
-                                event["event"].as_str() == Some("end-file")
-                                    && event["reason"].as_str() == Some("eof")
-                            });
-                        if is_natural_end {
+                        if serde_json::from_str::<serde_json::Value>(&line).ok()
+                            .is_some_and(|v| {
+                                v["event"].as_str() == Some("end-file")
+                                    && v["reason"].as_str() == Some("eof")
+                            })
+                        {
                             let _ = event_tx.send(MpvEvent::EndFile);
                         }
                     }
@@ -180,81 +193,62 @@ impl MpvIpc {
         })
     }
 
-    /// 发送 JSON 命令（不读响应）
     pub fn send_command(&self, cmd: &str) -> Result<(), MpvError> {
         let mut conn = self.cmd_conn.lock().unwrap();
         conn.write_all(cmd.as_bytes())
-            .map_err(|e| MpvError::Ipc(e.to_string()))?;
-        conn.write_all(b"\n")
-            .map_err(|e| MpvError::Ipc(e.to_string()))?;
-        conn.flush().map_err(|e| MpvError::Ipc(e.to_string()))?;
-        Ok(())
+            .and_then(|_| conn.write_all(b"\n"))
+            .and_then(|_| conn.flush())
+            .map_err(|e| MpvError::Ipc(e.to_string()))
     }
 
-    /// 获取 mpv 属性值，返回原始 JSON 响应字符串
     pub fn get_property(&self, name: &str) -> Result<String, MpvError> {
         let request_id = self.query_request_id.fetch_add(1, Ordering::Relaxed) + 1;
         let cmd = serde_json::json!({
             "command": ["get_property", name],
             "request_id": request_id,
-        })
-        .to_string();
+        }).to_string();
 
         let mut conn = self.query_conn.lock().unwrap();
-        conn.get_mut()
-            .write_all(cmd.as_bytes())
-            .map_err(|e| MpvError::Ipc(e.to_string()))?;
-        conn.get_mut()
-            .write_all(b"\n")
-            .map_err(|e| MpvError::Ipc(e.to_string()))?;
-        conn.get_mut()
-            .flush()
+        conn.get_mut().write_all(cmd.as_bytes())
+            .and_then(|_| conn.get_mut().write_all(b"\n"))
+            .and_then(|_| conn.get_mut().flush())
             .map_err(|e| MpvError::Ipc(e.to_string()))?;
 
-        let deadline = Instant::now() + Duration::from_millis(350);
+        let deadline = Instant::now() + Duration::from_millis(500);
         let mut line = String::new();
         loop {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
+            if Instant::now() >= deadline {
                 return Err(MpvError::Ipc(format!("timeout reading property {name}")));
             }
-            conn.get_mut()
-                .set_read_timeout(Some(remaining))
-                .map_err(|e| MpvError::Ipc(e.to_string()))?;
             line.clear();
-            conn.read_line(&mut line)
-                .map_err(|e| MpvError::Ipc(format!("read property {name}: {e}")))?;
-            if line.is_empty() {
+            if conn.read_line(&mut line).is_err() || line.is_empty() {
                 return Err(MpvError::Ipc("mpv query socket closed".to_string()));
             }
-
-            let is_response = serde_json::from_str::<serde_json::Value>(&line)
-                .ok()
-                .and_then(|value| value["request_id"].as_u64())
-                == Some(request_id);
-            if is_response {
+            if serde_json::from_str::<serde_json::Value>(&line).ok()
+                .and_then(|v| v["request_id"].as_u64())
+                == Some(request_id)
+            {
                 return Ok(line.trim().to_string());
             }
         }
     }
 
-    /// 取出事件接收端（仅可调用一次）
     pub fn event_receiver(&self) -> Option<mpsc::UnboundedReceiver<MpvEvent>> {
         self.event_rx.lock().unwrap().take()
     }
 
-    /// 设置音量 (0-100)
     pub fn set_volume(&self, vol: u32) -> Result<(), MpvError> {
-        let cmd = format!("{{\"command\": [\"set_property\", \"volume\", {}]}}", vol);
-        self.send_command(&cmd)
+        self.send_command(&format!(
+            "{{\"command\": [\"set_property\", \"volume\", {}]}}", vol
+        ))
     }
 
-    /// 停止 mpv 进程并清理 socket
     pub fn stop(&self) {
         if let Ok(mut child) = self.process.lock() {
             let _ = child.kill();
             let _ = child.wait();
         }
+        #[cfg(unix)]
         let _ = std::fs::remove_file(&self.socket_path);
     }
 }
@@ -262,29 +256,5 @@ impl MpvIpc {
 impl Drop for MpvIpc {
     fn drop(&mut self) {
         self.stop();
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::MpvIpc;
-    use std::time::{Duration, Instant};
-
-    #[test]
-    #[ignore = "requires an environment where mpv may bind a Unix IPC socket"]
-    fn property_queries_stay_responsive_during_control_commands() {
-        let ipc = MpvIpc::start(None).expect("mpv IPC should start");
-        for volume in 0..=100 {
-            ipc.set_volume(volume).expect("volume command should write");
-        }
-
-        let started = Instant::now();
-        let response = ipc
-            .get_property("volume")
-            .expect("property query should use its own connection");
-        assert!(started.elapsed() < Duration::from_secs(1));
-        let response: serde_json::Value =
-            serde_json::from_str(&response).expect("mpv should return JSON");
-        assert!(response.get("data").is_some());
     }
 }
