@@ -17,6 +17,10 @@ use tokio::sync::mpsc;
 use std::os::unix::net::UnixStream as SocketStream;
 #[cfg(windows)]
 use interprocess::local_socket::Stream as SocketStream;
+#[cfg(windows)]
+use interprocess::local_socket::traits::Stream as _;
+#[cfg(windows)]
+use interprocess::TryClone as _;
 
 /// mpv IPC 客户端
 pub struct MpvIpc {
