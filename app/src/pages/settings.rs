@@ -226,6 +226,10 @@ impl SettingsPage {
     fn handle_local_keys(&mut self, key: KeyEvent, ctx: &AppContext) -> AppAction {
         let paths = ctx.config.read().unwrap().local_music.paths.clone();
         match (key.modifiers, key.code) {
+            (KeyModifiers::NONE, KeyCode::Char('s')) => {
+                self.focus = "js".to_string();
+                AppAction::None
+            }
             (KeyModifiers::NONE, KeyCode::Char('a')) => {
                 self.local_path_mode = true;
                 self.local_path_input.clear();
