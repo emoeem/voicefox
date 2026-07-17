@@ -402,6 +402,6 @@ MIT
 
 - [lx-music-desktop](https://github.com/lyswhut/lx-music-desktop) — 项目灵感来源
 - [lx-music-source](https://github.com/pdone/lx-music-source) — 社区音源脚本
-- [rmpc](https://github.com/radbeep/rmpc) — TUI 架构参考
+- [rmpc](https://github.com/mierak/rmpc) — TUI 架构参考
 - [go-musicfox](https://github.com/go-musicfox/go-musicfox) — 播放器设计参考
-- [azusa-player-mobile](https://github.com/lovegaoshi/azusa-player-mobile) — 音源接口参考
+- [azusa-player-mobile](https://github.com/lovegaoshi/azusa-player-mobile) — 哔哩哔哩音源模块参考
