@@ -947,11 +947,20 @@ fn draw_app(
         components::header::render(main_chunks[0], frame.buffer_mut(), ctx);
         pages::sidebar::render(main_chunks[1], frame.buffer_mut(), active_tab, ctx);
         let content_area = main_chunks[2];
+        // 封面区域：匹配 main_page 中 render_cover_placeholder 的位置
+        let cover_area = if active_tab == NavTab::Main && content_area.width >= 72 {
+            let col_w = content_area.width * 36 / 100;
+            let left_w = col_w;
+            let left_h = content_area.height * 62 / 100;
+            Rect::new(content_area.x, content_area.y, left_w, left_h)
+        } else {
+            Rect::default()
+        };
         *ui_areas = UiAreas {
             tabs: main_chunks[1],
             content: content_area,
             progress: main_chunks[3],
-            cover: Rect::new(1, 6, 20, 9), // 封面显示位置: 左上角
+            cover: cover_area,
         };
 
         match active_tab {
