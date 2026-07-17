@@ -46,6 +46,27 @@ async fn main() {
         _ => println!("⚠ Node.js 未安装 - JS 音源功能无法使用"),
     }
 
+    // 8. 本地音源扫描测试
+    print!("\n[8/8] 本地音源扫描测试 ... ");
+    let local_source = lx_source::local::LocalSource::new();
+    let paths = vec!["/home/emo/Downloads/go-musicfox".to_string()];
+    let errors = local_source.scan(&paths, 0);
+    let songs = local_source.all_songs();
+    if !errors.is_empty() {
+        println!("❌ 错误: {}", errors.join("; "));
+    } else {
+        println!("✅ 扫描完成，共 {} 首", songs.len());
+        for s in songs.iter().take(5) {
+            println!("   {} - {} ({}:{:02})",
+                s.name, s.singer,
+                s.duration.as_secs() / 60,
+                s.duration.as_secs() % 60);
+        }
+        if songs.len() > 5 {
+            println!("   ... 还有 {} 首", songs.len() - 5);
+        }
+    }
+
     println!("\n=== 验证完成 ===");
 }
 

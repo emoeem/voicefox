@@ -89,7 +89,7 @@ impl SettingsPage {
                     }
                     return AppAction::None;
                 }
-                (KeyModifiers::NONE, KeyCode::Char(c)) => {
+                (KeyModifiers::NONE | KeyModifiers::SHIFT, KeyCode::Char(c)) => {
                     self.input_url.push(c);
                 }
                 (KeyModifiers::NONE, KeyCode::Backspace) => {
@@ -220,7 +220,7 @@ impl SettingsPage {
                 }
                 AppAction::None
             }
-            (KeyModifiers::NONE, KeyCode::Char(c)) => {
+            (KeyModifiers::NONE | KeyModifiers::SHIFT, KeyCode::Char(c)) => {
                 self.local_path_input.push(c);
                 AppAction::None
             }
