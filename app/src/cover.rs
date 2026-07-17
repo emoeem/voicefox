@@ -1,26 +1,13 @@
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-use image::RgbaImage;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Color;
+use ratatui::widgets::Widget;
 use reqwest::header::{ACCEPT, REFERER};
 
-#[derive(Debug, Clone, Copy)]
-struct CoverCell {
-    foreground: Color,
-    background: Color,
-}
-
-#[derive(Debug)]
-struct RenderCache {
-    width: u16,
-    height: u16,
-    cells: Vec<CoverCell>,
-}
-
+/// 封面状态
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CoverState {
     Empty,
@@ -31,9 +18,8 @@ pub enum CoverState {
 
 pub struct CoverService {
     client: reqwest::Client,
-    image: RwLock<Option<Arc<RgbaImage>>>,
+    image_path: RwLock<Option<String>>,
     state: RwLock<CoverState>,
-    cache: Mutex<Option<RenderCache>>,
     request_id: AtomicU64,
 }
 
@@ -46,32 +32,44 @@ impl CoverService {
             .unwrap_or_default();
         Self {
             client,
-            image: RwLock::new(None),
+            image_path: RwLock::new(None),
             state: RwLock::new(CoverState::Empty),
-            cache: Mutex::new(None),
             request_id: AtomicU64::new(0),
         }
     }
 
     pub fn clear(&self) {
         self.request_id.fetch_add(1, Ordering::SeqCst);
-        *self.image.write().unwrap() = None;
+        *self.image_path.write().unwrap() = None;
         *self.state.write().unwrap() = CoverState::Empty;
-        *self.cache.lock().unwrap() = None;
+        // 清除终端中的图片
+        self.clear_kitty_image();
+    }
+
+    fn clear_kitty_image(&self) {
+        use std::io::Write;
+        // 删除所有 Kitty 图片
+        let _ = std::io::stdout().write_all(b"\x1b_Ga=d\x1b\\");
+        let _ = std::io::stdout().flush();
     }
 
     pub fn has_image(&self) -> bool {
-        self.image.read().unwrap().is_some()
+        self.image_path.read().unwrap().is_some()
     }
 
     pub fn state(&self) -> CoverState {
         self.state.read().unwrap().clone()
     }
 
+    /// 获取当前封面路径
+    pub fn image_path(&self) -> Option<String> {
+        self.image_path.read().unwrap().clone()
+    }
+
     pub async fn load(&self, url: Option<String>) -> Result<(), String> {
         let request_id = self.request_id.fetch_add(1, Ordering::SeqCst) + 1;
-        *self.image.write().unwrap() = None;
-        *self.cache.lock().unwrap() = None;
+        *self.image_path.write().unwrap() = None;
+        self.clear_kitty_image();
 
         let Some(url) = url
             .map(|url| normalize_url(&url))
@@ -84,19 +82,16 @@ impl CoverService {
         *self.state.write().unwrap() = CoverState::Loading;
 
         let mut last_error = "封面请求失败".to_string();
+        let mut result_path: Option<String> = None;
+
         for attempt in 0..3 {
             if self.request_id.load(Ordering::SeqCst) != request_id {
                 return Ok(());
             }
-
-            match self.download_and_decode(&url).await {
-                Ok(image) => {
-                    if self.request_id.load(Ordering::SeqCst) == request_id {
-                        *self.image.write().unwrap() = Some(Arc::new(image));
-                        *self.state.write().unwrap() = CoverState::Ready;
-                        *self.cache.lock().unwrap() = None;
-                    }
-                    return Ok(());
+            match self.download_and_cache(&url).await {
+                Ok(path) => {
+                    result_path = Some(path);
+                    break;
                 }
                 Err(error) => {
                     last_error = error;
@@ -108,77 +103,120 @@ impl CoverService {
         }
 
         if self.request_id.load(Ordering::SeqCst) == request_id {
-            *self.state.write().unwrap() = CoverState::Unavailable(last_error.clone());
+            if let Some(ref path) = result_path {
+                *self.image_path.write().unwrap() = Some(path.clone());
+                *self.state.write().unwrap() = CoverState::Ready;
+            } else {
+                *self.state.write().unwrap() = CoverState::Unavailable(last_error.clone());
+            }
         }
-        Err(last_error)
+
+        match result_path {
+            Some(_) => Ok(()),
+            None => Err(last_error),
+        }
     }
 
-    async fn download_and_decode(&self, url: &str) -> Result<RgbaImage, String> {
-        let bytes: Vec<u8> = if url.starts_with('/') || url.starts_with("file://") {
+    /// 下载封面到本地缓存，返回缓存路径
+    async fn download_and_cache(&self, url: &str) -> Result<String, String> {
+        let cache_dir = dirs::cache_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+            .join("voicefox")
+            .join("covers");
+
+        if !cache_dir.exists() {
+            let _ = std::fs::create_dir_all(&cache_dir);
+        }
+
+        // 本地文件直接返回路径
+        if url.starts_with('/') || url.starts_with("file://") {
             let path = url.strip_prefix("file://").unwrap_or(url);
-            tokio::task::spawn_blocking({
-                let path = path.to_string();
-                move || std::fs::read(&path).map_err(|e| format!("读取本地封面失败: {}", e))
-            })
-            .await
-            .map_err(|e| e.to_string())?
-            .map_err(|e| e)?
-        } else {
-            let mut request = self
-                .client
-                .get(url)
-                .header(ACCEPT, "image/avif,image/webp,image/apng,image/*,*/*;q=0.8");
-            if let Some(referer) = cover_referer(url) {
-                request = request.header(REFERER, referer);
+            if std::path::Path::new(path).exists() {
+                return Ok(path.to_string());
             }
-            request
-                .send()
-                .await
-                .map_err(|error| error.to_string())?
-                .error_for_status()
-                .map_err(|error| error.to_string())?
-                .bytes()
-                .await
-                .map_err(|error| error.to_string())?
-                .to_vec()
-        };
+            return Err("封面文件不存在".to_string());
+        }
+
+        // 远程文件：下载到缓存
+        let hash = simple_hash(url.as_bytes());
+        let cache_path = cache_dir.join(format!("{}.jpg", hash));
+
+        if cache_path.exists() {
+            return Ok(cache_path.to_string_lossy().to_string());
+        }
+
+        // HTTP 下载
+        let mut request = self
+            .client
+            .get(url)
+            .header(ACCEPT, "image/avif,image/webp,image/apng,image/*,*/*;q=0.8");
+        if let Some(referer) = cover_referer(url) {
+            request = request.header(REFERER, referer);
+        }
+        let bytes = request
+            .send()
+            .await
+            .map_err(|error| error.to_string())?
+            .error_for_status()
+            .map_err(|error| error.to_string())?
+            .bytes()
+            .await
+            .map_err(|error| error.to_string())?;
+
+        let cache_path_clone = cache_path.clone();
         tokio::task::spawn_blocking(move || {
-            image::load_from_memory(&bytes)
-                .map(|image| image.to_rgba8())
-                .map_err(|error| error.to_string())
+            std::fs::write(&cache_path_clone, &bytes).ok();
         })
         .await
-        .map_err(|error| error.to_string())?
+        .ok();
+
+        Ok(cache_path.to_string_lossy().to_string())
     }
 
+    /// 在指定的终端区域显示封面（使用 Kitty 协议）
     pub fn render(&self, area: Rect, buf: &mut Buffer) {
         if area.width == 0 || area.height == 0 {
             return;
         }
-        let Some(image) = self.image.read().unwrap().as_ref().map(Arc::clone) else {
+        // 在 TUI 中留出空白区域（Kitty 图片会浮动在上方）
+        let block = ratatui::widgets::Block::default()
+            .borders(ratatui::widgets::Borders::ALL)
+            .border_style(ratatui::style::Style::new().fg(ratatui::style::Color::DarkGray))
+            .title("封面");
+        block.render(area, buf);
+    }
+
+    /// 在终端中使用 Kitty 协议显示封面（必须在 terminal.draw() 之后调用）
+    pub fn display_kitty(&self, area: Rect) {
+        use std::io::Write;
+
+        if area.width == 0 || area.height == 0 {
             return;
+        }
+
+        let path = match self.image_path.read().unwrap().clone() {
+            Some(p) => p,
+            None => return,
         };
 
-        let mut cache = self.cache.lock().unwrap();
-        let needs_resize = cache
-            .as_ref()
-            .is_none_or(|cache| cache.width != area.width || cache.height != area.height);
-        if needs_resize {
-            *cache = Some(build_cache(&image, area.width, area.height));
-        }
-        let Some(cache) = cache.as_ref() else {
+        if !std::path::Path::new(&path).exists() {
             return;
+        }
+
+        // 先清除旧图片
+        let _ = std::io::stdout().write_all(b"\x1b_Ga=d\x1b\\");
+
+        // 用 viuer 在指定位置显示图片
+        let config = viuer::Config {
+            x: area.x as u16,
+            y: area.y as i16,
+            width: Some(area.width as u32),
+            height: Some(area.height as u32),
+            ..Default::default()
         };
 
-        for y in 0..area.height {
-            for x in 0..area.width {
-                let cell = cache.cells[y as usize * area.width as usize + x as usize];
-                buf[(area.x + x, area.y + y)]
-                    .set_symbol("▀")
-                    .set_fg(cell.foreground)
-                    .set_bg(cell.background);
-            }
-        }
+        let _ = viuer::print_from_file(&path, &config);
+        let _ = std::io::stdout().flush();
     }
 }
 
@@ -205,106 +243,10 @@ fn cover_referer(url: &str) -> Option<&'static str> {
     }
 }
 
-fn build_cache(image: &RgbaImage, width: u16, height: u16) -> RenderCache {
-    let target_width = u32::from(width);
-    let target_height = u32::from(height).saturating_mul(2);
-    let scale = (target_width as f64 / image.width().max(1) as f64)
-        .min(target_height as f64 / image.height().max(1) as f64);
-    let resized_width =
-        ((image.width() as f64 * scale).round() as u32).clamp(1, target_width.max(1));
-    let resized_height =
-        ((image.height() as f64 * scale).round() as u32).clamp(1, target_height.max(1));
-    let resized = image::imageops::resize(
-        image,
-        resized_width,
-        resized_height,
-        image::imageops::FilterType::Triangle,
-    );
-    let offset_x = target_width.saturating_sub(resized_width) / 2;
-    let offset_y = target_height.saturating_sub(resized_height) / 2;
-    let fallback = [18, 20, 25, 255];
-
-    let mut cells = Vec::with_capacity(width as usize * height as usize);
-    for cell_y in 0..u32::from(height) {
-        for cell_x in 0..target_width {
-            let top = pixel_at(
-                &resized,
-                cell_x,
-                cell_y.saturating_mul(2),
-                offset_x,
-                offset_y,
-                fallback,
-            );
-            let bottom = pixel_at(
-                &resized,
-                cell_x,
-                cell_y.saturating_mul(2).saturating_add(1),
-                offset_x,
-                offset_y,
-                fallback,
-            );
-            cells.push(CoverCell {
-                foreground: Color::Rgb(top[0], top[1], top[2]),
-                background: Color::Rgb(bottom[0], bottom[1], bottom[2]),
-            });
-        }
-    }
-    RenderCache {
-        width,
-        height,
-        cells,
-    }
-}
-
-fn pixel_at(
-    image: &RgbaImage,
-    target_x: u32,
-    target_y: u32,
-    offset_x: u32,
-    offset_y: u32,
-    fallback: [u8; 4],
-) -> [u8; 4] {
-    if target_x < offset_x || target_y < offset_y {
-        return fallback;
-    }
-    let x = target_x - offset_x;
-    let y = target_y - offset_y;
-    if x < image.width() && y < image.height() {
-        image.get_pixel(x, y).0
-    } else {
-        fallback
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{build_cache, cover_referer, normalize_url};
-    use image::{Rgba, RgbaImage};
-
-    #[test]
-    fn cover_cache_matches_terminal_cell_dimensions() {
-        let image = RgbaImage::from_pixel(16, 16, Rgba([20, 40, 60, 255]));
-
-        let cache = build_cache(&image, 12, 7);
-
-        assert_eq!(cache.width, 12);
-        assert_eq!(cache.height, 7);
-        assert_eq!(cache.cells.len(), 84);
-    }
-
-    #[test]
-    fn normalizes_protocol_relative_cover_urls() {
-        assert_eq!(
-            normalize_url("//example.com/cover.webp"),
-            "https://example.com/cover.webp"
-        );
-    }
-
-    #[test]
-    fn adds_platform_referer_for_known_cover_hosts() {
-        assert_eq!(
-            cover_referer("https://img1.kuwo.cn/star/albumcover.jpg"),
-            Some("https://www.kuwo.cn/")
-        );
-    }
+fn simple_hash(data: &[u8]) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    data.hash(&mut hasher);
+    format!("{:x}", hasher.finish())
 }

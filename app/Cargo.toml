@@ -32,3 +32,4 @@ dirs.workspace = true
 chrono.workspace = true
 dashmap.workspace = true
 lru.workspace = true
+viuer.workspace = true

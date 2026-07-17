@@ -45,6 +45,7 @@ struct UiAreas {
     tabs: Rect,
     content: Rect,
     progress: Rect,
+    cover: Rect,
 }
 
 #[derive(Debug, Default)]
@@ -950,6 +951,7 @@ fn draw_app(
             tabs: main_chunks[1],
             content: content_area,
             progress: main_chunks[3],
+            cover: Rect::new(1, 6, 20, 9), // 封面显示位置: 左上角
         };
 
         match active_tab {
@@ -1055,6 +1057,10 @@ fn draw_app(
         components::status_bar::render(main_chunks[4], frame.buffer_mut(), ctx);
         components::notification::render(main_chunks[4], frame.buffer_mut(), ctx);
     })?;
+    // 在 Kitty 终端中显示封面（draw 之后，浮动在 TUI 上方）
+    if active_tab == NavTab::Main {
+        ctx.cover_service.display_kitty(ui_areas.cover);
+    }
     Ok(())
 }
 

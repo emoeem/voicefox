@@ -68,5 +68,8 @@ regex = "1"
 lofty = "0.22"
 walkdir = "2"
 
+# Kitty protocol image display
+viuer = { version = "0.11", features = ["print-file"] }
+
 # Lyrics
 # lrc = "0.2"  # future: use lrc crate if compatible
