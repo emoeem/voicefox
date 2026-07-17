@@ -402,3 +402,4 @@ MIT
 
 - [lx-music-desktop](https://github.com/lyswhut/lx-music-desktop) — 项目灵感来源
 - [lx-music-source](https://github.com/pdone/lx-music-source) — 社区音源脚本
+- [rmpc](https://github.com/radbeep/rmpc) — TUI 架构参考
