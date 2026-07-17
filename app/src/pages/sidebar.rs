@@ -16,15 +16,17 @@ pub enum NavTab {
     Favorites,
     History,
     Settings,
+    LocalMusic,
 }
 
 impl NavTab {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Main,
         Self::Search,
         Self::Leaderboard,
         Self::Favorites,
         Self::History,
+        Self::LocalMusic,
         Self::Settings,
     ];
 
@@ -35,7 +37,8 @@ impl NavTab {
             Self::Leaderboard => "3 排行榜",
             Self::Favorites => "4 收藏",
             Self::History => "5 历史",
-            Self::Settings => "6 设置",
+            Self::LocalMusic => "6 本地",
+            Self::Settings => "7 设置",
         }
     }
 }
@@ -96,7 +99,8 @@ pub fn handle_input(key: &KeyEvent) -> Option<NavTab> {
         (KeyModifiers::NONE, KeyCode::Char('3')) => Some(NavTab::Leaderboard),
         (KeyModifiers::NONE, KeyCode::Char('4')) => Some(NavTab::Favorites),
         (KeyModifiers::NONE, KeyCode::Char('5')) => Some(NavTab::History),
-        (KeyModifiers::NONE, KeyCode::Char('6')) => Some(NavTab::Settings),
+        (KeyModifiers::NONE, KeyCode::Char('6')) => Some(NavTab::LocalMusic),
+        (KeyModifiers::NONE, KeyCode::Char('7')) => Some(NavTab::Settings),
         _ => None,
     }
 }
@@ -110,8 +114,8 @@ mod tests {
     fn tabs_remain_clickable_at_eighty_columns() {
         let chunks = tab_chunks(Rect::new(1, 1, 78, 1));
 
-        assert_eq!(chunks.len(), 6);
-        assert!(chunks.iter().all(|chunk| chunk.width >= 12));
+        assert_eq!(chunks.len(), 7);
+        assert!(chunks.iter().all(|chunk| chunk.width >= 10));
         assert_eq!(chunks.iter().map(|chunk| chunk.width).sum::<u16>(), 78);
     }
 }

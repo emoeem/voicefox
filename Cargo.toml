@@ -65,7 +65,7 @@ cbc = { version = "0.1", features = ["alloc"] }
 regex = "1"
 
 # Local music
-lofty = { version = "0.22", features = ["mp3", "flac", "m4a", "ogg"] }
+lofty = "0.22"
 walkdir = "2"
 
 # Lyrics

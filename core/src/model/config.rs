@@ -180,6 +180,27 @@ impl Default for UiConfig {
     }
 }
 
+/// 本地音乐配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LocalMusicConfig {
+    pub enabled: bool,
+    /// 音乐目录路径列表
+    pub paths: Vec<String>,
+    /// 扫描深度，0 为不限制
+    pub max_depth: u32,
+}
+
+impl Default for LocalMusicConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            paths: vec![],
+            max_depth: 0,
+        }
+    }
+}
+
 /// 应用完整配置
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
@@ -190,6 +211,8 @@ pub struct Config {
     pub theme: ThemeConfig,
     #[serde(default)]
     pub ui: UiConfig,
+    #[serde(default)]
+    pub local_music: LocalMusicConfig,
     /// 自定义快捷键
     pub keybindings: HashMap<String, String>,
 }

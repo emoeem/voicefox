@@ -212,6 +212,13 @@ fn run_app(
         &rt,
     );
 
+    // === 初始扫描本地音乐 ===
+    let local_music_paths = ctx.config.read().unwrap().local_music.paths.clone();
+    let local_music_max_depth = ctx.config.read().unwrap().local_music.max_depth;
+    if !local_music_paths.is_empty() && ctx.config.read().unwrap().local_music.enabled {
+        let _errors = ctx.source_manager.local_source().scan(&local_music_paths, local_music_max_depth);
+    }
+
     loop {
         let mouse_requested = ctx.config.read().unwrap().ui.enable_mouse;
         if mouse_requested != mouse_capture_enabled {
@@ -528,7 +535,8 @@ fn run_app(
                         NavTab::Search => NavTab::Leaderboard,
                         NavTab::Leaderboard => NavTab::Favorites,
                         NavTab::Favorites => NavTab::History,
-                        NavTab::History => NavTab::Settings,
+                        NavTab::History => NavTab::LocalMusic,
+                        NavTab::LocalMusic => NavTab::Settings,
                         NavTab::Settings => NavTab::Main,
                     };
                     needs_render = true;
@@ -541,7 +549,8 @@ fn run_app(
                         NavTab::Leaderboard => NavTab::Search,
                         NavTab::Favorites => NavTab::Leaderboard,
                         NavTab::History => NavTab::Favorites,
-                        NavTab::Settings => NavTab::History,
+                        NavTab::LocalMusic => NavTab::History,
+                        NavTab::Settings => NavTab::LocalMusic,
                     };
                     needs_render = true;
                     continue;
@@ -713,6 +722,28 @@ fn run_app(
                         &search_seq,
                     );
                 }
+                NavTab::LocalMusic => {
+                    // 本地音乐：按 r 重新扫描
+                    if matches!((key.modifiers, key.code), (KeyModifiers::NONE, KeyCode::Char('r'))) {
+                        let paths = ctx.config.read().unwrap().local_music.paths.clone();
+                        let max_depth = ctx.config.read().unwrap().local_music.max_depth;
+                        let local_src = ctx.source_manager.local_source();
+                        let errors = local_src.scan(&paths, max_depth);
+                        if errors.is_empty() {
+                            let count = local_src.all_songs().len();
+                            ctx.notifications.write().unwrap().push_back(
+                                Notification::info(format!("本地音乐扫描完成，共 {} 首", count)),
+                            );
+                        } else {
+                            for err in &errors {
+                                ctx.notifications.write().unwrap().push_back(
+                                    Notification::error(err.clone()),
+                                );
+                            }
+                        }
+                        needs_render = true;
+                    }
+                }
             }
             needs_render = true;
         } else if let Some(Event::Mouse(mouse)) = terminal_event.as_ref() {
@@ -768,6 +799,7 @@ fn run_app(
                             .unwrap()
                             .handle_mouse(mouse, ui_areas.content, &ctx)
                     }
+                    NavTab::LocalMusic => AppAction::None,
                 };
 
                 if matches!(action, AppAction::PlaySong { .. })
@@ -902,6 +934,66 @@ fn draw_app(
             NavTab::Settings => {
                 let mut sp = settings_page.lock().unwrap();
                 sp.render(content_area, frame.buffer_mut(), ctx);
+            }
+            NavTab::LocalMusic => {
+                // 显示本地音乐状态
+                use ratatui::widgets::{Block, Borders, Paragraph, Widget};
+                use ratatui::style::{Style, Color};
+                use ratatui::text::{Line, Span};
+
+                let local_src = ctx.source_manager.local_source();
+                let paths = ctx.config.read().unwrap().local_music.paths.clone();
+                let songs = local_src.all_songs();
+                let loaded = local_src.loaded_paths();
+
+                let mut lines = vec![
+                    Line::from(Span::styled(
+                        "📁 本地音乐",
+                        Style::new().fg(Color::Cyan).add_modifier(ratatui::style::Modifier::BOLD),
+                    )),
+                    Line::from(""),
+                ];
+
+                if paths.is_empty() {
+                    lines.push(Line::from(Span::styled(
+                        "   未配置音乐目录，请在设置（7）中添加",
+                        Style::new().fg(Color::DarkGray),
+                    )));
+                } else {
+                    for p in &paths {
+                        let mark = if loaded.iter().any(|lp| lp.to_string_lossy().as_ref() == p.as_str()) {
+                            "✓"
+                        } else {
+                            " "
+                        };
+                        lines.push(Line::from(Span::styled(
+                            format!("   {} {}", mark, p),
+                            Style::new().fg(Color::Gray),
+                        )));
+                    }
+                    lines.push(Line::from(""));
+                    lines.push(Line::from(Span::styled(
+                        format!("   共 {} 首歌曲", songs.len()),
+                        Style::new().fg(Color::Green),
+                    )));
+                    lines.push(Line::from(""));
+                    lines.push(Line::from(Span::styled(
+                        "   按 r 重新扫描目录",
+                        Style::new().fg(Color::DarkGray),
+                    )));
+                    lines.push(Line::from(Span::styled(
+                        "   切换到搜索页（2）可搜索本地歌曲",
+                        Style::new().fg(Color::DarkGray),
+                    )));
+                }
+
+                let block = Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::new().fg(crate::theme::muted(ctx)))
+                    .title("本地音乐");
+                let inner = block.inner(content_area);
+                block.render(content_area, frame.buffer_mut());
+                Paragraph::new(lines).render(inner, frame.buffer_mut());
             }
         }
 

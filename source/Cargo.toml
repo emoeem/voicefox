@@ -30,3 +30,4 @@ flate2 = "1"
 encoding_rs = "0.8"
 lofty.workspace = true
 walkdir.workspace = true
+tracing.workspace = true

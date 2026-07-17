@@ -1,5 +1,6 @@
 pub mod manager;
 pub mod js;
+pub mod local;
 
 // 音源模块
 pub mod kw;

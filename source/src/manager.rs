@@ -15,20 +15,25 @@ use crate::kw::KwSource;
 use crate::mg::MgSource;
 use crate::tx::TxSource;
 use crate::wy::WySource;
+use crate::local::LocalSource;
 
 /// 音源管理器
 pub struct SourceManager {
     sources: HashMap<SourceId, Arc<dyn MusicSource>>,
     /// JS 自定义音源（MVP：只支持一个），用 RwLock 支持后台异步设置
     js_source: std::sync::RwLock<Option<Arc<dyn MusicSource>>>,
+    /// 本地音乐源（单独存储以便调用扫描等特有方法）
+    local_source: Arc<LocalSource>,
     default: SourceId,
 }
 
 impl SourceManager {
     pub fn new(default: SourceId) -> Self {
+        let local_source = Arc::new(LocalSource::new());
         let mut manager = Self {
             sources: HashMap::new(),
             js_source: std::sync::RwLock::new(None),
+            local_source: Arc::clone(&local_source),
             default,
         };
         // 注册内置音源
@@ -37,6 +42,8 @@ impl SourceManager {
         manager.register(Arc::new(MgSource::new()));
         manager.register(Arc::new(TxSource::new()));
         manager.register(Arc::new(WySource::new()));
+        // 注册本地音源
+        manager.register(local_source);
         manager
     }
 
@@ -60,13 +67,12 @@ impl SourceManager {
     }
 
     pub fn get(&self, id: SourceId) -> Option<Arc<dyn MusicSource>> {
-        // 对于 Local 源，优先返回 JS 源
-        if id == SourceId::Local
-            && let Some(ref js) = *self.js_source.read().unwrap()
-        {
-            return Some(Arc::clone(js));
-        }
         self.sources.get(&id).map(Arc::clone)
+    }
+
+    /// 获取本地音乐源（可直接调用 scan 等特有方法）
+    pub fn local_source(&self) -> Arc<LocalSource> {
+        Arc::clone(&self.local_source)
     }
 
     pub fn default_source(&self) -> Arc<dyn MusicSource> {

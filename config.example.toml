@@ -63,4 +63,11 @@ aggregate_search = true
 show_cover = true
 max_fps = 20
 
+[local_music]
+enabled = true
+# 音乐目录路径列表，支持多个
+paths = []
+# 扫描深度，0 为不限制
+max_depth = 0
+
 [keybindings]
