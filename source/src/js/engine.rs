@@ -51,8 +51,13 @@ impl JsEngine {
 
         // 启动 Node.js 子进程。权限模式只允许读取运行时和当前音源文件，
         // 默认拒绝文件写入、子进程、Worker、原生扩展等高风险能力。
-        let mut child = Command::new("node")
-            .arg("--permission")
+        let mut command = Command::new("node");
+        command.arg("--permission");
+        if node_supports_flag("--allow-net") {
+            // Node 26+ also gates network access behind the permission model.
+            command.arg("--allow-net");
+        }
+        let mut child = command
             .arg(format!("--allow-fs-read={wrapper_path_string}"))
             .arg(format!("--allow-fs-read={source_path}"))
             .arg("--disable-proto=throw")
@@ -295,13 +300,19 @@ impl Drop for JsEngine {
 }
 
 fn node_supports_permission_mode() -> bool {
-    static SUPPORTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *SUPPORTED.get_or_init(|| {
+    node_supports_flag("--permission")
+}
+
+fn node_supports_flag(flag: &str) -> bool {
+    static HELP: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    HELP.get_or_init(|| {
         Command::new("node")
             .arg("--help")
             .output()
             .ok()
             .filter(|output| output.status.success())
-            .is_some_and(|output| String::from_utf8_lossy(&output.stdout).contains("--permission"))
+            .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
     })
+    .as_deref()
+    .is_some_and(|help| help.contains(flag))
 }
