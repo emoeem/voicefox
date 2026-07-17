@@ -8,65 +8,87 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+permissions:
+  contents: read
+
 jobs:
-  create-release:
-    runs-on: ubuntu-latest
-    outputs:
-      tag: ${{ steps.get-tag.outputs.tag }}
-    steps:
-      - id: get-tag
-        run: echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
-      - name: Create Release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release create "${{ steps.get-tag.outputs.tag }}" \
-            --title "voicefox ${{ steps.get-tag.outputs.tag }}" \
-            --generate-notes
+  build:
+    name: Build ${{ matrix.asset_name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            binary_path: target/x86_64-unknown-linux-gnu/release/voicefox
+            asset_name: voicefox-linux-x86_64
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            binary_path: target/aarch64-unknown-linux-gnu/release/voicefox
+            asset_name: voicefox-linux-aarch64
+          - runner: windows-2022
+            target: x86_64-pc-windows-msvc
+            binary_path: target/x86_64-pc-windows-msvc/release/voicefox.exe
+            asset_name: voicefox-windows-x86_64.exe
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            binary_path: target/x86_64-apple-darwin/release/voicefox
+            asset_name: voicefox-macos-x86_64
+          - runner: macos-15
+            target: aarch64-apple-darwin
+            binary_path: target/aarch64-apple-darwin/release/voicefox
+            asset_name: voicefox-macos-aarch64
 
-  # ── Linux ──
-  build-linux:
-    needs: create-release
-    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y mpv
-      - run: cargo build --release
-      - name: Upload to Release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          tag: ${{ needs.create-release.outputs.tag }}
-        run: |
-          gh release upload "$tag" target/release/voicefox#voicefox-linux-x86_64 --clobber
+      - name: Checkout
+        uses: actions/checkout@v4
 
-  # ── Windows ──
-  build-windows:
-    needs: create-release
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - run: cargo build --release
-      - name: Upload to Release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          tag: ${{ needs.create-release.outputs.tag }}
+      - name: Build
+        run: cargo build --locked --release --package voicefox-app --target "${{ matrix.target }}"
+
+      - name: Stage release asset
         shell: bash
         run: |
-          gh release upload "$tag" target/release/voicefox.exe#voicefox-windows-x86_64.exe --clobber
+          mkdir -p dist
+          cp "${{ matrix.binary_path }}" "dist/${{ matrix.asset_name }}"
 
-  # ── macOS ──
-  build-macos:
-    needs: create-release
-    runs-on: macos-latest
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: dist/${{ matrix.asset_name }}
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+
     steps:
-      - uses: actions/checkout@v4
-      - env:
-          HOMEBREW_NO_REQUIRE_TAP_TRUST: 1
-        run: brew install mpv
-      - run: cargo build --release
-      - name: Upload to Release
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Create release and upload assets
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          tag: ${{ needs.create-release.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          gh release upload "$tag" target/release/voicefox#voicefox-macos-x86_64 --clobber
+          tag="${GITHUB_REF_NAME}"
+          if ! gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$tag" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "voicefox $tag" \
+              --generate-notes \
+              --verify-tag
+          fi
+
+          find dist -type f -print0 |
+            while IFS= read -r -d '' asset; do
+              gh release upload "$tag" "$asset" \
+                --repo "$GITHUB_REPOSITORY" \
+                --clobber
+            done
