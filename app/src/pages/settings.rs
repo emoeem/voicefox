@@ -93,6 +93,11 @@ impl SettingsPage {
                 _ => {}
             }
         } else {
+            // 先判断焦点区域：local 区域的按键优先处理
+            if self.focus == "local" {
+                return self.handle_local_keys(key, ctx);
+            }
+
             let sources = ctx.config.read().unwrap().source.js_sources.clone();
             match (key.modifiers, key.code) {
                 (KeyModifiers::NONE, KeyCode::Char('a')) => {
@@ -113,7 +118,6 @@ impl SettingsPage {
                     if !sources.is_empty() && self.selected_source < sources.len() {
                         let url = sources[self.selected_source].clone();
                         self.status_msg = Some("已移除音源".to_string());
-                        // 如果删除后列表为空或索引超出，重置选中
                         if self.selected_source >= sources.len().saturating_sub(1) {
                             self.selected_source = self.selected_source.saturating_sub(1);
                         }
@@ -169,9 +173,6 @@ impl SettingsPage {
                 }
                 (KeyModifiers::NONE, KeyCode::Tab) => {
                     self.focus = if self.focus == "js" { "local" } else { "js" }.to_string();
-                }
-                _ if self.focus == "local" => {
-                    return self.handle_local_keys(key, ctx);
                 }
                 _ => {}
             }
@@ -602,10 +603,18 @@ fn setting_line(label: &str, value: bool, key: &str, accent: Color, muted: Color
 
 fn settings_chunks(area: Rect) -> std::rc::Rc<[Rect]> {
     if area.width >= 72 {
-        Layout::default()
+        // 宽屏：上排 options + sources，下排 local music
+        let top = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
-            .split(area)
+            .split(Rect::new(area.x, area.y, area.width, 12.min(area.height)));
+        let bottom_y = top[0].bottom();
+        let bottom = if bottom_y < area.bottom() {
+            Rect::new(area.x, bottom_y, area.width, area.bottom().saturating_sub(bottom_y))
+        } else {
+            Rect::new(area.x, bottom_y.saturating_sub(1), area.width, 1)
+        };
+        std::rc::Rc::new([top[0], top[1], bottom])
     } else {
         // 三块垂直布局
         let h = area.height;
