@@ -39,6 +39,14 @@ pub struct SettingsPage {
     pub status_msg: Option<String>,
     /// JS 源列表的选中索引
     pub selected_source: usize,
+    /// 本地音乐路径输入
+    pub local_path_input: String,
+    /// 本地音乐路径输入模式
+    pub local_path_mode: bool,
+    /// 本地路径列表选中索引
+    pub selected_local_path: usize,
+    /// 当前聚焦区域: "js" 或 "local"
+    pub focus: String,
 }
 
 impl SettingsPage {
@@ -48,10 +56,17 @@ impl SettingsPage {
             input_mode: false,
             status_msg: None,
             selected_source: 0,
+            local_path_input: String::new(),
+            local_path_mode: false,
+            selected_local_path: 0,
+            focus: "js".to_string(),
         }
     }
 
     pub fn handle_input(&mut self, key: KeyEvent, ctx: &AppContext) -> AppAction {
+        if self.local_path_mode {
+            return self.handle_local_path_input(key, ctx);
+        }
         if self.input_mode {
             match (key.modifiers, key.code) {
                 (KeyModifiers::NONE, KeyCode::Esc) => {
@@ -152,10 +167,110 @@ impl SettingsPage {
                         .to_string();
                     });
                 }
+                (KeyModifiers::NONE, KeyCode::Tab) => {
+                    self.focus = if self.focus == "js" { "local" } else { "js" }.to_string();
+                }
+                _ if self.focus == "local" => {
+                    return self.handle_local_keys(key, ctx);
+                }
                 _ => {}
             }
         }
         AppAction::None
+    }
+
+    /// 处理本地音乐路径输入模式
+    fn handle_local_path_input(&mut self, key: KeyEvent, ctx: &AppContext) -> AppAction {
+        match (key.modifiers, key.code) {
+            (KeyModifiers::NONE, KeyCode::Esc) => {
+                self.local_path_mode = false;
+                self.local_path_input.clear();
+                AppAction::None
+            }
+            (KeyModifiers::NONE, KeyCode::Enter) => {
+                if !self.local_path_input.trim().is_empty() {
+                    let path = self.local_path_input.trim().to_string();
+                    // 添加到配置
+                    {
+                        let mut config = ctx.config.write().unwrap();
+                        if !config.local_music.paths.contains(&path) {
+                            config.local_music.paths.push(path.clone());
+                            config.local_music.enabled = true;
+                            let _ = crate::config::loader::save(&config, &ctx.config_path);
+                        }
+                    }
+                    // 触发扫描
+                    let paths = ctx.config.read().unwrap().local_music.paths.clone();
+                    let max_depth = ctx.config.read().unwrap().local_music.max_depth;
+                    ctx.source_manager.local_source().scan(&paths, max_depth);
+                    self.local_path_mode = false;
+                    self.local_path_input.clear();
+                    self.status_msg = Some("本地音乐目录已添加".to_string());
+                }
+                AppAction::None
+            }
+            (KeyModifiers::NONE, KeyCode::Char(c)) => {
+                self.local_path_input.push(c);
+                AppAction::None
+            }
+            (KeyModifiers::NONE, KeyCode::Backspace) => {
+                self.local_path_input.pop();
+                AppAction::None
+            }
+            _ => AppAction::None,
+        }
+    }
+
+    /// 处理本地音乐区域的按键（非输入模式）
+    fn handle_local_keys(&mut self, key: KeyEvent, ctx: &AppContext) -> AppAction {
+        let paths = ctx.config.read().unwrap().local_music.paths.clone();
+        match (key.modifiers, key.code) {
+            (KeyModifiers::NONE, KeyCode::Char('a')) => {
+                self.local_path_mode = true;
+                self.local_path_input.clear();
+                self.status_msg = None;
+                AppAction::None
+            }
+            (KeyModifiers::NONE, KeyCode::Up) | (KeyModifiers::NONE, KeyCode::Char('k')) => {
+                if self.selected_local_path > 0 {
+                    self.selected_local_path -= 1;
+                }
+                AppAction::None
+            }
+            (KeyModifiers::NONE, KeyCode::Down) | (KeyModifiers::NONE, KeyCode::Char('j')) => {
+                if self.selected_local_path + 1 < paths.len() {
+                    self.selected_local_path += 1;
+                }
+                AppAction::None
+            }
+            (KeyModifiers::NONE, KeyCode::Char('d')) => {
+                if !paths.is_empty() && self.selected_local_path < paths.len() {
+                    let removed = paths[self.selected_local_path].clone();
+                    {
+                        let mut config = ctx.config.write().unwrap();
+                        config.local_music.paths.retain(|p| p != &removed);
+                        let _ = crate::config::loader::save(&config, &ctx.config_path);
+                    }
+                    if self.selected_local_path >= paths.len().saturating_sub(1) {
+                        self.selected_local_path = self.selected_local_path.saturating_sub(1);
+                    }
+                    // 重新扫描
+                    let remaining = ctx.config.read().unwrap().local_music.paths.clone();
+                    let max_depth = ctx.config.read().unwrap().local_music.max_depth;
+                    ctx.source_manager.local_source().scan(&remaining, max_depth);
+                    self.status_msg = Some(format!("已移除: {}", removed));
+                }
+                AppAction::None
+            }
+            (KeyModifiers::NONE, KeyCode::Char('r')) => {
+                let max_depth = ctx.config.read().unwrap().local_music.max_depth;
+                let _errors = ctx.source_manager.local_source().scan(&paths, max_depth);
+                let count = ctx.source_manager.local_source().all_songs().len();
+                self.status_msg = Some(format!("扫描完成，共 {} 首", count));
+                AppAction::None
+            }
+            _ => AppAction::None,
+        }
     }
 
     fn update_config(
@@ -177,6 +292,7 @@ impl SettingsPage {
     pub fn render(&mut self, area: Rect, buf: &mut Buffer, ctx: &AppContext) {
         let config = ctx.config.read().unwrap();
         let sources = &config.source.js_sources;
+        let local_paths = &config.local_music.paths;
         let accent = crate::theme::accent(ctx);
         let muted = crate::theme::muted(ctx);
         let chunks = settings_chunks(area);
@@ -295,6 +411,84 @@ impl SettingsPage {
             );
         }
 
+        // ── 本地音乐目录列表 ──
+        let local_block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::new().fg(if self.focus == "local" { accent } else { crate::theme::border(ctx) }))
+            .title(" 本地音乐目录 · Tab 切换 / a 添加 / d 删除 / r 扫描 ");
+        let local_inner = local_block.inner(chunks[2]);
+        local_block.render(chunks[2], buf);
+
+        let local_songs = ctx.source_manager.local_source().all_songs();
+        let local_rows = local_inner.height.saturating_sub(2) as usize;
+        if local_paths.is_empty() {
+            if local_inner.height > 2 {
+                Paragraph::new(Line::from(Span::styled(
+                    " (无，按 a 添加音乐目录)",
+                    Style::new().fg(crate::theme::yellow(ctx)),
+                )))
+                .render(
+                    Rect::new(local_inner.x, local_inner.y + 2, local_inner.width, 1),
+                    buf,
+                );
+            }
+        } else {
+            self.selected_local_path = self.selected_local_path.min(local_paths.len().saturating_sub(1));
+            for (row, (index, path)) in local_paths.iter().enumerate().take(local_rows).enumerate() {
+                let style = if index == self.selected_local_path {
+                    Style::new()
+                        .fg(crate::theme::selection_fg(ctx))
+                        .bg(accent)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::new().fg(crate::theme::text(ctx))
+                };
+                Paragraph::new(Line::from(Span::styled(
+                    format!(" {}", path), style,
+                ))).render(
+                    Rect::new(local_inner.x, local_inner.y + 2 + row as u16, local_inner.width, 1),
+                    buf,
+                );
+            }
+        }
+        // 底部显示歌曲数
+        if local_inner.height > 1 {
+            let footer_y = local_inner.bottom().saturating_sub(1);
+            if footer_y > local_inner.y {
+                Paragraph::new(Line::from(Span::styled(
+                    format!(" 共 {} 首歌曲", local_songs.len()),
+                    Style::new().fg(muted),
+                ))).render(
+                    Rect::new(local_inner.x, footer_y, local_inner.width, 1),
+                    buf,
+                );
+            }
+        }
+
+        // ── 本地音乐路径输入弹窗 ──
+        if self.local_path_mode {
+            let width = area.width.saturating_sub(4).min(74);
+            let input_area = Rect::new(
+                area.x + area.width.saturating_sub(width) / 2,
+                area.y + area.height.saturating_sub(3) / 2,
+                width,
+                3.min(area.height),
+            );
+            Clear.render(input_area, buf);
+            let input_block = Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::new().fg(crate::theme::green(ctx)))
+                .title("输入本地音乐目录路径");
+            let inner = input_block.inner(input_area);
+            input_block.render(input_area, buf);
+            let cursor = if (std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis()
+                / 500).is_multiple_of(2) { "█" } else { " " };
+            Paragraph::new(Line::from(format!("{}{}", self.local_path_input, cursor))).render(inner, buf);
+        }
+
         if self.input_mode {
             let width = area.width.saturating_sub(4).min(74);
             let input_area = Rect::new(
@@ -368,6 +562,20 @@ impl SettingsPage {
                     let len = ctx.config.read().unwrap().source.js_sources.len();
                     if index < len {
                         self.selected_source = index;
+                        self.focus = "js".to_string();
+                    }
+                }
+
+                // 本地音乐目录列表点击
+                let local_inner = Block::default().borders(Borders::ALL).inner(chunks[2]);
+                if local_inner.contains((event.column, event.row).into())
+                    && event.row >= local_inner.y.saturating_add(2)
+                {
+                    let index = event.row.saturating_sub(local_inner.y + 2) as usize;
+                    let len = ctx.config.read().unwrap().local_music.paths.len();
+                    if index < len {
+                        self.selected_local_path = index;
+                        self.focus = "local".to_string();
                     }
                 }
             }
@@ -399,9 +607,15 @@ fn settings_chunks(area: Rect) -> std::rc::Rc<[Rect]> {
             .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
             .split(area)
     } else {
+        // 三块垂直布局
+        let h = area.height;
         Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(12.min(area.height)), Constraint::Min(0)])
+            .constraints([
+                Constraint::Length(12.min(h.saturating_div(3))),
+                Constraint::Min(6),
+                Constraint::Length(8.min(h.saturating_div(3))),
+            ])
             .split(area)
     }
 }
