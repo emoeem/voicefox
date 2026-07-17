@@ -14,10 +14,7 @@ async fn loads_user_api_v3_source_and_gets_music_url() {
         return;
     }
 
-    let fixture = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/fixtures/user_api_v3.js"
-    );
+    let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/user_api_v3.js");
     let engine = JsEngine::new(fixture).expect("fixture source should initialize");
     assert!(engine.supports_source("kw"));
     assert_eq!(
@@ -39,9 +36,49 @@ async fn loads_user_api_v3_source_and_gets_music_url() {
         .await
         .expect("fixture should return a URL");
 
-    assert_eq!(
-        result.url,
-        "https://example.com/kw/320k/song-1.mp3"
-    );
+    assert_eq!(result.url, "https://example.com/kw/320k/song-1.mp3");
     assert_eq!(result.quality, Quality::High320);
+}
+
+#[test]
+fn source_script_cannot_access_node_require() {
+    if Command::new("node").arg("--version").output().is_err() {
+        eprintln!("node is unavailable; skipping JS sandbox test");
+        return;
+    }
+
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!(
+        "voicefox-js-sandbox-{}-{unique}.js",
+        std::process::id()
+    ));
+    let script = r#"
+let blocked = false;
+try {
+    require('fs');
+} catch (_) {
+    blocked = true;
+}
+if (!blocked) throw new Error('require must not be exposed');
+lx.send(lx.EVENT_NAMES.inited, {
+    sources: {
+        kw: {
+            type: 'music',
+            actions: ['musicUrl'],
+            qualitys: ['128k'],
+        },
+    },
+});
+"#;
+    std::fs::write(&path, script).unwrap();
+
+    let result = JsEngine::new(path.to_str().unwrap());
+
+    let _ = std::fs::remove_file(path);
+    if let Err(error) = result {
+        panic!("sandbox source should initialize: {error}");
+    }
 }

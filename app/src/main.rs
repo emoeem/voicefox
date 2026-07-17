@@ -207,10 +207,12 @@ fn run_app(
         .default
         .as_str()
         .to_string();
+    let js_source_generation = ctx.source_manager.begin_js_source_request(false);
     spawn_js_source_loader(
         js_urls,
         default_source,
         Arc::clone(&ctx.source_manager),
+        js_source_generation,
         action_tx.clone(),
         &rt,
     );
@@ -219,7 +221,18 @@ fn run_app(
     let local_music_paths = ctx.config.read().unwrap().local_music.paths.clone();
     let local_music_max_depth = ctx.config.read().unwrap().local_music.max_depth;
     if !local_music_paths.is_empty() && ctx.config.read().unwrap().local_music.enabled {
-        let _errors = ctx.source_manager.local_source().scan(&local_music_paths, local_music_max_depth);
+        execute_action(
+            AppAction::ScanLocalMusic {
+                paths: local_music_paths,
+                max_depth: local_music_max_depth,
+            },
+            &ctx,
+            &rt,
+            &action_tx,
+            &search_page,
+            &settings_page,
+            &search_seq,
+        );
     }
 
     loop {
@@ -734,33 +747,32 @@ fn run_app(
                         (KeyModifiers::NONE, KeyCode::Char('r')) => {
                             let paths = ctx.config.read().unwrap().local_music.paths.clone();
                             let max_depth = ctx.config.read().unwrap().local_music.max_depth;
-                            let errors = local_src.scan(&paths, max_depth);
-                            if errors.is_empty() {
-                                let count = local_src.all_songs().len();
-                                ctx.notifications.write().unwrap().push_back(
-                                    Notification::info(format!("本地音乐扫描完成，共 {} 首", count)),
-                                );
-                            } else {
-                                for err in &errors {
-                                    ctx.notifications.write().unwrap().push_back(
-                                        Notification::error(err.clone()),
-                                    );
-                                }
-                            }
+                            execute_action(
+                                AppAction::ScanLocalMusic { paths, max_depth },
+                                &ctx,
+                                &rt,
+                                &action_tx,
+                                &search_page,
+                                &settings_page,
+                                &search_seq,
+                            );
                             local_selected = 0;
                             local_scroll = 0;
                         }
-                        (KeyModifiers::NONE, KeyCode::Up) | (KeyModifiers::NONE, KeyCode::Char('k')) => {
+                        (KeyModifiers::NONE, KeyCode::Up)
+                        | (KeyModifiers::NONE, KeyCode::Char('k')) => {
                             if !songs.is_empty() {
                                 local_selected = local_selected.saturating_sub(1);
                             }
                         }
-                        (KeyModifiers::NONE, KeyCode::Down) | (KeyModifiers::NONE, KeyCode::Char('j')) => {
+                        (KeyModifiers::NONE, KeyCode::Down)
+                        | (KeyModifiers::NONE, KeyCode::Char('j')) => {
                             if !songs.is_empty() && local_selected + 1 < songs.len() {
                                 local_selected += 1;
                             }
                         }
-                        (KeyModifiers::NONE, KeyCode::Home) | (KeyModifiers::NONE, KeyCode::Char('g')) => {
+                        (KeyModifiers::NONE, KeyCode::Home)
+                        | (KeyModifiers::NONE, KeyCode::Char('g')) => {
                             local_selected = 0;
                         }
                         (KeyModifiers::NONE, KeyCode::End)
@@ -768,17 +780,29 @@ fn run_app(
                         | (KeyModifiers::SHIFT, KeyCode::Char('G')) => {
                             local_selected = songs.len().saturating_sub(1);
                         }
-                        (KeyModifiers::CONTROL, KeyCode::Char('u')) | (KeyModifiers::NONE, KeyCode::PageUp) => {
+                        (KeyModifiers::CONTROL, KeyCode::Char('u'))
+                        | (KeyModifiers::NONE, KeyCode::PageUp) => {
                             local_selected = local_selected.saturating_sub(10);
                         }
-                        (KeyModifiers::CONTROL, KeyCode::Char('d')) | (KeyModifiers::NONE, KeyCode::PageDown) => {
-                            local_selected = (local_selected + 10).min(songs.len().saturating_sub(1));
+                        (KeyModifiers::CONTROL, KeyCode::Char('d'))
+                        | (KeyModifiers::NONE, KeyCode::PageDown) => {
+                            local_selected =
+                                (local_selected + 10).min(songs.len().saturating_sub(1));
                         }
-                        (KeyModifiers::NONE, KeyCode::Enter) | (KeyModifiers::NONE, KeyCode::Char('\r')) => {
+                        (KeyModifiers::NONE, KeyCode::Enter)
+                        | (KeyModifiers::NONE, KeyCode::Char('\r')) => {
                             if !songs.is_empty() && local_selected < songs.len() {
                                 execute_action(
-                                    AppAction::PlaySong { songs, index: local_selected },
-                                    &ctx, &rt, &action_tx, &search_page, &settings_page, &search_seq,
+                                    AppAction::PlaySong {
+                                        songs,
+                                        index: local_selected,
+                                    },
+                                    &ctx,
+                                    &rt,
+                                    &action_tx,
+                                    &search_page,
+                                    &settings_page,
+                                    &search_seq,
                                 );
                             }
                         }
@@ -991,9 +1015,9 @@ fn draw_app(
                 sp.render(content_area, frame.buffer_mut(), ctx);
             }
             NavTab::LocalMusic => {
-                use ratatui::widgets::{Block, Borders, Paragraph, Widget};
-                use ratatui::style::{Style, Color};
+                use ratatui::style::{Color, Style};
                 use ratatui::text::{Line, Span};
+                use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 
                 let local_src = ctx.source_manager.local_source();
                 let paths = ctx.config.read().unwrap().local_music.paths.clone();
@@ -1006,21 +1030,21 @@ fn draw_app(
                 let inner = block.inner(content_area);
                 block.render(content_area, frame.buffer_mut());
 
-                if inner.height < 2 { return; }
+                if inner.height < 2 {
+                    return;
+                }
 
                 if paths.is_empty() {
-                    Paragraph::new(Line::from(
-                        " 未配置音乐目录，请在设置（7）中添加"
-                    )).style(Style::new().fg(Color::DarkGray))
-                    .render(inner, frame.buffer_mut());
+                    Paragraph::new(Line::from(" 未配置音乐目录，请在设置（7）中添加"))
+                        .style(Style::new().fg(Color::DarkGray))
+                        .render(inner, frame.buffer_mut());
                     return;
                 }
 
                 if songs.is_empty() {
-                    Paragraph::new(Line::from(
-                        " 目录下未找到音频文件，按 r 重新扫描"
-                    )).style(Style::new().fg(Color::DarkGray))
-                    .render(inner, frame.buffer_mut());
+                    Paragraph::new(Line::from(" 目录下未找到音频文件，按 r 重新扫描"))
+                        .style(Style::new().fg(Color::DarkGray))
+                        .render(inner, frame.buffer_mut());
                     return;
                 }
 
@@ -1028,10 +1052,18 @@ fn draw_app(
                 let header = pages::components::song_table::header(inner.width);
                 Paragraph::new(Line::from(Span::styled(
                     header,
-                    Style::new().fg(crate::theme::text(ctx)).add_modifier(ratatui::style::Modifier::BOLD),
-                ))).render(Rect::new(inner.x, inner.y, inner.width, 1), frame.buffer_mut());
+                    Style::new()
+                        .fg(crate::theme::text(ctx))
+                        .add_modifier(ratatui::style::Modifier::BOLD),
+                )))
+                .render(
+                    Rect::new(inner.x, inner.y, inner.width, 1),
+                    frame.buffer_mut(),
+                );
 
-                if inner.height < 3 { return; }
+                if inner.height < 3 {
+                    return;
+                }
 
                 // 显示歌曲列表
                 let visible_height = (inner.height.saturating_sub(2)) as usize;
@@ -1053,11 +1085,14 @@ fn draw_app(
                     let text = pages::components::song_table::row(song, i, inner.width);
                     let line_area = Rect::new(inner.x, inner.y + 1 + row as u16, inner.width, 1);
                     let style = if i == sel {
-                        Style::new().bg(crate::theme::accent(ctx)).fg(crate::theme::selection_fg(ctx))
+                        Style::new()
+                            .bg(crate::theme::accent(ctx))
+                            .fg(crate::theme::selection_fg(ctx))
                     } else {
                         Style::new().fg(crate::theme::text(ctx))
                     };
-                    Paragraph::new(Line::from(Span::styled(text, style))).render(line_area, frame.buffer_mut());
+                    Paragraph::new(Line::from(Span::styled(text, style)))
+                        .render(line_area, frame.buffer_mut());
                 }
             }
         }
@@ -1277,8 +1312,8 @@ fn execute_action(
             ctx.notifications.write().unwrap().push_back(n);
         }
         AppAction::ImportSource(url) => {
-            let settings = Arc::clone(settings_page);
             let source_mgr = Arc::clone(&ctx.source_manager);
+            let generation = source_mgr.begin_js_source_request(false);
             let default_source = ctx
                 .config
                 .read()
@@ -1290,26 +1325,32 @@ fn execute_action(
             let tx = action_tx.clone();
 
             rt.spawn(async move {
-                match lx_source::js::loader::load_source(&url, &default_source).await {
+                match lx_source::js::loader::load_source_approving_update(&url, &default_source)
+                    .await
+                {
                     Ok(source) => {
-                        source_mgr.set_js_source(Arc::new(source));
-                        let mut sp = settings.lock().unwrap();
-                        sp.selected_source = 0;
-                        sp.status_msg = Some("✓ 音源已加载并启用".to_string());
-                        let _ = tx.send(AppAction::SourceImported(url));
+                        if !source_mgr.set_js_source_if_current(generation, Arc::new(source)) {
+                            return;
+                        }
+                        let _ = tx.send(AppAction::SourceImported { url, generation });
                     }
                     Err(e) => {
-                        let mut sp = settings.lock().unwrap();
-                        sp.status_msg = Some(format!("✗ 音源加载失败: {}", e));
-                        let _ = tx.send(AppAction::ShowNotification(Notification::error(format!(
-                            "JS 音源导入失败: {}",
-                            e
-                        ))));
+                        let _ = tx.send(AppAction::SourceImportFailed {
+                            error: e,
+                            generation,
+                        });
                     }
                 }
             });
         }
-        AppAction::SourceImported(url) => {
+        AppAction::SourceImported { url, generation } => {
+            if !ctx.source_manager.is_js_source_request_current(generation) {
+                return;
+            }
+            let mut sp = settings_page.lock().unwrap();
+            sp.selected_source = 0;
+            sp.status_msg = Some("✓ 音源已加载并启用".to_string());
+            drop(sp);
             let save_result = {
                 let mut config = ctx.config.write().unwrap();
                 config.source.js_sources.retain(|item| item != &url);
@@ -1330,7 +1371,19 @@ fn execute_action(
                     .push_back(Notification::info("JS 音源已加载并启用"));
             }
         }
+        AppAction::SourceImportFailed { error, generation } => {
+            if !ctx.source_manager.is_js_source_request_current(generation) {
+                return;
+            }
+            let mut sp = settings_page.lock().unwrap();
+            sp.status_msg = Some(format!("✗ 音源加载失败: {}", error));
+            ctx.notifications
+                .write()
+                .unwrap()
+                .push_back(Notification::error(format!("JS 音源导入失败: {}", error)));
+        }
         AppAction::RemoveSource(url) => {
+            let generation = ctx.source_manager.begin_js_source_request(true);
             let (remaining_urls, default_source) = {
                 let mut config = ctx.config.write().unwrap();
                 config.source.js_sources.retain(|u| u != &url);
@@ -1341,17 +1394,54 @@ fn execute_action(
                 }
                 (remaining_urls, default_source)
             };
-            ctx.source_manager.clear_js_source();
             spawn_js_source_loader(
                 remaining_urls,
                 default_source,
                 Arc::clone(&ctx.source_manager),
+                generation,
                 action_tx.clone(),
                 rt,
             );
             let _ = action_tx.send(AppAction::ShowNotification(Notification::info(
                 "已移除音源",
             )));
+        }
+        AppAction::ScanLocalMusic { paths, max_depth } => {
+            let generation = next_generation(&ctx.local_scan_request_id);
+            let request_seq = Arc::clone(&ctx.local_scan_request_id);
+            let local_source = ctx.source_manager.local_source();
+            let source_generation = local_source.begin_scan();
+            let settings = Arc::clone(settings_page);
+            let tx = action_tx.clone();
+            rt.spawn(async move {
+                let result = tokio::task::spawn_blocking(move || {
+                    let errors =
+                        local_source.scan_for_generation(&paths, max_depth, source_generation);
+                    let count = local_source.all_songs().len();
+                    (errors, count)
+                })
+                .await;
+                if request_seq.load(Ordering::SeqCst) != generation {
+                    return;
+                }
+                let (errors, count) = match result {
+                    Ok(result) => result,
+                    Err(error) => (vec![format!("本地音乐扫描任务失败: {error}")], 0),
+                };
+                let mut settings = settings.lock().unwrap();
+                if errors.is_empty() {
+                    settings.status_msg = Some(format!("扫描完成，共 {} 首", count));
+                    let _ = tx.send(AppAction::ShowNotification(Notification::info(format!(
+                        "本地音乐扫描完成，共 {} 首",
+                        count
+                    ))));
+                } else {
+                    settings.status_msg = Some(format!("扫描错误: {}", errors.join("; ")));
+                    for error in errors {
+                        let _ = tx.send(AppAction::ShowNotification(Notification::error(error)));
+                    }
+                }
+            });
         }
         AppAction::Navigate(_) | AppAction::GoBack | AppAction::Quit | AppAction::None => {
             // 不再使用页面栈导航，忽略这些 action
@@ -1411,6 +1501,7 @@ fn spawn_js_source_loader(
     urls: Vec<String>,
     default_source: String,
     source_manager: Arc<lx_source::manager::SourceManager>,
+    generation: u64,
     tx: mpsc::UnboundedSender<AppAction>,
     rt: &tokio::runtime::Runtime,
 ) {
@@ -1419,7 +1510,7 @@ fn spawn_js_source_loader(
         .filter(|url| !url.trim().is_empty())
         .collect();
     if urls.is_empty() {
-        source_manager.clear_js_source();
+        source_manager.clear_js_source_if_current(generation);
         return;
     }
 
@@ -1428,20 +1519,27 @@ fn spawn_js_source_loader(
         for url in urls {
             match lx_source::js::loader::load_source(&url, &default_source).await {
                 Ok(source) => {
-                    source_manager.set_js_source(Arc::new(source));
+                    if !source_manager.set_js_source_if_current(generation, Arc::new(source)) {
+                        return;
+                    }
                     let _ = tx.send(AppAction::ShowNotification(Notification::info(
                         "JS 音源已就绪",
                     )));
                     return;
                 }
                 Err(error) => {
+                    if !source_manager.is_js_source_request_current(generation) {
+                        return;
+                    }
                     tracing::warn!("load JS source failed ({}): {}", url, error);
                     last_error = Some(error);
                 }
             }
         }
 
-        source_manager.clear_js_source();
+        if !source_manager.clear_js_source_if_current(generation) {
+            return;
+        }
         if let Some(error) = last_error {
             let _ = tx.send(AppAction::ShowNotification(Notification::error(format!(
                 "没有可用的 JS 音源: {}",
@@ -1449,6 +1547,10 @@ fn spawn_js_source_loader(
             ))));
         }
     });
+}
+
+fn next_generation(sequence: &AtomicU64) -> u64 {
+    sequence.fetch_add(1, Ordering::SeqCst) + 1
 }
 
 /// 异步搜索（直接 async，不用 spawn_blocking——reqwest 是真正 async 的）

@@ -196,27 +196,29 @@ impl SettingsPage {
             (KeyModifiers::NONE, KeyCode::Enter) => {
                 if !self.local_path_input.trim().is_empty() {
                     let path = self.local_path_input.trim().to_string();
-                    // 添加到配置
-                    {
+                    let save_result = {
                         let mut config = ctx.config.write().unwrap();
                         if !config.local_music.paths.contains(&path) {
                             config.local_music.paths.push(path.clone());
                             config.local_music.enabled = true;
-                            let _ = crate::config::loader::save(&config, &ctx.config_path);
                         }
-                    }
-                    // 触发扫描
-                    let paths = ctx.config.read().unwrap().local_music.paths.clone();
-                    let max_depth = ctx.config.read().unwrap().local_music.max_depth;
-                    let errors = ctx.source_manager.local_source().scan(&paths, max_depth);
+                        crate::config::loader::save(&config, &ctx.config_path)
+                    };
+                    let (paths, max_depth) = {
+                        let config = ctx.config.read().unwrap();
+                        (
+                            config.local_music.paths.clone(),
+                            config.local_music.max_depth,
+                        )
+                    };
                     self.local_path_mode = false;
                     self.local_path_input.clear();
-                    if errors.is_empty() {
-                        let count = ctx.source_manager.local_source().all_songs().len();
-                        self.status_msg = Some(format!("扫描完成，共 {} 首", count));
+                    if let Err(error) = save_result {
+                        self.status_msg = Some(format!("目录已添加，但保存失败: {}", error));
                     } else {
-                        self.status_msg = Some(format!("错误: {}", errors.join("; ")));
+                        self.status_msg = Some("正在扫描本地音乐...".to_string());
                     }
+                    return AppAction::ScanLocalMusic { paths, max_depth };
                 }
                 AppAction::None
             }
@@ -261,28 +263,37 @@ impl SettingsPage {
             (KeyModifiers::NONE, KeyCode::Char('d')) => {
                 if !paths.is_empty() && self.selected_local_path < paths.len() {
                     let removed = paths[self.selected_local_path].clone();
-                    {
+                    let save_result = {
                         let mut config = ctx.config.write().unwrap();
                         config.local_music.paths.retain(|p| p != &removed);
-                        let _ = crate::config::loader::save(&config, &ctx.config_path);
-                    }
+                        config.local_music.enabled = !config.local_music.paths.is_empty();
+                        crate::config::loader::save(&config, &ctx.config_path)
+                    };
                     if self.selected_local_path >= paths.len().saturating_sub(1) {
                         self.selected_local_path = self.selected_local_path.saturating_sub(1);
                     }
-                    // 重新扫描
-                    let remaining = ctx.config.read().unwrap().local_music.paths.clone();
-                    let max_depth = ctx.config.read().unwrap().local_music.max_depth;
-                    ctx.source_manager.local_source().scan(&remaining, max_depth);
-                    self.status_msg = Some(format!("已移除: {}", removed));
+                    let (remaining, max_depth) = {
+                        let config = ctx.config.read().unwrap();
+                        (
+                            config.local_music.paths.clone(),
+                            config.local_music.max_depth,
+                        )
+                    };
+                    self.status_msg = Some(match save_result {
+                        Ok(()) => format!("已移除 {}，正在重新扫描...", removed),
+                        Err(error) => format!("已移除，但保存失败: {}", error),
+                    });
+                    return AppAction::ScanLocalMusic {
+                        paths: remaining,
+                        max_depth,
+                    };
                 }
                 AppAction::None
             }
             (KeyModifiers::NONE, KeyCode::Char('r')) => {
                 let max_depth = ctx.config.read().unwrap().local_music.max_depth;
-                let _errors = ctx.source_manager.local_source().scan(&paths, max_depth);
-                let count = ctx.source_manager.local_source().all_songs().len();
-                self.status_msg = Some(format!("扫描完成，共 {} 首", count));
-                AppAction::None
+                self.status_msg = Some("正在扫描本地音乐...".to_string());
+                AppAction::ScanLocalMusic { paths, max_depth }
             }
             _ => AppAction::None,
         }
@@ -346,7 +357,11 @@ impl SettingsPage {
 
         let source_block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::new().fg(if self.focus == "js" { accent } else { crate::theme::border(ctx) }))
+            .border_style(Style::new().fg(if self.focus == "js" {
+                accent
+            } else {
+                crate::theme::border(ctx)
+            }))
             .title(" lx-music JS 音源 · a 添加 / d 删除 ");
         let source_inner = source_block.inner(chunks[1]);
         source_block.render(chunks[1], buf);
@@ -429,7 +444,11 @@ impl SettingsPage {
         // ── 本地音乐目录列表 ──
         let local_block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::new().fg(if self.focus == "local" { accent } else { crate::theme::border(ctx) }))
+            .border_style(Style::new().fg(if self.focus == "local" {
+                accent
+            } else {
+                crate::theme::border(ctx)
+            }))
             .title(" 本地音乐目录 · s 切换 / a 添加 / d 删除 / r 扫描 ");
         let local_inner = local_block.inner(chunks[2]);
         local_block.render(chunks[2], buf);
@@ -448,8 +467,11 @@ impl SettingsPage {
                 );
             }
         } else {
-            self.selected_local_path = self.selected_local_path.min(local_paths.len().saturating_sub(1));
-            for (row, (index, path)) in local_paths.iter().enumerate().take(local_rows).enumerate() {
+            self.selected_local_path = self
+                .selected_local_path
+                .min(local_paths.len().saturating_sub(1));
+            for (row, (index, path)) in local_paths.iter().enumerate().take(local_rows).enumerate()
+            {
                 let style = if index == self.selected_local_path {
                     Style::new()
                         .fg(crate::theme::selection_fg(ctx))
@@ -458,10 +480,13 @@ impl SettingsPage {
                 } else {
                     Style::new().fg(crate::theme::text(ctx))
                 };
-                Paragraph::new(Line::from(Span::styled(
-                    format!(" {}", path), style,
-                ))).render(
-                    Rect::new(local_inner.x, local_inner.y + 2 + row as u16, local_inner.width, 1),
+                Paragraph::new(Line::from(Span::styled(format!(" {}", path), style))).render(
+                    Rect::new(
+                        local_inner.x,
+                        local_inner.y + 2 + row as u16,
+                        local_inner.width,
+                        1,
+                    ),
                     buf,
                 );
             }
@@ -473,7 +498,8 @@ impl SettingsPage {
                 Paragraph::new(Line::from(Span::styled(
                     format!(" 共 {} 首歌曲", local_songs.len()),
                     Style::new().fg(muted),
-                ))).render(
+                )))
+                .render(
                     Rect::new(local_inner.x, footer_y, local_inner.width, 1),
                     buf,
                 );
@@ -500,8 +526,15 @@ impl SettingsPage {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_millis()
-                / 500).is_multiple_of(2) { "█" } else { " " };
-            Paragraph::new(Line::from(format!("{}{}", self.local_path_input, cursor))).render(inner, buf);
+                / 500)
+                .is_multiple_of(2)
+            {
+                "█"
+            } else {
+                " "
+            };
+            Paragraph::new(Line::from(format!("{}{}", self.local_path_input, cursor)))
+                .render(inner, buf);
         }
 
         if self.input_mode {
@@ -624,7 +657,12 @@ fn settings_chunks(area: Rect) -> std::rc::Rc<[Rect]> {
             .split(Rect::new(area.x, area.y, area.width, 12.min(area.height)));
         let bottom_y = top[0].bottom();
         let bottom = if bottom_y < area.bottom() {
-            Rect::new(area.x, bottom_y, area.width, area.bottom().saturating_sub(bottom_y))
+            Rect::new(
+                area.x,
+                bottom_y,
+                area.width,
+                area.bottom().saturating_sub(bottom_y),
+            )
         } else {
             Rect::new(area.x, bottom_y.saturating_sub(1), area.width, 1)
         };

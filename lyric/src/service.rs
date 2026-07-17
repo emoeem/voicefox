@@ -157,16 +157,31 @@ impl LyricService {
 
     /// 对齐翻译歌词到原文行
     fn align_translation(lines: &[LyricLine], tlyric: &str) -> Vec<(usize, String)> {
+        if lines.is_empty() {
+            return Vec::new();
+        }
         // 解析翻译 LRC
         let trans_lines = crate::parser::lrc::parse(tlyric);
-        // 按时间戳匹配最近的主歌词行
+        // 按时间戳匹配最近的主歌词行。
         trans_lines
             .iter()
             .map(|t| {
-                let idx = lines
-                    .iter()
-                    .position(|l| l.timestamp >= t.timestamp)
-                    .unwrap_or(lines.len().saturating_sub(1));
+                let upper = lines.partition_point(|line| line.timestamp <= t.timestamp);
+                let idx = match upper {
+                    0 => 0,
+                    value if value >= lines.len() => lines.len() - 1,
+                    value => {
+                        let previous = value - 1;
+                        let previous_distance =
+                            t.timestamp.saturating_sub(lines[previous].timestamp);
+                        let next_distance = lines[value].timestamp.saturating_sub(t.timestamp);
+                        if previous_distance <= next_distance {
+                            previous
+                        } else {
+                            value
+                        }
+                    }
+                };
                 (idx, t.text.clone())
             })
             .collect()
@@ -311,5 +326,15 @@ mod tests {
         assert_eq!(state.lines[0].text, "逐字歌词");
         assert_eq!(state.yrc_words.len(), 3);
         assert_eq!(state.position_ms, 5_750);
+    }
+
+    #[test]
+    fn aligns_slightly_delayed_translation_with_the_nearest_line() {
+        let lines =
+            crate::parser::lrc::parse("[00:01.00]第一行\n[00:05.00]第二行\n[00:10.00]第三行");
+
+        let aligned = LyricService::align_translation(&lines, "[00:01.10]translation");
+
+        assert_eq!(aligned, vec![(0, "translation".to_string())]);
     }
 }

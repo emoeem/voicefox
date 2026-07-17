@@ -6,6 +6,7 @@ const http = require('http');
 const https = require('https');
 const crypto = require('crypto');
 const zlib = require('zlib');
+const vm = require('vm');
 const { Console } = require('console');
 const { URL, URLSearchParams } = require('url');
 
@@ -353,7 +354,37 @@ process.on('unhandledRejection', (error) => {
 });
 
 try {
-    require(sourcePath);
+    const sandbox = {
+        lx: globalThis.lx,
+        console: globalThis.console,
+        Buffer,
+        URL,
+        URLSearchParams,
+        TextEncoder,
+        TextDecoder,
+        Uint8Array,
+        ArrayBuffer,
+        Promise,
+        setTimeout,
+        clearTimeout,
+        setInterval,
+        clearInterval,
+        setImmediate,
+        clearImmediate,
+    };
+    sandbox.window = sandbox;
+    sandbox.self = sandbox;
+    sandbox.globalThis = sandbox;
+    vm.createContext(sandbox, {
+        codeGeneration: {
+            strings: false,
+            wasm: false,
+        },
+    });
+    vm.runInContext(sourceCode, sandbox, {
+        filename: sourcePath,
+        displayErrors: true,
+    });
 } catch (error) {
     protocolWrite({ type: 'initError', error: `load source failed: ${error.message}` });
 }

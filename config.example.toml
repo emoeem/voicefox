@@ -69,5 +69,3 @@ enabled = true
 paths = []
 # 扫描深度，0 为不限制
 max_depth = 0
-
-[keybindings]

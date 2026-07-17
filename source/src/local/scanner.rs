@@ -18,17 +18,25 @@ pub fn scan_directory(path: &Path, max_depth: u32) -> Vec<LocalSong> {
 
     let walker = walkdir::WalkDir::new(path)
         .follow_links(false)
-        .max_depth(if max_depth == 0 { std::usize::MAX } else { max_depth as usize });
+        .max_depth(if max_depth == 0 {
+            usize::MAX
+        } else {
+            max_depth as usize
+        });
 
-    for entry in walker.into_iter().filter_map(|e| e.ok()) {
+    for entry in walker
+        .into_iter()
+        .filter_entry(|entry| {
+            entry.depth() == 0
+                || !entry.file_type().is_dir()
+                || !EXCLUDED_DIRS.contains(&entry.file_name().to_str().unwrap_or_default())
+        })
+        .filter_map(Result::ok)
+    {
         let entry_path = entry.path();
 
         // 跳过目录
         if entry_path.is_dir() {
-            let dir_name = entry_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if EXCLUDED_DIRS.contains(&dir_name) {
-                continue;
-            }
             continue;
         }
 

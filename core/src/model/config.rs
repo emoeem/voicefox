@@ -1,10 +1,10 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 use super::source::{Quality, SourceId};
 
 /// 播放器配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct PlayerConfig {
     pub engine: String,
     pub quality: Quality,
@@ -25,6 +25,7 @@ impl Default for PlayerConfig {
 
 /// 音源配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SourceConfig {
     pub enabled: Vec<SourceId>,
     pub default: SourceId,
@@ -37,7 +38,7 @@ pub struct SourceConfig {
 impl Default for SourceConfig {
     fn default() -> Self {
         Self {
-            enabled: vec![SourceId::Kw],
+            enabled: SourceId::all_online().to_vec(),
             default: SourceId::Kw,
             auto_toggle: true,
             js_sources: vec![],
@@ -47,6 +48,7 @@ impl Default for SourceConfig {
 
 /// 歌词配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct LyricConfig {
     pub show_translation: bool,
     pub show_yrc: bool,
@@ -65,6 +67,7 @@ impl Default for LyricConfig {
 
 /// 网络配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct NetworkConfig {
     pub proxy_url: String,
     pub timeout: u64,
@@ -181,7 +184,7 @@ impl Default for UiConfig {
 }
 
 /// 本地音乐配置
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LocalMusicConfig {
     pub enabled: bool,
@@ -191,18 +194,9 @@ pub struct LocalMusicConfig {
     pub max_depth: u32,
 }
 
-impl Default for LocalMusicConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            paths: vec![],
-            max_depth: 0,
-        }
-    }
-}
-
 /// 应用完整配置
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Config {
     pub player: PlayerConfig,
     pub source: SourceConfig,
@@ -213,6 +207,4 @@ pub struct Config {
     pub ui: UiConfig,
     #[serde(default)]
     pub local_music: LocalMusicConfig,
-    /// 自定义快捷键
-    pub keybindings: HashMap<String, String>,
 }

@@ -13,7 +13,7 @@ pub fn load(custom_path: &str) -> anyhow::Result<(Config, PathBuf)> {
             migrate_legacy_theme(&mut config);
             Ok((config, config_path))
         }
-        Err(_) => {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             // 配置文件不存在，写入默认配置
             let config = Config::default();
             let toml_str = toml::to_string_pretty(&config)?;
@@ -23,6 +23,7 @@ pub fn load(custom_path: &str) -> anyhow::Result<(Config, PathBuf)> {
             fs::write(&config_path, toml_str)?;
             Ok((config, config_path))
         }
+        Err(error) => Err(error.into()),
     }
 }
 
@@ -70,7 +71,7 @@ pub fn save(config: &Config, path: &std::path::Path) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::migrate_legacy_theme;
+    use super::{load, migrate_legacy_theme};
     use lx_core::model::config::Config;
 
     #[test]
@@ -85,5 +86,26 @@ mod tests {
 
         assert_eq!(config.theme.base, "#1e1e2e");
         assert_eq!(config.theme.accent, "#cba6f7");
+    }
+
+    #[test]
+    fn loads_partial_config_with_defaults() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "voicefox-partial-config-{}-{}.toml",
+            std::process::id(),
+            unique
+        ));
+        std::fs::write(&path, "[player]\nvolume = 42\n").unwrap();
+
+        let (config, _) = load(path.to_str().unwrap()).unwrap();
+
+        assert_eq!(config.player.volume, 42);
+        assert_eq!(config.player.engine, "mpv");
+        assert_eq!(config.network.timeout, 15);
+        let _ = std::fs::remove_file(path);
     }
 }

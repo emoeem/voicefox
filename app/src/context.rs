@@ -36,6 +36,7 @@ pub struct AppContext {
     pub playlist: Arc<PlaylistManager>,
     pub current_song: Arc<std::sync::RwLock<Option<SongInfo>>>,
     pub play_request_id: Arc<AtomicU64>,
+    pub local_scan_request_id: Arc<AtomicU64>,
 
     // --- 配置 ---
     pub config: std::sync::RwLock<Config>,
@@ -51,11 +52,18 @@ pub struct AppContext {
 
 impl AppContext {
     pub async fn new(config: Config, config_path: PathBuf) -> anyhow::Result<Self> {
+        if !config.player.engine.eq_ignore_ascii_case("mpv") {
+            anyhow::bail!("不支持的播放器引擎: {}", config.player.engine);
+        }
+        lx_source::configure_network(&config.network.proxy_url, config.network.timeout);
         let player: Arc<dyn Player> = Arc::new(lx_player::engine::MpvEngine::new());
         player.set_volume(config.player.volume);
 
         // 创建音源管理器（JS 音源在 TUI 启动后异步加载）
-        let source_manager = Arc::new(SourceManager::new(config.source.default));
+        let source_manager = Arc::new(SourceManager::new(
+            config.source.default,
+            &config.source.enabled,
+        ));
 
         let lyric_service = Arc::new(LyricService::new(Arc::new(
             lx_lyric::fetcher::SourceLyricFetcher::new(source_manager.clone()),
@@ -63,7 +71,10 @@ impl AppContext {
         lyric_service.set_translation_enabled(config.lyric.show_translation);
         lyric_service.set_yrc_enabled(config.lyric.show_yrc);
         lyric_service.set_offset_ms(config.lyric.offset);
-        let cover_service = Arc::new(CoverService::new());
+        let cover_service = Arc::new(CoverService::new(
+            &config.network.proxy_url,
+            config.network.timeout,
+        ));
         let play_mode = crate::playlist::mode::PlayMode::from_config(&config.player.play_mode);
         let playlist = Arc::new(PlaylistManager::new(play_mode));
 
@@ -82,6 +93,7 @@ impl AppContext {
             playlist,
             current_song: Arc::new(std::sync::RwLock::new(None)),
             play_request_id: Arc::new(AtomicU64::new(0)),
+            local_scan_request_id: Arc::new(AtomicU64::new(0)),
             config: std::sync::RwLock::new(config),
             config_path,
             notifications: std::sync::RwLock::new(VecDeque::new()),

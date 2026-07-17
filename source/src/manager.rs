@@ -2,7 +2,7 @@
 //!
 //! 对标 lx-music src/renderer/utils/musicSdk/index.js
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use lx_core::model::lyric::LyricData;
@@ -12,29 +12,39 @@ use lx_core::traits::source::{FetchError, MusicSource, SearchError, SearchResult
 
 use crate::kg::KgSource;
 use crate::kw::KwSource;
+use crate::local::LocalSource;
 use crate::mg::MgSource;
 use crate::tx::TxSource;
 use crate::wy::WySource;
-use crate::local::LocalSource;
+
+struct JsSourceState {
+    generation: u64,
+    source: Option<Arc<dyn MusicSource>>,
+}
 
 /// 音源管理器
 pub struct SourceManager {
     sources: HashMap<SourceId, Arc<dyn MusicSource>>,
     /// JS 自定义音源（MVP：只支持一个），用 RwLock 支持后台异步设置
-    js_source: std::sync::RwLock<Option<Arc<dyn MusicSource>>>,
+    js_source: std::sync::RwLock<JsSourceState>,
     /// 本地音乐源（单独存储以便调用扫描等特有方法）
     local_source: Arc<LocalSource>,
     default: SourceId,
+    enabled: HashSet<SourceId>,
 }
 
 impl SourceManager {
-    pub fn new(default: SourceId) -> Self {
+    pub fn new(default: SourceId, enabled: &[SourceId]) -> Self {
         let local_source = Arc::new(LocalSource::new());
         let mut manager = Self {
             sources: HashMap::new(),
-            js_source: std::sync::RwLock::new(None),
+            js_source: std::sync::RwLock::new(JsSourceState {
+                generation: 0,
+                source: None,
+            }),
             local_source: Arc::clone(&local_source),
             default,
+            enabled: enabled.iter().copied().collect(),
         };
         // 注册内置音源
         manager.register(Arc::new(KwSource::new()));
@@ -51,19 +61,42 @@ impl SourceManager {
         self.sources.insert(source.id(), source);
     }
 
-    /// 设置 JS 自定义音源（&self，支持从后台任务调用）
-    pub fn set_js_source(&self, source: Arc<dyn MusicSource>) {
-        *self.js_source.write().unwrap() = Some(source);
+    /// 开始一次 JS 音源请求。代次和当前音源受同一把锁保护，
+    /// 避免旧任务在检查代次后跨过删除或新导入操作写回。
+    pub fn begin_js_source_request(&self, clear_current: bool) -> u64 {
+        let mut state = self.js_source.write().unwrap();
+        state.generation = state.generation.wrapping_add(1);
+        if clear_current {
+            state.source = None;
+        }
+        state.generation
     }
 
-    /// 清除当前 JS 音源。
-    pub fn clear_js_source(&self) {
-        *self.js_source.write().unwrap() = None;
+    pub fn is_js_source_request_current(&self, generation: u64) -> bool {
+        self.js_source.read().unwrap().generation == generation
+    }
+
+    pub fn set_js_source_if_current(&self, generation: u64, source: Arc<dyn MusicSource>) -> bool {
+        let mut state = self.js_source.write().unwrap();
+        if state.generation != generation {
+            return false;
+        }
+        state.source = Some(source);
+        true
+    }
+
+    pub fn clear_js_source_if_current(&self, generation: u64) -> bool {
+        let mut state = self.js_source.write().unwrap();
+        if state.generation != generation {
+            return false;
+        }
+        state.source = None;
+        true
     }
 
     /// 检查是否有 JS 音源
     pub fn has_js_source(&self) -> bool {
-        self.js_source.read().unwrap().is_some()
+        self.js_source.read().unwrap().source.is_some()
     }
 
     pub fn get(&self, id: SourceId) -> Option<Arc<dyn MusicSource>> {
@@ -89,6 +122,12 @@ impl SourceManager {
         page: u32,
         limit: u32,
     ) -> Result<SearchResult, SearchError> {
+        if !self.enabled.contains(&self.default) {
+            return Err(SearchError::Other(format!(
+                "默认音源 {} 未启用",
+                self.default.as_str()
+            )));
+        }
         self.default_source().search(keyword, page, limit).await
     }
 
@@ -102,6 +141,12 @@ impl SourceManager {
         let Some(source) = source else {
             return self.search_all(keyword, page, limit).await;
         };
+        if source != SourceId::Local && !self.enabled.contains(&source) {
+            return Err(SearchError::Other(format!(
+                "音源 {} 未启用",
+                source.as_str()
+            )));
+        }
         let source = self
             .sources
             .get(&source)
@@ -119,6 +164,9 @@ impl SourceManager {
         let per_source_limit = (limit / 2).max(10);
         let mut tasks = tokio::task::JoinSet::new();
         for source_id in SourceId::all_online() {
+            if !self.enabled.contains(source_id) {
+                continue;
+            }
             if let Some(source) = self.sources.get(source_id) {
                 let source = Arc::clone(source);
                 let keyword = keyword.to_string();
@@ -207,6 +255,7 @@ impl SourceManager {
             .js_source
             .read()
             .unwrap()
+            .source
             .as_ref()
             .map(Arc::clone)
             .ok_or_else(|| {
@@ -217,7 +266,13 @@ impl SourceManager {
 
     /// 优先使用已导入的 lx-music JS 音源获取歌词，空结果时回退到内置搜索源。
     pub async fn get_lyric(&self, song: &SongInfo) -> Result<LyricData, FetchError> {
-        let js_source = self.js_source.read().unwrap().as_ref().map(Arc::clone);
+        let js_source = self
+            .js_source
+            .read()
+            .unwrap()
+            .source
+            .as_ref()
+            .map(Arc::clone);
         if let Some(js_source) = js_source
             && let Ok(data) = js_source.get_lyric(song).await
             && lyric_has_content(&data)
@@ -238,7 +293,13 @@ impl SourceManager {
         if let Some(url) = song.cover_url.as_ref().filter(|url| !url.trim().is_empty()) {
             return Ok(url.clone());
         }
-        let js_source = self.js_source.read().unwrap().as_ref().map(Arc::clone);
+        let js_source = self
+            .js_source
+            .read()
+            .unwrap()
+            .source
+            .as_ref()
+            .map(Arc::clone);
         if let Some(js_source) = js_source
             && let Ok(url) = js_source.get_cover_url(song).await
             && !url.trim().is_empty()
@@ -263,7 +324,7 @@ impl SourceManager {
         // 1. 并行搜索所有其他源
         let mut tasks = tokio::task::JoinSet::new();
         for id in SourceId::all_online() {
-            if *id == exclude {
+            if *id == exclude || !self.enabled.contains(id) {
                 continue;
             }
             if let Some(source) = self.sources.get(id) {
@@ -370,8 +431,10 @@ fn match_score(s: &SongInfo, t_name: &str, t_singer: &str, t_intv: i64) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::lyric_has_content;
+    use super::{SourceManager, lyric_has_content};
     use lx_core::model::lyric::LyricData;
+    use lx_core::model::source::SourceId;
+    use std::sync::Arc;
 
     #[test]
     fn translated_lyrics_count_as_content() {
@@ -382,5 +445,22 @@ mod tests {
 
         assert!(lyric_has_content(&data));
         assert!(!lyric_has_content(&LyricData::default()));
+    }
+
+    #[test]
+    fn stale_js_source_request_cannot_commit() {
+        let manager = SourceManager::new(SourceId::Kw, SourceId::all_online());
+        let stale_generation = manager.begin_js_source_request(false);
+        let current_generation = manager.begin_js_source_request(true);
+
+        assert!(!manager.set_js_source_if_current(
+            stale_generation,
+            Arc::new(crate::local::LocalSource::new()),
+        ));
+        assert!(manager.set_js_source_if_current(
+            current_generation,
+            Arc::new(crate::local::LocalSource::new()),
+        ));
+        assert!(manager.has_js_source());
     }
 }

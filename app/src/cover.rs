@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::RwLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use ratatui::buffer::Buffer;
@@ -28,12 +28,16 @@ pub struct CoverService {
 }
 
 impl CoverService {
-    pub fn new() -> Self {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(12))
-            .user_agent("voicefox/0.1")
-            .build()
-            .unwrap_or_default();
+    pub fn new(proxy_url: &str, timeout_secs: u64) -> Self {
+        let mut builder = reqwest::Client::builder()
+            .timeout(Duration::from_secs(timeout_secs.clamp(1, 300)))
+            .user_agent("voicefox/0.1");
+        if !proxy_url.trim().is_empty()
+            && let Ok(proxy) = reqwest::Proxy::all(proxy_url.trim())
+        {
+            builder = builder.proxy(proxy);
+        }
+        let client = builder.build().unwrap_or_default();
         Self {
             client,
             image_path: RwLock::new(None),

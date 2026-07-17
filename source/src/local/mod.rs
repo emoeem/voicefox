@@ -1,9 +1,10 @@
-pub mod scanner;
 pub mod metadata;
+pub mod scanner;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::RwLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
 
@@ -25,6 +26,7 @@ pub struct LocalSource {
     songs: RwLock<HashMap<PathBuf, Vec<LocalSong>>>,
     /// 当前加载的目录列表
     loaded_paths: RwLock<Vec<PathBuf>>,
+    scan_generation: AtomicU64,
 }
 
 impl LocalSource {
@@ -32,16 +34,31 @@ impl LocalSource {
         Self {
             songs: RwLock::new(HashMap::new()),
             loaded_paths: RwLock::new(Vec::new()),
+            scan_generation: AtomicU64::new(0),
         }
+    }
+
+    pub fn begin_scan(&self) -> u64 {
+        self.scan_generation.fetch_add(1, Ordering::SeqCst) + 1
     }
 
     /// 扫描指定目录并加载歌曲
     pub fn scan(&self, paths: &[String], max_depth: u32) -> Vec<String> {
+        let generation = self.begin_scan();
+        self.scan_for_generation(paths, max_depth, generation)
+    }
+
+    pub fn scan_for_generation(
+        &self,
+        paths: &[String],
+        max_depth: u32,
+        generation: u64,
+    ) -> Vec<String> {
         let mut all_songs: HashMap<PathBuf, Vec<LocalSong>> = HashMap::new();
         let mut errors = Vec::new();
 
         for path_str in paths {
-            let path = PathBuf::from(path_str);
+            let path = expand_path(path_str);
             if !path.exists() || !path.is_dir() {
                 errors.push(format!("目录不存在: {}", path_str));
                 continue;
@@ -55,8 +72,11 @@ impl LocalSource {
             }
         }
 
+        if self.scan_generation.load(Ordering::SeqCst) != generation {
+            return errors;
+        }
         *self.songs.write().unwrap() = all_songs;
-        *self.loaded_paths.write().unwrap() = paths.iter().map(|p| PathBuf::from(p)).collect();
+        *self.loaded_paths.write().unwrap() = paths.iter().map(|path| expand_path(path)).collect();
 
         if errors.is_empty() {
             let total: usize = self.songs.read().unwrap().values().map(|v| v.len()).sum();
@@ -105,13 +125,13 @@ impl MusicSource for LocalSource {
     async fn search(
         &self,
         keyword: &str,
-        _page: u32,
-        _limit: u32,
+        page: u32,
+        limit: u32,
     ) -> Result<SearchResult, SearchError> {
         let all = self.all_songs();
         let keyword = keyword.to_lowercase();
 
-        let items: Vec<SongInfo> = if keyword.is_empty() {
+        let matching: Vec<SongInfo> = if keyword.is_empty() {
             all
         } else {
             all.into_iter()
@@ -122,10 +142,14 @@ impl MusicSource for LocalSource {
                 })
                 .collect()
         };
+        let total = matching.len();
+        let limit = limit.max(1) as usize;
+        let start = page.saturating_sub(1) as usize * limit;
+        let items = matching.into_iter().skip(start).take(limit).collect();
 
         Ok(SearchResult {
-            total: items.len() as u32,
-            has_more: false,
+            total: total as u32,
+            has_more: start.saturating_add(limit) < total,
             items,
         })
     }
@@ -139,12 +163,16 @@ impl MusicSource for LocalSource {
             Some(p) => p.clone(),
             None => {
                 let p = PathBuf::from(&song.id);
-                if p.exists() { p } else { return Err(FetchError::NotFound); }
+                if p.exists() {
+                    p
+                } else {
+                    return Err(FetchError::NotFound);
+                }
             }
         };
 
         Ok(SongUrl {
-            url: format!("file://{}", path.display()),
+            url: path.to_string_lossy().to_string(),
             quality: Quality::High320,
             duration: song.duration,
             cover_url: song.cover_url.clone(),
@@ -155,18 +183,24 @@ impl MusicSource for LocalSource {
     async fn get_lyric(&self, song: &SongInfo) -> Result<LyricData, FetchError> {
         if let Some(file_path) = &song.file_path {
             let lrc_path = file_path.with_extension("lrc");
-            if lrc_path.exists() {
-                if let Ok(content) = std::fs::read_to_string(&lrc_path) {
-                    return Ok(LyricData { lyric: content, ..Default::default() });
-                }
+            if lrc_path.exists()
+                && let Ok(content) = std::fs::read_to_string(&lrc_path)
+            {
+                return Ok(LyricData {
+                    lyric: content,
+                    ..Default::default()
+                });
             }
         }
         // 也尝试 id 路径
         let p = PathBuf::from(&song.id).with_extension("lrc");
-        if p.exists() {
-            if let Ok(content) = std::fs::read_to_string(&p) {
-                return Ok(LyricData { lyric: content, ..Default::default() });
-            }
+        if p.exists()
+            && let Ok(content) = std::fs::read_to_string(&p)
+        {
+            return Ok(LyricData {
+                lyric: content,
+                ..Default::default()
+            });
         }
         Ok(LyricData::default())
     }
@@ -180,5 +214,37 @@ impl MusicSource for LocalSource {
 
     fn supported_qualities(&self) -> Vec<Quality> {
         vec![Quality::High320]
+    }
+}
+
+impl Default for LocalSource {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn expand_path(value: &str) -> PathBuf {
+    if let Some(relative) = value.strip_prefix("~/")
+        && let Some(home) = dirs::home_dir()
+    {
+        return home.join(relative);
+    }
+    PathBuf::from(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LocalSource;
+
+    #[test]
+    fn stale_scan_cannot_replace_newer_paths() {
+        let source = LocalSource::new();
+        let stale_generation = source.begin_scan();
+        let current_generation = source.begin_scan();
+
+        source.scan_for_generation(&[], 0, current_generation);
+        source.scan_for_generation(&[".".to_string()], 0, stale_generation);
+
+        assert!(source.loaded_paths().is_empty());
     }
 }

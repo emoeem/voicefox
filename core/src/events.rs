@@ -43,8 +43,19 @@ pub enum AppAction {
     },
     ShowNotification(Notification),
     ImportSource(String),
-    SourceImported(String),
+    SourceImported {
+        url: String,
+        generation: u64,
+    },
+    SourceImportFailed {
+        error: String,
+        generation: u64,
+    },
     RemoveSource(String),
+    ScanLocalMusic {
+        paths: Vec<String>,
+        max_depth: u32,
+    },
     None,
 }
 

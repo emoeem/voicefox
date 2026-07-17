@@ -7,8 +7,9 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 /// JS 引擎：封装一个 Node.js 子进程运行用户音源脚本
 pub struct JsEngine {
@@ -16,8 +17,9 @@ pub struct JsEngine {
     _child: Mutex<Child>,
     /// stdin 写入端
     stdin: Mutex<ChildStdin>,
-    /// stdout 读取端
-    stdout: Mutex<BufReader<std::process::ChildStdout>>,
+    /// stdout 由专用线程持续读取，调用方通过通道进行可超时等待。
+    output_rx: Mutex<std::sync::mpsc::Receiver<String>>,
+    _reader_handle: Mutex<Option<std::thread::JoinHandle<()>>>,
     /// 请求 ID 计数器
     req_id: AtomicU64,
     /// 当前脚本路径，用于子进程异常后的重启
@@ -35,15 +37,26 @@ impl JsEngine {
 
         // 将 wrapper.js 写入临时文件
         let tmp_dir = std::env::temp_dir().join("lx-tui-js");
-        std::fs::create_dir_all(&tmp_dir)
-            .map_err(|e| format!("无法创建临时目录: {}", e))?;
+        std::fs::create_dir_all(&tmp_dir).map_err(|e| format!("无法创建临时目录: {}", e))?;
         let wrapper_path = tmp_dir.join("wrapper.js");
         std::fs::write(&wrapper_path, wrapper_js)
             .map_err(|e| format!("无法写入 wrapper.js: {}", e))?;
 
-        // 启动 Node.js 子进程
+        let wrapper_path_string = wrapper_path
+            .to_str()
+            .ok_or_else(|| "wrapper.js 路径包含无效字符".to_string())?;
+        if !node_supports_permission_mode() {
+            return Err("当前 Node.js 不支持权限隔离模式，请升级 Node.js".to_string());
+        }
+
+        // 启动 Node.js 子进程。权限模式只允许读取运行时和当前音源文件，
+        // 默认拒绝文件写入、子进程、Worker、原生扩展等高风险能力。
         let mut child = Command::new("node")
-            .arg(wrapper_path.to_str().unwrap())
+            .arg("--permission")
+            .arg(format!("--allow-fs-read={wrapper_path_string}"))
+            .arg(format!("--allow-fs-read={source_path}"))
+            .arg("--disable-proto=throw")
+            .arg(wrapper_path_string)
             .arg(source_path)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -51,19 +64,30 @@ impl JsEngine {
             .spawn()
             .map_err(|e| format!("启动 Node.js 失败（请确认已安装 Node.js）: {}", e))?;
 
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or("无法获取子进程 stdin")?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or("无法获取子进程 stdout")?;
+        let stdin = child.stdin.take().ok_or("无法获取子进程 stdin")?;
+        let stdout = child.stdout.take().ok_or("无法获取子进程 stdout")?;
+        let (output_tx, output_rx) = std::sync::mpsc::channel();
+        let reader_handle = std::thread::spawn(move || {
+            let mut stdout = BufReader::new(stdout);
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match stdout.read_line(&mut line) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {
+                        if output_tx.send(line.trim().to_string()).is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
 
         let engine = Self {
             _child: Mutex::new(child),
             stdin: Mutex::new(stdin),
-            stdout: Mutex::new(BufReader::new(stdout)),
+            output_rx: Mutex::new(output_rx),
+            _reader_handle: Mutex::new(Some(reader_handle)),
             req_id: AtomicU64::new(0),
             source_path: source_path.to_string(),
             init_info: Mutex::new(None),
@@ -114,8 +138,7 @@ impl JsEngine {
         let cmd = serde_json::json!({ "type": "ping", "id": id });
 
         self.send_command(&cmd)?;
-        self.wait_response(id, std::time::Duration::from_secs(5))
-            .map(|_| ())
+        self.wait_response(id, Duration::from_secs(5)).map(|_| ())
     }
 
     fn wait_initialized(&self) -> Result<(), String> {
@@ -123,21 +146,10 @@ impl JsEngine {
             return Ok(());
         }
 
-        let mut stdout = self
-            .stdout
-            .lock()
-            .map_err(|e| format!("stdout lock error: {}", e))?;
-        let mut line = String::new();
+        let deadline = Instant::now() + Duration::from_secs(16);
         loop {
-            line.clear();
-            let count = stdout
-                .read_line(&mut line)
-                .map_err(|e| format!("读取子进程输出失败: {}", e))?;
-            if count == 0 {
-                return Err("JS 引擎子进程已退出".to_string());
-            }
-
-            let response: serde_json::Value = match serde_json::from_str(line.trim()) {
+            let line = self.recv_output(deadline, "JS 音源初始化超时")?;
+            let response: serde_json::Value = match serde_json::from_str(&line) {
                 Ok(value) => value,
                 Err(_) => continue,
             };
@@ -189,7 +201,7 @@ impl JsEngine {
         });
 
         self.send_command(&cmd)?;
-        self.wait_response(id, std::time::Duration::from_secs(16))
+        self.wait_response(id, Duration::from_secs(16))
     }
 
     /// 发送 JSON 命令到子进程 stdin
@@ -198,10 +210,8 @@ impl JsEngine {
             .stdin
             .lock()
             .map_err(|e| format!("stdin lock error: {}", e))?;
-        let line = serde_json::to_string(cmd)
-            .map_err(|e| format!("序列化命令失败: {}", e))?;
-        writeln!(stdin, "{}", line)
-            .map_err(|e| format!("写入子进程失败: {}", e))?;
+        let line = serde_json::to_string(cmd).map_err(|e| format!("序列化命令失败: {}", e))?;
+        writeln!(stdin, "{}", line).map_err(|e| format!("写入子进程失败: {}", e))?;
         Ok(())
     }
 
@@ -209,36 +219,17 @@ impl JsEngine {
     fn wait_response(
         &self,
         expected_id: u64,
-        timeout: std::time::Duration,
+        timeout: Duration,
     ) -> Result<serde_json::Value, String> {
-        let start = std::time::Instant::now();
-        let mut stdout = self
-            .stdout
-            .lock()
-            .map_err(|e| format!("stdout lock error: {}", e))?;
-
-        let mut line = String::new();
+        let deadline = Instant::now() + timeout;
         loop {
-            if start.elapsed() > timeout {
-                return Err("JS 引擎响应超时".to_string());
-            }
-
-            line.clear();
-            let n = stdout
-                .read_line(&mut line)
-                .map_err(|e| format!("读取子进程输出失败: {}", e))?;
-
-            if n == 0 {
-                return Err("JS 引擎子进程已退出".to_string());
-            }
-
-            let line = line.trim();
+            let line = self.recv_output(deadline, "JS 引擎响应超时")?;
             if line.is_empty() {
                 continue;
             }
 
             // 尝试解析为 JSON
-            let resp: serde_json::Value = match serde_json::from_str(line) {
+            let resp: serde_json::Value = match serde_json::from_str(&line) {
                 Ok(v) => v,
                 Err(_) => continue, // 跳过非 JSON 行
             };
@@ -259,16 +250,32 @@ impl JsEngine {
             }
 
             // 匹配响应 ID
-            if let Some(id) = resp.get("id").and_then(|v| v.as_u64()) {
-                if id == expected_id {
-                    if let Some(err) = resp.get("error").and_then(|v| v.as_str()) {
-                        return Err(err.to_string());
-                    }
-                    return Ok(resp["result"].clone());
+            if let Some(id) = resp.get("id").and_then(|v| v.as_u64())
+                && id == expected_id
+            {
+                if let Some(err) = resp.get("error").and_then(|v| v.as_str()) {
+                    return Err(err.to_string());
                 }
-                // 不匹配的响应跳过（可能是之前的响应）
+                return Ok(resp["result"].clone());
             }
+            // 不匹配的响应跳过（可能是之前的响应）
         }
+    }
+
+    fn recv_output(&self, deadline: Instant, timeout_message: &str) -> Result<String, String> {
+        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+            return Err(timeout_message.to_string());
+        };
+        self.output_rx
+            .lock()
+            .map_err(|e| format!("stdout channel lock error: {e}"))?
+            .recv_timeout(remaining)
+            .map_err(|error| match error {
+                std::sync::mpsc::RecvTimeoutError::Timeout => timeout_message.to_string(),
+                std::sync::mpsc::RecvTimeoutError::Disconnected => {
+                    "JS 引擎子进程已退出".to_string()
+                }
+            })
     }
 }
 
@@ -279,5 +286,22 @@ impl Drop for JsEngine {
             let _ = child.kill();
             let _ = child.wait();
         }
+        if let Ok(mut handle) = self._reader_handle.lock()
+            && let Some(handle) = handle.take()
+        {
+            let _ = handle.join();
+        }
     }
+}
+
+fn node_supports_permission_mode() -> bool {
+    static SUPPORTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *SUPPORTED.get_or_init(|| {
+        Command::new("node")
+            .arg("--help")
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .is_some_and(|output| String::from_utf8_lossy(&output.stdout).contains("--permission"))
+    })
 }

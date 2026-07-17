@@ -12,25 +12,31 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc;
 
-/// 平台相关的 socket 类型
-#[cfg(unix)]
-use std::os::unix::net::UnixStream as SocketStream;
+#[cfg(windows)]
+use interprocess::TryClone as _;
 #[cfg(windows)]
 use interprocess::local_socket::Stream as SocketStream;
 #[cfg(windows)]
 use interprocess::local_socket::traits::Stream as _;
 #[cfg(windows)]
-use interprocess::TryClone as _;
+use interprocess::local_socket::{GenericNamespaced, ToNsName as _};
+/// 平台相关的 socket 类型
+#[cfg(unix)]
+use std::os::unix::net::UnixStream as SocketStream;
 
 /// mpv IPC 客户端
 pub struct MpvIpc {
     process: Mutex<std::process::Child>,
+    #[cfg(unix)]
     socket_path: String,
     cmd_conn: Mutex<SocketStream>,
-    query_conn: Mutex<BufReader<SocketStream>>,
+    query_conn: Mutex<SocketStream>,
+    query_rx: Mutex<std::sync::mpsc::Receiver<String>>,
+    query_lock: Mutex<()>,
     query_request_id: AtomicU64,
     event_rx: Mutex<Option<mpsc::UnboundedReceiver<MpvEvent>>>,
     _cmd_handle: Mutex<Option<std::thread::JoinHandle<()>>>,
+    _query_handle: Mutex<Option<std::thread::JoinHandle<()>>>,
     _event_handle: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
@@ -61,22 +67,27 @@ impl MpvIpc {
     /// mpv 的 --input-ipc-server 参数值
     fn ipc_arg(path: &str) -> String {
         #[cfg(unix)]
-        { path.to_string() }
+        {
+            path.to_string()
+        }
         #[cfg(windows)]
-        { format!("\\\\.\\pipe\\{}", path) }
+        {
+            format!("\\\\.\\pipe\\{}", path)
+        }
     }
 
     /// 连接本地 socket
     fn connect(path: &str) -> Result<SocketStream, String> {
         #[cfg(unix)]
         {
-            std::os::unix::net::UnixStream::connect(path)
-                .map_err(|e| format!("connect: {e}"))
+            std::os::unix::net::UnixStream::connect(path).map_err(|e| format!("connect: {e}"))
         }
         #[cfg(windows)]
         {
-            interprocess::local_socket::Stream::connect(path)
-                .map_err(|e| format!("connect: {e}"))
+            let name = path
+                .to_ns_name::<GenericNamespaced>()
+                .map_err(|e| format!("invalid pipe name: {e}"))?;
+            interprocess::local_socket::Stream::connect(name).map_err(|e| format!("connect: {e}"))
         }
     }
 
@@ -132,13 +143,13 @@ impl MpvIpc {
         }
 
         // 连接命令 socket
-        let cmd_conn = Self::connect(&socket_path)
-            .map_err(|e| MpvError::Ipc(e))?;
+        let cmd_conn = Self::connect(&socket_path).map_err(MpvError::Ipc)?;
         #[cfg(unix)]
         let _ = cmd_conn.set_write_timeout(Some(Duration::from_millis(150)));
 
         // 排空线程
-        let cmd_reader = cmd_conn.try_clone()
+        let cmd_reader = cmd_conn
+            .try_clone()
             .map_err(|e| MpvError::Ipc(format!("clone: {e}")))?;
         let cmd_handle = std::thread::spawn(move || {
             let mut reader = BufReader::new(cmd_reader);
@@ -153,8 +164,26 @@ impl MpvIpc {
         });
 
         // 查询 socket
-        let query_conn = Self::connect(&socket_path)
-            .map_err(|e| MpvError::Ipc(e))?;
+        let query_conn = Self::connect(&socket_path).map_err(MpvError::Ipc)?;
+        let query_reader = query_conn
+            .try_clone()
+            .map_err(|e| MpvError::Ipc(format!("clone query socket: {e}")))?;
+        let (query_tx, query_rx) = std::sync::mpsc::channel();
+        let query_handle = std::thread::spawn(move || {
+            let mut reader = BufReader::new(query_reader);
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match reader.read_line(&mut line) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {
+                        if query_tx.send(line.trim().to_string()).is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
 
         // 事件监听
         let (event_tx, event_rx) = mpsc::unbounded_channel();
@@ -171,7 +200,8 @@ impl MpvIpc {
                 match reader.read_line(&mut line) {
                     Ok(0) => break,
                     Ok(_) => {
-                        if serde_json::from_str::<serde_json::Value>(&line).ok()
+                        if serde_json::from_str::<serde_json::Value>(&line)
+                            .ok()
                             .is_some_and(|v| {
                                 v["event"].as_str() == Some("end-file")
                                     && v["reason"].as_str() == Some("eof")
@@ -187,12 +217,16 @@ impl MpvIpc {
 
         Ok(Self {
             process: Mutex::new(process),
+            #[cfg(unix)]
             socket_path,
             cmd_conn: Mutex::new(cmd_conn),
-            query_conn: Mutex::new(BufReader::new(query_conn)),
+            query_conn: Mutex::new(query_conn),
+            query_rx: Mutex::new(query_rx),
+            query_lock: Mutex::new(()),
             query_request_id: AtomicU64::new(0),
             event_rx: Mutex::new(Some(event_rx)),
             _cmd_handle: Mutex::new(Some(cmd_handle)),
+            _query_handle: Mutex::new(Some(query_handle)),
             _event_handle: Mutex::new(Some(event_handle)),
         })
     }
@@ -206,33 +240,44 @@ impl MpvIpc {
     }
 
     pub fn get_property(&self, name: &str) -> Result<String, MpvError> {
+        let _query_guard = self.query_lock.lock().unwrap();
         let request_id = self.query_request_id.fetch_add(1, Ordering::Relaxed) + 1;
         let cmd = serde_json::json!({
             "command": ["get_property", name],
             "request_id": request_id,
-        }).to_string();
+        })
+        .to_string();
 
-        let mut conn = self.query_conn.lock().unwrap();
-        conn.get_mut().write_all(cmd.as_bytes())
-            .and_then(|_| conn.get_mut().write_all(b"\n"))
-            .and_then(|_| conn.get_mut().flush())
-            .map_err(|e| MpvError::Ipc(e.to_string()))?;
+        {
+            let mut conn = self.query_conn.lock().unwrap();
+            conn.write_all(cmd.as_bytes())
+                .and_then(|_| conn.write_all(b"\n"))
+                .and_then(|_| conn.flush())
+                .map_err(|e| MpvError::Ipc(e.to_string()))?;
+        }
 
         let deadline = Instant::now() + Duration::from_millis(500);
-        let mut line = String::new();
+        let responses = self.query_rx.lock().unwrap();
         loop {
-            if Instant::now() >= deadline {
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
                 return Err(MpvError::Ipc(format!("timeout reading property {name}")));
-            }
-            line.clear();
-            if conn.read_line(&mut line).is_err() || line.is_empty() {
-                return Err(MpvError::Ipc("mpv query socket closed".to_string()));
-            }
-            if serde_json::from_str::<serde_json::Value>(&line).ok()
+            };
+            let line = responses
+                .recv_timeout(remaining)
+                .map_err(|error| match error {
+                    std::sync::mpsc::RecvTimeoutError::Timeout => {
+                        MpvError::Ipc(format!("timeout reading property {name}"))
+                    }
+                    std::sync::mpsc::RecvTimeoutError::Disconnected => {
+                        MpvError::Ipc("mpv query socket closed".to_string())
+                    }
+                })?;
+            if serde_json::from_str::<serde_json::Value>(&line)
+                .ok()
                 .and_then(|v| v["request_id"].as_u64())
                 == Some(request_id)
             {
-                return Ok(line.trim().to_string());
+                return Ok(line);
             }
         }
     }
@@ -243,7 +288,8 @@ impl MpvIpc {
 
     pub fn set_volume(&self, vol: u32) -> Result<(), MpvError> {
         self.send_command(&format!(
-            "{{\"command\": [\"set_property\", \"volume\", {}]}}", vol
+            "{{\"command\": [\"set_property\", \"volume\", {}]}}",
+            vol
         ))
     }
 
