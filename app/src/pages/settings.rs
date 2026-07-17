@@ -208,10 +208,15 @@ impl SettingsPage {
                     // 触发扫描
                     let paths = ctx.config.read().unwrap().local_music.paths.clone();
                     let max_depth = ctx.config.read().unwrap().local_music.max_depth;
-                    ctx.source_manager.local_source().scan(&paths, max_depth);
+                    let errors = ctx.source_manager.local_source().scan(&paths, max_depth);
                     self.local_path_mode = false;
                     self.local_path_input.clear();
-                    self.status_msg = Some("本地音乐目录已添加".to_string());
+                    if errors.is_empty() {
+                        let count = ctx.source_manager.local_source().all_songs().len();
+                        self.status_msg = Some(format!("扫描完成，共 {} 首", count));
+                    } else {
+                        self.status_msg = Some(format!("错误: {}", errors.join("; ")));
+                    }
                 }
                 AppAction::None
             }
