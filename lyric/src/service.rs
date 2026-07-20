@@ -65,6 +65,9 @@ impl LyricService {
             return Ok(());
         }
         let mut lrc_lines = crate::parser::lrc::parse(&data.lyric);
+        if lrc_lines.is_empty() && !data.lyric.trim().is_empty() {
+            lrc_lines = Self::plain_text_as_lines(&data.lyric, song.duration);
+        }
         let yrc_lines = if *self.show_yrc.read().unwrap() {
             data.lxlyric
                 .as_deref()
@@ -211,6 +214,36 @@ impl LyricService {
             .collect()
     }
 
+    /// 部分本地文件只嵌入纯文本歌词，没有 LRC 时间戳。仍然显示它，
+    /// 并按歌曲时长平均分配行时间，使播放时有可用的当前行。
+    fn plain_text_as_lines(text: &str, duration: Duration) -> Vec<LyricLine> {
+        let lines: Vec<String> = text
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(ToOwned::to_owned)
+            .collect();
+        if lines.is_empty() {
+            return Vec::new();
+        }
+        let total_ms = u64::try_from(duration.as_millis()).unwrap_or(u64::MAX);
+        let interval = if total_ms == 0 {
+            5_000
+        } else {
+            (total_ms / lines.len() as u64).max(1_000)
+        };
+
+        lines
+            .into_iter()
+            .enumerate()
+            .map(|(index, text)| LyricLine {
+                timestamp: index as u64 * interval,
+                text,
+                duration: interval,
+            })
+            .collect()
+    }
+
     /// 获取当前歌词状态快照
     pub fn current_state(&self) -> LyricState {
         self.state.read().unwrap().clone()
@@ -303,6 +336,16 @@ mod tests {
         service.update_position(Duration::from_secs(7));
 
         assert_eq!(service.current_state().current_line, 1);
+    }
+
+    #[test]
+    fn converts_plain_text_lyrics_to_displayable_lines() {
+        let lines = LyricService::plain_text_as_lines("第一行\n\n第二行", Duration::from_secs(20));
+
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].timestamp, 0);
+        assert_eq!(lines[1].timestamp, 10_000);
+        assert_eq!(lines[1].text, "第二行");
     }
 
     #[tokio::test]

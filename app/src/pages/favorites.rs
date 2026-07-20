@@ -1,7 +1,7 @@
 //! 收藏页面
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
-use lx_core::events::AppAction;
+use lx_core::events::{AppAction, InsertPosition};
 use lx_core::model::song::SongInfo;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -131,14 +131,44 @@ impl FavoritesPage {
                     };
                 }
             }
-            (KeyModifiers::NONE, KeyCode::Char('d')) => {
+            (KeyModifiers::NONE, KeyCode::Char('a')) => {
+                if let Some(song) = filtered
+                    .get(self.selected)
+                    .and_then(|index| favorites.get(*index))
+                    .cloned()
+                {
+                    return AppAction::AddToQueue {
+                        song: Box::new(song),
+                        position: InsertPosition::End,
+                    };
+                }
+            }
+            (KeyModifiers::NONE, KeyCode::Char('A'))
+            | (KeyModifiers::SHIFT, KeyCode::Char('A')) => {
+                if let Some(song) = filtered
+                    .get(self.selected)
+                    .and_then(|index| favorites.get(*index))
+                    .cloned()
+                {
+                    return AppAction::AddToQueue {
+                        song: Box::new(song),
+                        position: InsertPosition::Next,
+                    };
+                }
+            }
+            (KeyModifiers::NONE, KeyCode::Char('d'))
+            | (KeyModifiers::NONE, KeyCode::Delete)
+            | (KeyModifiers::CONTROL, KeyCode::Char('l')) => {
                 if let Some(original_index) = filtered.get(self.selected).copied()
                     && let Some(song) = favorites.get(original_index)
+                    && ctx.storage.remove_favorite(song)
                 {
-                    ctx.storage.remove_favorite(song);
                     let remaining = ctx.storage.load_favorites();
                     let remaining_len = self.filtered_indices(&remaining).len();
                     self.clamp_selection(remaining_len);
+                    return AppAction::ShowNotification(lx_core::events::Notification::info(
+                        "已取消收藏",
+                    ));
                 }
             }
             _ => {}

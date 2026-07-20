@@ -1,6 +1,6 @@
 //! 全局应用状态
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
@@ -36,6 +36,7 @@ pub struct AppContext {
     pub playlist: Arc<PlaylistManager>,
     pub current_song: Arc<std::sync::RwLock<Option<SongInfo>>>,
     pub play_request_id: Arc<AtomicU64>,
+    pub play_attempted_sources: Arc<std::sync::Mutex<HashSet<lx_core::model::source::SourceId>>>,
     pub local_scan_request_id: Arc<AtomicU64>,
 
     // --- 配置 ---
@@ -93,6 +94,7 @@ impl AppContext {
             playlist,
             current_song: Arc::new(std::sync::RwLock::new(None)),
             play_request_id: Arc::new(AtomicU64::new(0)),
+            play_attempted_sources: Arc::new(std::sync::Mutex::new(HashSet::new())),
             local_scan_request_id: Arc::new(AtomicU64::new(0)),
             config: std::sync::RwLock::new(config),
             config_path,

@@ -2,7 +2,7 @@ pub mod metadata;
 pub mod scanner;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -181,26 +181,21 @@ impl MusicSource for LocalSource {
     }
 
     async fn get_lyric(&self, song: &SongInfo) -> Result<LyricData, FetchError> {
-        if let Some(file_path) = &song.file_path {
-            let lrc_path = file_path.with_extension("lrc");
-            if lrc_path.exists()
-                && let Ok(content) = std::fs::read_to_string(&lrc_path)
-            {
+        let audio_path = song.file_path.clone().or_else(|| {
+            let path = PathBuf::from(&song.id);
+            path.exists().then_some(path)
+        });
+
+        if let Some(audio_path) = audio_path {
+            let content = tokio::task::spawn_blocking(move || read_local_lyric(&audio_path))
+                .await
+                .map_err(|error| FetchError::Other(format!("读取本地歌词任务失败: {error}")))?;
+            if let Some(content) = content {
                 return Ok(LyricData {
                     lyric: content,
                     ..Default::default()
                 });
             }
-        }
-        // 也尝试 id 路径
-        let p = PathBuf::from(&song.id).with_extension("lrc");
-        if p.exists()
-            && let Ok(content) = std::fs::read_to_string(&p)
-        {
-            return Ok(LyricData {
-                lyric: content,
-                ..Default::default()
-            });
         }
         Ok(LyricData::default())
     }
@@ -230,6 +225,16 @@ fn expand_path(value: &str) -> PathBuf {
         return home.join(relative);
     }
     PathBuf::from(value)
+}
+
+fn read_local_lyric(audio_path: &Path) -> Option<String> {
+    let lrc_path = audio_path.with_extension("lrc");
+    if let Ok(content) = std::fs::read_to_string(lrc_path)
+        && !content.trim().is_empty()
+    {
+        return Some(content);
+    }
+    metadata::read_embedded_lyric(audio_path).ok().flatten()
 }
 
 #[cfg(test)]

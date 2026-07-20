@@ -5,6 +5,7 @@
 mod crypto;
 pub mod leaderboard;
 pub mod lyric;
+pub mod playlist;
 pub mod search;
 pub mod url;
 
@@ -12,6 +13,7 @@ use async_trait::async_trait;
 
 use lx_core::model::leaderboard::LeaderboardInfo;
 use lx_core::model::lyric::LyricData;
+use lx_core::model::playlist::Playlist;
 use lx_core::model::song::SongInfo;
 use lx_core::model::source::{Quality, SourceId};
 use lx_core::traits::source::{FetchError, MusicSource, SearchError, SearchResult, SongUrl};
@@ -65,6 +67,14 @@ impl MusicSource for KwSource {
             Quality::Flac,
             Quality::Flac24,
         ]
+    }
+
+    async fn get_playlists(&self, _tag_id: &str, page: u32) -> Result<Vec<Playlist>, FetchError> {
+        playlist::get_list(page).await
+    }
+
+    async fn get_playlist_detail(&self, id: &str, page: u32) -> Result<Vec<SongInfo>, FetchError> {
+        playlist::get_detail(id, page).await
     }
 
     async fn get_leaderboard_boards(&self) -> Result<Vec<LeaderboardInfo>, SearchError> {

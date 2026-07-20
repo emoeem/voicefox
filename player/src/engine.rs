@@ -84,7 +84,7 @@ impl Player for MpvEngine {
         }
 
         // 启动新 mpv
-        match MpvIpc::start(Some(url)) {
+        match MpvIpc::start(None) {
             Ok(ipc) => {
                 let ipc = Arc::new(ipc);
                 if self.generation.load(Ordering::SeqCst) != generation {
@@ -111,6 +111,11 @@ impl Player for MpvEngine {
                                     let _ = event_tx.send(PlayerEvent::Ended);
                                     let _ = state_tx.send(PlayerState::Stopped);
                                 }
+                                MpvEvent::Error(error) => {
+                                    polling.store(false, Ordering::SeqCst);
+                                    let _ = event_tx.send(PlayerEvent::Error(error));
+                                    let _ = state_tx.send(PlayerState::Stopped);
+                                }
                             }
                         }
                     });
@@ -121,6 +126,7 @@ impl Player for MpvEngine {
                 let position_tx = self.position_tx.clone();
                 let duration_tx = self.duration_tx.clone();
                 let active_generation = Arc::clone(&self.generation);
+                let polling_task = Arc::clone(&polling);
                 tokio::spawn(async move {
                     let mut ticker = tokio::time::interval(Duration::from_millis(50));
                     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -128,7 +134,7 @@ impl Player for MpvEngine {
                     loop {
                         ticker.tick().await;
                         if active_generation.load(Ordering::SeqCst) != generation
-                            || !polling.load(Ordering::SeqCst)
+                            || !polling_task.load(Ordering::SeqCst)
                         {
                             break;
                         }
@@ -166,6 +172,17 @@ impl Player for MpvEngine {
                 });
 
                 let _ = ipc.set_volume(self.volume());
+                let load_command = serde_json::json!({
+                    "command": ["loadfile", url, "replace"]
+                })
+                .to_string();
+                if let Err(error) = ipc.send_command(&load_command) {
+                    polling.store(false, Ordering::SeqCst);
+                    ipc.stop();
+                    let _ = self.state_tx.send(PlayerState::Stopped);
+                    let _ = self.event_tx.send(PlayerEvent::Error(error.to_string()));
+                    return false;
+                }
                 // 存入 ipc 并更新状态
                 *self.ipc.lock().unwrap() = Some(ipc);
                 let _ = self.state_tx.send(PlayerState::Playing);

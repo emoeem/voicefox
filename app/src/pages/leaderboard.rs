@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
-use lx_core::events::AppAction;
+use lx_core::events::{AppAction, InsertPosition};
 use lx_core::model::leaderboard::LeaderboardInfo;
 use lx_core::model::song::SongInfo;
 use lx_core::model::source::SourceId;
@@ -196,6 +196,25 @@ impl LeaderboardPage {
                     };
                 }
                 self.enter_selected_board();
+            }
+            (KeyModifiers::NONE, KeyCode::Char('a')) if self.selected_board.is_some() => {
+                if let Some(song) = self.songs.get(self.selected).cloned() {
+                    return AppAction::AddToQueue {
+                        song: Box::new(song),
+                        position: InsertPosition::End,
+                    };
+                }
+            }
+            (KeyModifiers::NONE, KeyCode::Char('A'))
+            | (KeyModifiers::SHIFT, KeyCode::Char('A'))
+                if self.selected_board.is_some() =>
+            {
+                if let Some(song) = self.songs.get(self.selected).cloned() {
+                    return AppAction::AddToQueue {
+                        song: Box::new(song),
+                        position: InsertPosition::Next,
+                    };
+                }
             }
             (KeyModifiers::NONE, KeyCode::Char('h'))
             | (KeyModifiers::NONE, KeyCode::Left)

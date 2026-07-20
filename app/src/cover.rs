@@ -1,5 +1,5 @@
 use std::sync::RwLock;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use ratatui::buffer::Buffer;
@@ -25,6 +25,8 @@ pub struct CoverService {
     display_gen: AtomicU64,
     /// 已显示到终端的版本号
     displayed_gen: AtomicU64,
+    /// Kitty 图层中当前是否有 voicefox 封面
+    image_visible: AtomicBool,
 }
 
 impl CoverService {
@@ -45,6 +47,7 @@ impl CoverService {
             request_id: AtomicU64::new(0),
             display_gen: AtomicU64::new(0),
             displayed_gen: AtomicU64::new(0),
+            image_visible: AtomicBool::new(false),
         }
     }
 
@@ -52,11 +55,10 @@ impl CoverService {
         self.request_id.fetch_add(1, Ordering::SeqCst);
         *self.image_path.write().unwrap() = None;
         *self.state.write().unwrap() = CoverState::Empty;
-        // 清除终端中的图片
-        self.clear_kitty_image();
+        self.clear_display();
     }
 
-    fn clear_kitty_image(&self) {
+    fn delete_kitty_image(&self) {
         use std::io::Write;
         // 删除所有 Kitty 图片
         let _ = std::io::stdout().write_all(b"\x1b_Ga=d\x1b\\");
@@ -74,7 +76,7 @@ impl CoverService {
     pub async fn load(&self, url: Option<String>) -> Result<(), String> {
         let request_id = self.request_id.fetch_add(1, Ordering::SeqCst) + 1;
         *self.image_path.write().unwrap() = None;
-        self.clear_kitty_image();
+        self.clear_display();
 
         let Some(url) = url
             .map(|url| normalize_url(&url))
@@ -214,8 +216,8 @@ impl CoverService {
             return;
         }
 
-        // 先清除旧图片
-        let _ = std::io::stdout().write_all(b"\x1b_Ga=d\x1b\\");
+        // 先清除旧图片，避免新旧图层重叠
+        self.clear_display();
 
         // 用 viuer 在指定位置显示图片
         let config = viuer::Config {
@@ -226,18 +228,19 @@ impl CoverService {
             ..Default::default()
         };
 
-        let _ = viuer::print_from_file(&path, &config);
-        let _ = std::io::stdout().flush();
-
-        self.displayed_gen.store(current_gen, Ordering::SeqCst);
+        if viuer::print_from_file(&path, &config).is_ok() {
+            let _ = std::io::stdout().flush();
+            self.image_visible.store(true, Ordering::SeqCst);
+            self.displayed_gen.store(current_gen, Ordering::SeqCst);
+        }
     }
 
     /// 清除终端中的封面图片
     pub fn clear_display(&self) {
-        use std::io::Write;
         self.displayed_gen.store(0, Ordering::SeqCst);
-        let _ = std::io::stdout().write_all(b"\x1b_Ga=d\x1b\\");
-        let _ = std::io::stdout().flush();
+        if self.image_visible.swap(false, Ordering::SeqCst) {
+            self.delete_kitty_image();
+        }
     }
 }
 

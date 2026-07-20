@@ -1,7 +1,7 @@
 //! 播放历史页面
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
-use lx_core::events::AppAction;
+use lx_core::events::{AppAction, InsertPosition};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -134,6 +134,22 @@ pub fn handle_input(key: &KeyEvent, ctx: &AppContext, selected: &mut usize) -> A
             let songs = history.clone();
             let index = *selected;
             return AppAction::PlaySong { songs, index };
+        }
+        (KeyModifiers::NONE, KeyCode::Char('a')) => {
+            if let Some(song) = history.get(*selected).cloned() {
+                return AppAction::AddToQueue {
+                    song: Box::new(song),
+                    position: InsertPosition::End,
+                };
+            }
+        }
+        (KeyModifiers::NONE, KeyCode::Char('A')) | (KeyModifiers::SHIFT, KeyCode::Char('A')) => {
+            if let Some(song) = history.get(*selected).cloned() {
+                return AppAction::AddToQueue {
+                    song: Box::new(song),
+                    position: InsertPosition::Next,
+                };
+            }
         }
         _ => {}
     }

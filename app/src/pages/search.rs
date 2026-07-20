@@ -1,7 +1,7 @@
 //! 搜索页面
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
-use lx_core::events::AppAction;
+use lx_core::events::{AppAction, InsertPosition};
 use lx_core::model::song::SongInfo;
 use lx_core::model::source::SourceId;
 use lx_core::traits::source::SearchResult;
@@ -138,6 +138,23 @@ impl SearchPage {
             }
             (KeyModifiers::NONE, KeyCode::Char('v')) => {
                 self.open_variants();
+            }
+            (KeyModifiers::NONE, KeyCode::Char('a')) => {
+                if let Some(song) = self.results.get(self.selected).cloned() {
+                    return AppAction::AddToQueue {
+                        song: Box::new(song),
+                        position: InsertPosition::End,
+                    };
+                }
+            }
+            (KeyModifiers::NONE, KeyCode::Char('A'))
+            | (KeyModifiers::SHIFT, KeyCode::Char('A')) => {
+                if let Some(song) = self.results.get(self.selected).cloned() {
+                    return AppAction::AddToQueue {
+                        song: Box::new(song),
+                        position: InsertPosition::Next,
+                    };
+                }
             }
             (KeyModifiers::NONE, KeyCode::Enter) => {
                 let keyword = self.input.trim().to_string();
@@ -642,6 +659,27 @@ impl SearchPage {
             | (KeyModifiers::NONE, KeyCode::Char('G'))
             | (KeyModifiers::SHIFT, KeyCode::Char('G')) => {
                 self.variant_selected = self.variant_indices.len().saturating_sub(1);
+            }
+            (KeyModifiers::NONE, KeyCode::Char('a')) => {
+                if let Some(index) = self.variant_indices.get(self.variant_selected).copied()
+                    && let Some(song) = self.results.get(index).cloned()
+                {
+                    return AppAction::AddToQueue {
+                        song: Box::new(song),
+                        position: InsertPosition::End,
+                    };
+                }
+            }
+            (KeyModifiers::NONE, KeyCode::Char('A'))
+            | (KeyModifiers::SHIFT, KeyCode::Char('A')) => {
+                if let Some(index) = self.variant_indices.get(self.variant_selected).copied()
+                    && let Some(song) = self.results.get(index).cloned()
+                {
+                    return AppAction::AddToQueue {
+                        song: Box::new(song),
+                        position: InsertPosition::Next,
+                    };
+                }
             }
             (KeyModifiers::NONE, KeyCode::Enter) => {
                 if let Some(index) = self.variant_indices.get(self.variant_selected).copied() {

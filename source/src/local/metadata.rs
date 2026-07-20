@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use lofty::file::{AudioFile, TaggedFileExt};
-use lofty::tag::Accessor;
+use lofty::tag::{Accessor, ItemKey, Tag};
 
 use lx_core::model::song::SongInfo;
 
@@ -36,7 +36,11 @@ pub fn read_metadata(path: &Path) -> Result<SongInfo, String> {
 
         (title, artist, album)
     } else {
-        (file_stem(path), "未知艺术家".to_string(), "未知专辑".to_string())
+        (
+            file_stem(path),
+            "未知艺术家".to_string(),
+            "未知专辑".to_string(),
+        )
     };
 
     // 提取封面并缓存
@@ -55,8 +59,27 @@ pub fn read_metadata(path: &Path) -> Result<SongInfo, String> {
         extra: std::collections::HashMap::new(),
         toggle_source: None,
         file_path: None,
-        file_ext: path.extension().and_then(|e| e.to_str()).map(|s| s.to_string()),
+        file_ext: path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|s| s.to_string()),
     })
+}
+
+/// 读取音频文件中嵌入的歌词。
+///
+/// Lofty 会将 ID3 USLT、Vorbis `LYRICS`、MP4 lyrics 等格式统一映射到
+/// `ItemKey::Lyrics`，因此这里不需要针对容器格式分别解析。
+pub fn read_embedded_lyric(path: &Path) -> Result<Option<String>, String> {
+    let tagged = lofty::read_from_path(path).map_err(|e| format!("lofty error: {}", e))?;
+    Ok(tagged.tags().iter().find_map(embedded_lyric_from_tag))
+}
+
+fn embedded_lyric_from_tag(tag: &Tag) -> Option<String> {
+    tag.get_strings(&ItemKey::Lyrics)
+        .map(str::trim)
+        .find(|lyric| !lyric.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 /// 从文件名提取歌曲名（不含扩展名）
@@ -107,4 +130,21 @@ fn simple_hash(data: &[u8]) -> String {
     let mut hasher = DefaultHasher::new();
     data.hash(&mut hasher);
     format!("{:x}", hasher.finish())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::embedded_lyric_from_tag;
+    use lofty::tag::{ItemKey, Tag, TagType};
+
+    #[test]
+    fn reads_and_trims_embedded_lyric() {
+        let mut tag = Tag::new(TagType::Id3v2);
+        tag.insert_text(ItemKey::Lyrics, " \n[00:01.00]歌词\n ".to_string());
+
+        assert_eq!(
+            embedded_lyric_from_tag(&tag).as_deref(),
+            Some("[00:01.00]歌词")
+        );
+    }
 }

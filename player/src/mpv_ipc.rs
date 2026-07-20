@@ -43,6 +43,7 @@ pub struct MpvIpc {
 #[derive(Debug, Clone)]
 pub enum MpvEvent {
     EndFile,
+    Error(String),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -187,27 +188,17 @@ impl MpvIpc {
 
         // 事件监听
         let (event_tx, event_rx) = mpsc::unbounded_channel();
-        let sp_clone = socket_path.clone();
+        let event_conn = Self::connect(&socket_path).map_err(MpvError::Ipc)?;
         let event_handle = std::thread::spawn(move || {
-            let conn = match Self::connect(&sp_clone) {
-                Ok(c) => c,
-                Err(_) => return,
-            };
-            let mut reader = BufReader::new(conn);
+            let mut reader = BufReader::new(event_conn);
             let mut line = String::new();
             loop {
                 line.clear();
                 match reader.read_line(&mut line) {
                     Ok(0) => break,
                     Ok(_) => {
-                        if serde_json::from_str::<serde_json::Value>(&line)
-                            .ok()
-                            .is_some_and(|v| {
-                                v["event"].as_str() == Some("end-file")
-                                    && v["reason"].as_str() == Some("eof")
-                            })
-                        {
-                            let _ = event_tx.send(MpvEvent::EndFile);
+                        if let Some(event) = parse_mpv_event(&line) {
+                            let _ = event_tx.send(event);
                         }
                     }
                     Err(_) => break,
@@ -303,8 +294,46 @@ impl MpvIpc {
     }
 }
 
+fn parse_mpv_event(line: &str) -> Option<MpvEvent> {
+    let value: serde_json::Value = serde_json::from_str(line).ok()?;
+    if value["event"].as_str() != Some("end-file") {
+        return None;
+    }
+    match value["reason"].as_str() {
+        Some("eof") => Some(MpvEvent::EndFile),
+        Some("error") => Some(MpvEvent::Error(
+            value["file_error"]
+                .as_str()
+                .unwrap_or("mpv 无法打开当前音频")
+                .to_string(),
+        )),
+        _ => None,
+    }
+}
+
 impl Drop for MpvIpc {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MpvEvent, parse_mpv_event};
+
+    #[test]
+    fn parses_end_file_errors() {
+        let event = parse_mpv_event(
+            r#"{"event":"end-file","reason":"error","file_error":"connection failed"}"#,
+        );
+        assert!(matches!(
+            event,
+            Some(MpvEvent::Error(message)) if message == "connection failed"
+        ));
+    }
+
+    #[test]
+    fn ignores_manual_stop_events() {
+        assert!(parse_mpv_event(r#"{"event":"end-file","reason":"stop"}"#).is_none());
     }
 }

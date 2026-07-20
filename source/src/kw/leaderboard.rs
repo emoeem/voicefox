@@ -72,7 +72,7 @@ pub async fn get_list(board_id: &str, page: u32, limit: u32) -> Result<SearchRes
     })
 }
 
-fn parse_song(item: &Value) -> Option<SongInfo> {
+pub(crate) fn parse_song(item: &Value) -> Option<SongInfo> {
     let id = value_string(&item["id"]);
     if id.is_empty() {
         return None;

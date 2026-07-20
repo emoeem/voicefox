@@ -32,6 +32,13 @@ pub enum AppAction {
         songs: Vec<SongInfo>,
         index: usize,
     },
+    AddToQueue {
+        song: Box<SongInfo>,
+        position: InsertPosition,
+    },
+    RetrySong {
+        song: Box<SongInfo>,
+    },
     Search {
         keyword: String,
         source: Option<SourceId>,
@@ -108,7 +115,7 @@ pub enum NotificationLevel {
 }
 
 /// 插入位置
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InsertPosition {
     Next,
     End,

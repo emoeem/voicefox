@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use lx_core::model::leaderboard::LeaderboardInfo;
 use lx_core::model::lyric::LyricData;
+use lx_core::model::playlist::Playlist;
 use lx_core::model::song::SongInfo;
 use lx_core::model::source::{Quality, SourceId};
 use lx_core::traits::source::{FetchError, MusicSource, SearchError, SearchResult, SongUrl};
@@ -248,6 +249,31 @@ impl SourceManager {
             .collect()
     }
 
+    pub async fn playlists(
+        &self,
+        source: SourceId,
+        page: u32,
+    ) -> Result<Vec<Playlist>, FetchError> {
+        self.online_source_fetch(source)?
+            .get_playlists("hot", page)
+            .await
+    }
+
+    pub async fn playlist_detail(
+        &self,
+        source: SourceId,
+        playlist_id: &str,
+        page: u32,
+    ) -> Result<Vec<SongInfo>, FetchError> {
+        self.online_source_fetch(source)?
+            .get_playlist_detail(playlist_id, page)
+            .await
+    }
+
+    pub fn playlist_sources(&self) -> Vec<SourceId> {
+        self.leaderboard_sources()
+    }
+
     fn online_source(&self, source: SourceId) -> Result<Arc<dyn MusicSource>, SearchError> {
         if source == SourceId::Local || !self.enabled.contains(&source) {
             return Err(SearchError::Other(format!(
@@ -259,6 +285,19 @@ impl SourceManager {
             .get(&source)
             .map(Arc::clone)
             .ok_or_else(|| SearchError::Other("音源不可用".to_string()))
+    }
+
+    fn online_source_fetch(&self, source: SourceId) -> Result<Arc<dyn MusicSource>, FetchError> {
+        if source == SourceId::Local || !self.enabled.contains(&source) {
+            return Err(FetchError::Other(format!(
+                "音源 {} 未启用",
+                source.as_str()
+            )));
+        }
+        self.sources
+            .get(&source)
+            .map(Arc::clone)
+            .ok_or_else(|| FetchError::Other("音源不可用".to_string()))
     }
 
     /// 获取歌曲播放地址。

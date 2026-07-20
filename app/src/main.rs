@@ -20,8 +20,9 @@ use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
     MouseButton, MouseEvent, MouseEventKind,
 };
-use lx_core::events::{AppAction, Notification};
+use lx_core::events::{AppAction, InsertPosition, Notification};
 use lx_core::model::leaderboard::LeaderboardInfo;
+use lx_core::model::playlist::Playlist;
 use lx_core::model::song::SongInfo;
 use lx_core::model::source::{Quality, SourceId};
 use lx_core::traits::player::PlayerEvent;
@@ -45,6 +46,20 @@ enum LeaderboardResponse {
         request_id: u64,
         source: SourceId,
         board_id: String,
+        result: Result<Vec<SongInfo>, String>,
+    },
+}
+
+enum PlaylistResponse {
+    List {
+        request_id: u64,
+        source: SourceId,
+        result: Result<Vec<Playlist>, String>,
+    },
+    Songs {
+        request_id: u64,
+        source: SourceId,
+        playlist_id: String,
         result: Result<Vec<SongInfo>, String>,
     },
 }
@@ -160,11 +175,13 @@ fn run_app(
 ) -> anyhow::Result<()> {
     let (action_tx, mut action_rx) = mpsc::unbounded_channel::<AppAction>();
     let (leaderboard_tx, mut leaderboard_rx) = mpsc::unbounded_channel::<LeaderboardResponse>();
+    let (playlist_tx, mut playlist_rx) = mpsc::unbounded_channel::<PlaylistResponse>();
     let mut player_event_rx = ctx.player.take_event_receiver();
 
     // 搜索请求序列号（用于取消过时请求）
     let search_seq: Arc<AtomicU64> = Arc::new(AtomicU64::new(0));
     let mut leaderboard_request_id: u64 = 0;
+    let mut playlist_request_id: u64 = 0;
 
     // 导航状态
     let mut active_tab = NavTab::Main;
@@ -191,6 +208,7 @@ fn run_app(
     let mut main_page = pages::main_page::MainPage::new();
     let mut leaderboard =
         pages::leaderboard::LeaderboardPage::new(ctx.source_manager.leaderboard_sources());
+    let mut playlists = pages::playlists::PlaylistsPage::new(ctx.source_manager.playlist_sources());
     let mut favorites_page = pages::favorites::FavoritesPage::new();
     let mut history_selected: usize = 0;
     let mut history_scroll: usize = 0;
@@ -286,10 +304,28 @@ fn run_app(
                         }
                     }
                     PlayerEvent::Error(error) => {
-                        ctx.notifications
-                            .write()
-                            .unwrap()
-                            .push_back(Notification::error(format!("播放器错误: {}", error)));
+                        let retry_song = ctx.current_song.read().unwrap().clone();
+                        let auto_toggle = ctx.config.read().unwrap().source.auto_toggle;
+                        if auto_toggle
+                            && retry_song
+                                .as_ref()
+                                .is_some_and(|song| song.source != SourceId::Local)
+                        {
+                            tracing::warn!("current source playback failed: {}", error);
+                            if let Some(song) = retry_song {
+                                let _ = action_tx.send(AppAction::ShowNotification(
+                                    Notification::info("当前音源播放失败，正在尝试其他音源"),
+                                ));
+                                let _ = action_tx.send(AppAction::RetrySong {
+                                    song: Box::new(song),
+                                });
+                            }
+                        } else {
+                            ctx.notifications
+                                .write()
+                                .unwrap()
+                                .push_back(Notification::error(format!("播放器错误: {}", error)));
+                        }
                     }
                     PlayerEvent::Buffering(_) => {}
                 }
@@ -353,12 +389,78 @@ fn run_app(
                 _ => {}
             }
         }
+        while let Ok(response) = playlist_rx.try_recv() {
+            match response {
+                PlaylistResponse::List {
+                    request_id,
+                    source,
+                    result,
+                } if request_id == playlist_request_id
+                    && playlists.current_source() == Some(source) =>
+                {
+                    match result {
+                        Ok(items) => playlists.update_playlists(source, items),
+                        Err(error) => {
+                            let request = pages::playlists::PlaylistLoadRequest::List { source };
+                            playlists.update_error(&request, error.clone());
+                            ctx.notifications
+                                .write()
+                                .unwrap()
+                                .push_back(Notification::error(format!(
+                                    "加载热门歌单失败: {error}"
+                                )));
+                        }
+                    }
+                    needs_render = true;
+                }
+                PlaylistResponse::Songs {
+                    request_id,
+                    source,
+                    playlist_id,
+                    result,
+                } if request_id == playlist_request_id
+                    && playlists
+                        .current_playlist()
+                        .map(|playlist| (playlist.source, playlist.id.as_str()))
+                        == Some((source, playlist_id.as_str())) =>
+                {
+                    match result {
+                        Ok(songs) => playlists.update_songs(source, &playlist_id, songs),
+                        Err(error) => {
+                            let request = pages::playlists::PlaylistLoadRequest::Songs {
+                                source,
+                                playlist_id,
+                            };
+                            playlists.update_error(&request, error.clone());
+                            ctx.notifications
+                                .write()
+                                .unwrap()
+                                .push_back(Notification::error(format!(
+                                    "加载歌单歌曲失败: {error}"
+                                )));
+                        }
+                    }
+                    needs_render = true;
+                }
+                _ => {}
+            }
+        }
         if active_tab == NavTab::Leaderboard {
             maybe_spawn_leaderboard_load(
                 &mut leaderboard,
                 &mut leaderboard_request_id,
                 Arc::clone(&ctx.source_manager),
                 leaderboard_tx.clone(),
+                &rt,
+            );
+        }
+        if active_tab == NavTab::Playlists {
+            playlists.sync_favorites(&ctx);
+            maybe_spawn_playlist_load(
+                &mut playlists,
+                &mut playlist_request_id,
+                Arc::clone(&ctx.source_manager),
+                playlist_tx.clone(),
                 &rt,
             );
         }
@@ -423,6 +525,7 @@ fn run_app(
                 &settings_page,
                 &mut main_page,
                 &mut leaderboard,
+                &mut playlists,
                 &mut favorites_page,
                 &mut history_selected,
                 &mut history_scroll,
@@ -551,7 +654,8 @@ fn run_app(
                 (KeyModifiers::NONE, KeyCode::Right)
                     if !text_input_active
                         && active_tab != NavTab::Search
-                        && active_tab != NavTab::Leaderboard =>
+                        && active_tab != NavTab::Leaderboard
+                        && active_tab != NavTab::Playlists =>
                 {
                     let pos = *ctx.position.borrow();
                     ctx.player.seek(pos + Duration::from_secs(5));
@@ -561,7 +665,8 @@ fn run_app(
                 (KeyModifiers::NONE, KeyCode::Left)
                     if !text_input_active
                         && active_tab != NavTab::Search
-                        && active_tab != NavTab::Leaderboard =>
+                        && active_tab != NavTab::Leaderboard
+                        && active_tab != NavTab::Playlists =>
                 {
                     let pos = *ctx.position.borrow();
                     if pos > Duration::from_secs(5) {
@@ -573,7 +678,9 @@ fn run_app(
                     continue;
                 }
                 (KeyModifiers::NONE, KeyCode::Char(']'))
-                    if !text_input_active && active_tab != NavTab::Leaderboard =>
+                    if !text_input_active
+                        && active_tab != NavTab::Leaderboard
+                        && active_tab != NavTab::Playlists =>
                 {
                     let pos = *ctx.position.borrow();
                     ctx.player.seek(pos + Duration::from_secs(5));
@@ -581,7 +688,9 @@ fn run_app(
                     continue;
                 }
                 (KeyModifiers::NONE, KeyCode::Char('['))
-                    if !text_input_active && active_tab != NavTab::Leaderboard =>
+                    if !text_input_active
+                        && active_tab != NavTab::Leaderboard
+                        && active_tab != NavTab::Playlists =>
                 {
                     let pos = *ctx.position.borrow();
                     if pos > Duration::from_secs(5) {
@@ -616,7 +725,8 @@ fn run_app(
                     active_tab = match active_tab {
                         NavTab::Main => NavTab::Search,
                         NavTab::Search => NavTab::Leaderboard,
-                        NavTab::Leaderboard => NavTab::Favorites,
+                        NavTab::Leaderboard => NavTab::Playlists,
+                        NavTab::Playlists => NavTab::Favorites,
                         NavTab::Favorites => NavTab::History,
                         NavTab::History => NavTab::LocalMusic,
                         NavTab::LocalMusic => NavTab::Settings,
@@ -630,7 +740,8 @@ fn run_app(
                         NavTab::Main => NavTab::Settings,
                         NavTab::Search => NavTab::Main,
                         NavTab::Leaderboard => NavTab::Search,
-                        NavTab::Favorites => NavTab::Leaderboard,
+                        NavTab::Playlists => NavTab::Leaderboard,
+                        NavTab::Favorites => NavTab::Playlists,
                         NavTab::History => NavTab::Favorites,
                         NavTab::LocalMusic => NavTab::History,
                         NavTab::Settings => NavTab::LocalMusic,
@@ -643,6 +754,8 @@ fn run_app(
                         && active_tab != NavTab::Main
                         && active_tab != NavTab::Search
                         && active_tab != NavTab::Favorites
+                        && !(active_tab == NavTab::Playlists
+                            && playlists.selected_playlist.is_some())
                         && !(active_tab == NavTab::Leaderboard
                             && leaderboard.selected_board.is_some()) =>
                 {
@@ -651,7 +764,11 @@ fn run_app(
                     continue;
                 }
                 // Ctrl+L: 收藏/取消收藏当前歌曲
-                (KeyModifiers::CONTROL, KeyCode::Char('l')) if !text_input_active => {
+                (KeyModifiers::CONTROL, KeyCode::Char('l'))
+                    if !text_input_active
+                        && active_tab != NavTab::Favorites
+                        && active_tab != NavTab::Playlists =>
+                {
                     if let Some(song) = ctx.current_song.read().unwrap().as_ref() {
                         if ctx.storage.is_favorite(song) {
                             ctx.storage.remove_favorite(song);
@@ -707,6 +824,21 @@ fn run_app(
                 }
                 NavTab::Leaderboard => {
                     let action = leaderboard.handle_input(&key, &ctx);
+                    execute_action(
+                        action,
+                        &ctx,
+                        &rt,
+                        &action_tx,
+                        &search_page,
+                        &settings_page,
+                        &search_seq,
+                    );
+                }
+                NavTab::Playlists => {
+                    let action = playlists.handle_input(&key, &ctx);
+                    if matches!(action, AppAction::PlaySong { .. }) {
+                        active_tab = NavTab::Main;
+                    }
                     execute_action(
                         action,
                         &ctx,
@@ -844,6 +976,39 @@ fn run_app(
                                 );
                             }
                         }
+                        (KeyModifiers::NONE, KeyCode::Char('a')) => {
+                            if let Some(song) = songs.get(local_selected).cloned() {
+                                execute_action(
+                                    AppAction::AddToQueue {
+                                        song: Box::new(song),
+                                        position: InsertPosition::End,
+                                    },
+                                    &ctx,
+                                    &rt,
+                                    &action_tx,
+                                    &search_page,
+                                    &settings_page,
+                                    &search_seq,
+                                );
+                            }
+                        }
+                        (KeyModifiers::NONE, KeyCode::Char('A'))
+                        | (KeyModifiers::SHIFT, KeyCode::Char('A')) => {
+                            if let Some(song) = songs.get(local_selected).cloned() {
+                                execute_action(
+                                    AppAction::AddToQueue {
+                                        song: Box::new(song),
+                                        position: InsertPosition::Next,
+                                    },
+                                    &ctx,
+                                    &rt,
+                                    &action_tx,
+                                    &search_page,
+                                    &settings_page,
+                                    &search_seq,
+                                );
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -885,6 +1050,9 @@ fn run_app(
                     NavTab::Leaderboard => {
                         leaderboard.handle_mouse(mouse, ui_areas.content, activate, &ctx)
                     }
+                    NavTab::Playlists => {
+                        playlists.handle_mouse(mouse, ui_areas.content, activate, &ctx)
+                    }
                     NavTab::Favorites => {
                         favorites_page.handle_mouse(mouse, ui_areas.content, &ctx, activate)
                     }
@@ -906,7 +1074,10 @@ fn run_app(
                 };
 
                 if matches!(action, AppAction::PlaySong { .. })
-                    && matches!(active_tab, NavTab::Favorites | NavTab::History)
+                    && matches!(
+                        active_tab,
+                        NavTab::Playlists | NavTab::Favorites | NavTab::History
+                    )
                 {
                     active_tab = NavTab::Main;
                 }
@@ -932,6 +1103,16 @@ fn run_app(
                 &rt,
             );
         }
+        if active_tab == NavTab::Playlists {
+            playlists.sync_favorites(&ctx);
+            maybe_spawn_playlist_load(
+                &mut playlists,
+                &mut playlist_request_id,
+                Arc::clone(&ctx.source_manager),
+                playlist_tx.clone(),
+                &rt,
+            );
+        }
 
         // === 3. 当前事件未提前 continue 时立即渲染 ===
         if needs_render {
@@ -943,6 +1124,7 @@ fn run_app(
                 &settings_page,
                 &mut main_page,
                 &mut leaderboard,
+                &mut playlists,
                 &mut favorites_page,
                 &mut history_selected,
                 &mut history_scroll,
@@ -964,6 +1146,7 @@ fn draw_app(
     settings_page: &Arc<std::sync::Mutex<pages::settings::SettingsPage>>,
     main_page: &mut pages::main_page::MainPage,
     leaderboard: &mut pages::leaderboard::LeaderboardPage,
+    playlists: &mut pages::playlists::PlaylistsPage,
     favorites_page: &mut pages::favorites::FavoritesPage,
     history_selected: &mut usize,
     history_scroll: &mut usize,
@@ -971,6 +1154,10 @@ fn draw_app(
     local_scroll: &mut usize,
     ui_areas: &mut UiAreas,
 ) -> anyhow::Result<()> {
+    // Kitty 图片是终端外部图层，必须在绘制非主页前清除，避免它短暂覆盖本地/历史页面。
+    if active_tab != NavTab::Main {
+        ctx.cover_service.clear_display();
+    }
     terminal.draw(|frame| {
         let area = frame.area();
         frame.render_widget(
@@ -1022,6 +1209,9 @@ fn draw_app(
             NavTab::Leaderboard => {
                 leaderboard.render(content_area, frame.buffer_mut(), ctx);
             }
+            NavTab::Playlists => {
+                playlists.render(content_area, frame.buffer_mut(), ctx);
+            }
             NavTab::Favorites => {
                 favorites_page.render(content_area, frame.buffer_mut(), ctx);
             }
@@ -1059,7 +1249,7 @@ fn draw_app(
                 }
 
                 if paths.is_empty() {
-                    Paragraph::new(Line::from(" 未配置音乐目录，请在设置（7）中添加"))
+                    Paragraph::new(Line::from(" 未配置音乐目录，请在设置（8）中添加"))
                         .style(Style::new().fg(Color::DarkGray))
                         .render(inner, frame.buffer_mut());
                     return;
@@ -1128,8 +1318,6 @@ fn draw_app(
     // 在 Kitty 终端中显示封面（draw 之后，浮动在 TUI 上方）
     if active_tab == NavTab::Main {
         ctx.cover_service.display_kitty(ui_areas.cover);
-    } else {
-        ctx.cover_service.clear_display();
     }
     Ok(())
 }
@@ -1192,140 +1380,28 @@ fn execute_action(
         AppAction::PlaySong { songs, index } => {
             if let Some(song) = songs.get(index).cloned() {
                 ctx.playlist.set_playlist(songs, index);
-                let request_id = ctx.play_request_id.fetch_add(1, Ordering::SeqCst) + 1;
-                let player_generation = ctx.player.prepare();
-                let lyric_generation = ctx.lyric_service.prepare();
-                let show_cover = ctx.config.read().unwrap().ui.show_cover;
-                let cover_service = Arc::clone(&ctx.cover_service);
-                if show_cover {
-                    let initial_cover = song.cover_url.clone();
-                    let cover = Arc::clone(&cover_service);
-                    rt.spawn(async move {
-                        if let Err(error) = cover.load(initial_cover).await {
-                            tracing::debug!("load initial cover failed: {}", error);
-                        }
-                    });
-                } else {
-                    cover_service.clear();
-                }
-
-                // 记录播放历史
-                ctx.storage.add_history(&song);
-
-                // 乐观更新当前歌曲（即时反馈）
-                *ctx.current_song.write().unwrap() = Some(song.clone());
-
-                // 发送即时通知
-                let _ = action_tx.send(AppAction::ShowNotification(Notification::info(format!(
-                    "正在加载: {} - {}",
-                    song.name, song.singer
-                ))));
-
-                let source_mgr = Arc::clone(&ctx.source_manager);
-                let player = Arc::clone(&ctx.player);
-                let lyric_service = Arc::clone(&ctx.lyric_service);
-                let lyric_song = song.clone();
-                let lyric_position = ctx.position.clone();
-                let lyric_tx = action_tx.clone();
-                rt.spawn(async move {
-                    let result = tokio::time::timeout(
-                        Duration::from_secs(15),
-                        lyric_service.load(&lyric_song, lyric_generation),
-                    )
-                    .await;
-                    match result {
-                        Err(error) => tracing::warn!("load lyric timeout: {}", error),
-                        Ok(Err(error)) => tracing::warn!("load lyric failed: {}", error),
-                        Ok(Ok(())) => {}
-                    }
-                    // 歌词请求通常会跨过数百毫秒甚至数秒，必须用完成时的
-                    // 播放位置重新定位，而不是从第一行开始显示。
-                    lyric_service.update_position(*lyric_position.borrow());
-                    let _ = lyric_tx.send(AppAction::None);
-                });
-                let current_song = Arc::clone(&ctx.current_song);
-                let play_request_id = Arc::clone(&ctx.play_request_id);
-                let quality = ctx.config.read().unwrap().player.quality;
-                let auto_toggle = ctx.config.read().unwrap().source.auto_toggle;
-                let tx = action_tx.clone();
-
-                rt.spawn(async move {
-                    let resolved = tokio::time::timeout(
-                        Duration::from_secs(40),
-                        resolve_playable_song(
-                            Arc::clone(&source_mgr),
-                            song,
-                            quality,
-                            auto_toggle,
-                            Arc::clone(&play_request_id),
-                            request_id,
-                        ),
-                    )
-                    .await;
-
-                    if play_request_id.load(Ordering::SeqCst) != request_id {
-                        return;
-                    }
-
-                    let (mut resolved_song, song_url) = match resolved {
-                        Ok(Ok(Some(resolved))) => resolved,
-                        Ok(Ok(None)) => return,
-                        Ok(Err(error)) => {
-                            player.stop();
-                            let _ =
-                                tx.send(AppAction::ShowNotification(Notification::error(error)));
-                            return;
-                        }
-                        Err(_) => {
-                            player.stop();
-                            let _ = tx.send(AppAction::ShowNotification(Notification::error(
-                                "获取播放地址超时，请稍后重试",
-                            )));
-                            return;
-                        }
-                    };
-
-                    let url = song_url.url;
-                    let player_for_start = Arc::clone(&player);
-                    let request_guard = Arc::clone(&play_request_id);
-                    let accepted = tokio::task::spawn_blocking(move || {
-                        if request_guard.load(Ordering::SeqCst) != request_id {
-                            return false;
-                        }
-                        player_for_start.play(&url, player_generation)
-                    })
-                    .await
-                    .unwrap_or(false);
-                    if !accepted || play_request_id.load(Ordering::SeqCst) != request_id {
-                        return;
-                    }
-
-                    if resolved_song.cover_url.is_none() {
-                        resolved_song.cover_url = song_url.cover_url.clone();
-                    }
-                    if resolved_song.cover_url.is_none()
-                        && let Ok(Ok(url)) = tokio::time::timeout(
-                            Duration::from_secs(10),
-                            source_mgr.get_cover_url(&resolved_song),
-                        )
-                        .await
-                    {
-                        resolved_song.cover_url = Some(url);
-                    }
-                    *current_song.write().unwrap() = Some(resolved_song.clone());
-                    let _ = tx.send(AppAction::ShowNotification(Notification::info(format!(
-                        "正在播放: {} - {}",
-                        resolved_song.name, resolved_song.singer
-                    ))));
-
-                    if show_cover
-                        && let Err(error) =
-                            cover_service.load(resolved_song.cover_url.clone()).await
-                    {
-                        tracing::debug!("load cover failed: {}", error);
-                    }
-                });
+                ctx.play_attempted_sources.lock().unwrap().clear();
+                start_song_playback(song, true, ctx, rt, action_tx);
             }
+        }
+        AppAction::AddToQueue { song, position } => {
+            let song = *song;
+            let inserted = ctx.playlist.insert(song.clone(), position);
+            let message = match (position, inserted) {
+                (InsertPosition::Next, 0) | (InsertPosition::End, _) => {
+                    format!("已加入队列: {} - {}", song.name, song.singer)
+                }
+                (InsertPosition::Next, _) => {
+                    format!("下一首播放: {} - {}", song.name, song.singer)
+                }
+            };
+            ctx.notifications
+                .write()
+                .unwrap()
+                .push_back(Notification::info(message));
+        }
+        AppAction::RetrySong { song } => {
+            start_song_playback(*song, false, ctx, rt, action_tx);
         }
         AppAction::ShowNotification(n) => {
             ctx.notifications.write().unwrap().push_back(n);
@@ -1468,17 +1544,163 @@ fn execute_action(
     }
 }
 
+fn start_song_playback(
+    song: SongInfo,
+    add_history: bool,
+    ctx: &AppContext,
+    rt: &tokio::runtime::Runtime,
+    action_tx: &mpsc::UnboundedSender<AppAction>,
+) {
+    let request_id = ctx.play_request_id.fetch_add(1, Ordering::SeqCst) + 1;
+    let player_generation = ctx.player.prepare();
+    let lyric_generation = ctx.lyric_service.prepare();
+    let show_cover = ctx.config.read().unwrap().ui.show_cover;
+    let cover_service = Arc::clone(&ctx.cover_service);
+    if show_cover {
+        let initial_cover = song.cover_url.clone();
+        let cover = Arc::clone(&cover_service);
+        rt.spawn(async move {
+            if let Err(error) = cover.load(initial_cover).await {
+                tracing::debug!("load initial cover failed: {}", error);
+            }
+        });
+    } else {
+        cover_service.clear();
+    }
+
+    if add_history {
+        ctx.storage.add_history(&song);
+    }
+    *ctx.current_song.write().unwrap() = Some(song.clone());
+    if add_history {
+        let _ = action_tx.send(AppAction::ShowNotification(Notification::info(format!(
+            "正在加载: {} - {}",
+            song.name, song.singer
+        ))));
+    }
+
+    let source_mgr = Arc::clone(&ctx.source_manager);
+    let player = Arc::clone(&ctx.player);
+    let lyric_service = Arc::clone(&ctx.lyric_service);
+    let lyric_song = song.clone();
+    let lyric_position = ctx.position.clone();
+    let lyric_tx = action_tx.clone();
+    rt.spawn(async move {
+        let result = tokio::time::timeout(
+            Duration::from_secs(15),
+            lyric_service.load(&lyric_song, lyric_generation),
+        )
+        .await;
+        match result {
+            Err(error) => tracing::warn!("load lyric timeout: {}", error),
+            Ok(Err(error)) => tracing::warn!("load lyric failed: {}", error),
+            Ok(Ok(())) => {}
+        }
+        lyric_service.update_position(*lyric_position.borrow());
+        let _ = lyric_tx.send(AppAction::None);
+    });
+
+    let current_song = Arc::clone(&ctx.current_song);
+    let play_request_id = Arc::clone(&ctx.play_request_id);
+    let attempted_sources = Arc::clone(&ctx.play_attempted_sources);
+    let quality = ctx.config.read().unwrap().player.quality;
+    let auto_toggle = ctx.config.read().unwrap().source.auto_toggle;
+    let tx = action_tx.clone();
+
+    rt.spawn(async move {
+        let resolved = tokio::time::timeout(
+            Duration::from_secs(40),
+            resolve_playable_song(
+                Arc::clone(&source_mgr),
+                song,
+                quality,
+                auto_toggle,
+                Arc::clone(&play_request_id),
+                Arc::clone(&attempted_sources),
+                request_id,
+            ),
+        )
+        .await;
+
+        if play_request_id.load(Ordering::SeqCst) != request_id {
+            return;
+        }
+
+        let (mut resolved_song, song_url) = match resolved {
+            Ok(Ok(Some(resolved))) => resolved,
+            Ok(Ok(None)) => return,
+            Ok(Err(error)) => {
+                player.stop();
+                let _ = tx.send(AppAction::ShowNotification(Notification::error(error)));
+                return;
+            }
+            Err(_) => {
+                player.stop();
+                let _ = tx.send(AppAction::ShowNotification(Notification::error(
+                    "获取播放地址超时，请稍后重试",
+                )));
+                return;
+            }
+        };
+
+        let url = song_url.url;
+        let player_for_start = Arc::clone(&player);
+        let request_guard = Arc::clone(&play_request_id);
+        let accepted = tokio::task::spawn_blocking(move || {
+            if request_guard.load(Ordering::SeqCst) != request_id {
+                return false;
+            }
+            player_for_start.play(&url, player_generation)
+        })
+        .await
+        .unwrap_or(false);
+        if !accepted || play_request_id.load(Ordering::SeqCst) != request_id {
+            return;
+        }
+
+        if resolved_song.cover_url.is_none() {
+            resolved_song.cover_url = song_url.cover_url.clone();
+        }
+        if resolved_song.cover_url.is_none()
+            && let Ok(Ok(url)) = tokio::time::timeout(
+                Duration::from_secs(10),
+                source_mgr.get_cover_url(&resolved_song),
+            )
+            .await
+        {
+            resolved_song.cover_url = Some(url);
+        }
+        *current_song.write().unwrap() = Some(resolved_song.clone());
+        let _ = tx.send(AppAction::ShowNotification(Notification::info(format!(
+            "正在播放: {} - {} [{}]",
+            resolved_song.name,
+            resolved_song.singer,
+            resolved_song.source.as_str()
+        ))));
+
+        if show_cover && let Err(error) = cover_service.load(resolved_song.cover_url.clone()).await
+        {
+            tracing::debug!("load cover failed: {}", error);
+        }
+    });
+}
+
 async fn resolve_playable_song(
     source_manager: Arc<lx_source::manager::SourceManager>,
     song: SongInfo,
     quality: Quality,
     auto_toggle: bool,
     play_request_id: Arc<AtomicU64>,
+    attempted_sources: Arc<std::sync::Mutex<std::collections::HashSet<SourceId>>>,
     request_id: u64,
 ) -> Result<Option<(SongInfo, SongUrl)>, String> {
-    let direct_error = match source_manager.get_song_url(&song, quality).await {
-        Ok(url) => return Ok(Some((song, url))),
-        Err(error) => error.to_string(),
+    let direct_error = if mark_source_attempted(&attempted_sources, song.source) {
+        match source_manager.get_song_url(&song, quality).await {
+            Ok(url) => return Ok(Some((song, url))),
+            Err(error) => error.to_string(),
+        }
+    } else {
+        format!("音源 {} 已尝试", song.source.as_str())
     };
 
     if play_request_id.load(Ordering::SeqCst) != request_id {
@@ -1493,7 +1715,10 @@ async fn resolve_playable_song(
         return Ok(None);
     }
 
-    for candidate in candidates.into_iter().take(5) {
+    for candidate in candidates {
+        if !mark_source_attempted(&attempted_sources, candidate.source) {
+            continue;
+        }
         match source_manager.get_song_url(&candidate, quality).await {
             Ok(url) => return Ok(Some((candidate, url))),
             Err(error) => {
@@ -1514,6 +1739,13 @@ async fn resolve_playable_song(
         "获取播放地址失败，换源后仍不可用: {}",
         direct_error
     ))
+}
+
+fn mark_source_attempted(
+    attempted_sources: &std::sync::Mutex<std::collections::HashSet<SourceId>>,
+    source: SourceId,
+) -> bool {
+    attempted_sources.lock().unwrap().insert(source)
 }
 
 fn spawn_js_source_loader(
@@ -1686,5 +1918,70 @@ fn spawn_leaderboard_request(
             }
         };
         let _ = leaderboard_tx.send(response);
+    });
+}
+
+fn maybe_spawn_playlist_load(
+    playlists: &mut pages::playlists::PlaylistsPage,
+    request_id: &mut u64,
+    source_manager: Arc<lx_source::manager::SourceManager>,
+    playlist_tx: mpsc::UnboundedSender<PlaylistResponse>,
+    rt: &tokio::runtime::Runtime,
+) {
+    let Some(request) = playlists.next_load_request() else {
+        return;
+    };
+    playlists.begin_loading(&request);
+    *request_id = request_id.wrapping_add(1);
+    spawn_playlist_request(*request_id, request, source_manager, playlist_tx, rt);
+}
+
+fn spawn_playlist_request(
+    request_id: u64,
+    request: pages::playlists::PlaylistLoadRequest,
+    source_manager: Arc<lx_source::manager::SourceManager>,
+    playlist_tx: mpsc::UnboundedSender<PlaylistResponse>,
+    rt: &tokio::runtime::Runtime,
+) {
+    rt.spawn(async move {
+        let response = match request {
+            pages::playlists::PlaylistLoadRequest::List { source } => {
+                let result = tokio::time::timeout(
+                    Duration::from_secs(12),
+                    source_manager.playlists(source, 1),
+                )
+                .await;
+                PlaylistResponse::List {
+                    request_id,
+                    source,
+                    result: match result {
+                        Ok(Ok(playlists)) => Ok(playlists),
+                        Ok(Err(error)) => Err(error.to_string()),
+                        Err(_) => Err("请求超时，请稍后重试".to_string()),
+                    },
+                }
+            }
+            pages::playlists::PlaylistLoadRequest::Songs {
+                source,
+                playlist_id,
+            } => {
+                let result = tokio::time::timeout(
+                    Duration::from_secs(15),
+                    source_manager.playlist_detail(source, &playlist_id, 1),
+                )
+                .await;
+                PlaylistResponse::Songs {
+                    request_id,
+                    source,
+                    playlist_id,
+                    result: match result {
+                        Ok(Ok(songs)) => Ok(songs),
+                        Ok(Err(error)) => Err(error.to_string()),
+                        Err(_) => Err("请求超时，请稍后重试".to_string()),
+                    },
+                }
+            }
+        };
+        let _ = playlist_tx.send(response);
     });
 }

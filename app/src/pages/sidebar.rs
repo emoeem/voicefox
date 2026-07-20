@@ -13,6 +13,7 @@ pub enum NavTab {
     Main,
     Search,
     Leaderboard,
+    Playlists,
     Favorites,
     History,
     Settings,
@@ -20,10 +21,11 @@ pub enum NavTab {
 }
 
 impl NavTab {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Main,
         Self::Search,
         Self::Leaderboard,
+        Self::Playlists,
         Self::Favorites,
         Self::History,
         Self::LocalMusic,
@@ -35,10 +37,11 @@ impl NavTab {
             Self::Main => "1 队列",
             Self::Search => "2 搜索",
             Self::Leaderboard => "3 排行榜",
-            Self::Favorites => "4 收藏",
-            Self::History => "5 历史",
-            Self::LocalMusic => "6 本地",
-            Self::Settings => "7 设置",
+            Self::Playlists => "4 歌单",
+            Self::Favorites => "5 收藏",
+            Self::History => "6 历史",
+            Self::LocalMusic => "7 本地",
+            Self::Settings => "8 设置",
         }
     }
 }
@@ -97,10 +100,11 @@ pub fn handle_input(key: &KeyEvent) -> Option<NavTab> {
         (KeyModifiers::NONE, KeyCode::Char('1')) => Some(NavTab::Main),
         (KeyModifiers::NONE, KeyCode::Char('2')) => Some(NavTab::Search),
         (KeyModifiers::NONE, KeyCode::Char('3')) => Some(NavTab::Leaderboard),
-        (KeyModifiers::NONE, KeyCode::Char('4')) => Some(NavTab::Favorites),
-        (KeyModifiers::NONE, KeyCode::Char('5')) => Some(NavTab::History),
-        (KeyModifiers::NONE, KeyCode::Char('6')) => Some(NavTab::LocalMusic),
-        (KeyModifiers::NONE, KeyCode::Char('7')) => Some(NavTab::Settings),
+        (KeyModifiers::NONE, KeyCode::Char('4')) => Some(NavTab::Playlists),
+        (KeyModifiers::NONE, KeyCode::Char('5')) => Some(NavTab::Favorites),
+        (KeyModifiers::NONE, KeyCode::Char('6')) => Some(NavTab::History),
+        (KeyModifiers::NONE, KeyCode::Char('7')) => Some(NavTab::LocalMusic),
+        (KeyModifiers::NONE, KeyCode::Char('8')) => Some(NavTab::Settings),
         _ => None,
     }
 }
@@ -114,8 +118,8 @@ mod tests {
     fn tabs_remain_clickable_at_eighty_columns() {
         let chunks = tab_chunks(Rect::new(1, 1, 78, 1));
 
-        assert_eq!(chunks.len(), 7);
-        assert!(chunks.iter().all(|chunk| chunk.width >= 10));
+        assert_eq!(chunks.len(), 8);
+        assert!(chunks.iter().all(|chunk| chunk.width >= 9));
         assert_eq!(chunks.iter().map(|chunk| chunk.width).sum::<u16>(), 78);
     }
 }

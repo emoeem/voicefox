@@ -3,6 +3,7 @@ pub mod favorites;
 pub mod history;
 pub mod leaderboard;
 pub mod main_page;
+pub mod playlists;
 pub mod search;
 pub mod settings;
 pub mod sidebar;

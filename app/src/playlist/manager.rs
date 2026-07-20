@@ -4,6 +4,7 @@
 
 use std::sync::Mutex;
 
+use lx_core::events::InsertPosition;
 use lx_core::model::song::SongInfo;
 
 pub struct PlaylistManager {
@@ -37,6 +38,24 @@ impl PlaylistManager {
             self.current_list.lock().unwrap().clone(),
             *self.current_index.lock().unwrap(),
         )
+    }
+
+    /// 将单首歌曲插入当前播放列表，返回插入后的索引。
+    pub fn insert(&self, song: SongInfo, position: InsertPosition) -> usize {
+        let mut list = self.current_list.lock().unwrap();
+        let mut current = self.current_index.lock().unwrap();
+        if list.is_empty() {
+            list.push(song);
+            *current = 0;
+            return 0;
+        }
+
+        let index = match position {
+            InsertPosition::Next => current.saturating_add(1).min(list.len()),
+            InsertPosition::End => list.len(),
+        };
+        list.insert(index, song);
+        index
     }
 
     pub fn remove(&self, target: usize) {
@@ -127,6 +146,7 @@ impl PlaylistManager {
 mod tests {
     use super::PlaylistManager;
     use crate::playlist::mode::PlayMode;
+    use lx_core::events::InsertPosition;
     use lx_core::model::song::SongInfo;
     use lx_core::model::source::SourceId;
 
@@ -191,5 +211,55 @@ mod tests {
             vec!["b", "c", "d", "a"]
         );
         assert_eq!(songs[current].id, "c");
+    }
+
+    #[test]
+    fn appending_song_keeps_the_current_song() {
+        let playlist = PlaylistManager::new(PlayMode::ListLoop);
+        playlist.set_playlist(vec![song("a"), song("b")], 0);
+
+        let inserted = playlist.insert(song("c"), InsertPosition::End);
+
+        let (songs, current) = playlist.snapshot();
+        assert_eq!(inserted, 2);
+        assert_eq!(
+            songs
+                .iter()
+                .map(|song| song.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a", "b", "c"]
+        );
+        assert_eq!(songs[current].id, "a");
+    }
+
+    #[test]
+    fn inserting_next_places_song_after_current() {
+        let playlist = PlaylistManager::new(PlayMode::ListLoop);
+        playlist.set_playlist(vec![song("a"), song("b"), song("c")], 1);
+
+        let inserted = playlist.insert(song("next"), InsertPosition::Next);
+
+        let (songs, current) = playlist.snapshot();
+        assert_eq!(inserted, 2);
+        assert_eq!(
+            songs
+                .iter()
+                .map(|song| song.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a", "b", "next", "c"]
+        );
+        assert_eq!(songs[current].id, "b");
+    }
+
+    #[test]
+    fn inserting_into_empty_queue_selects_the_first_song() {
+        let playlist = PlaylistManager::new(PlayMode::ListLoop);
+
+        let inserted = playlist.insert(song("a"), InsertPosition::Next);
+
+        let (songs, current) = playlist.snapshot();
+        assert_eq!(inserted, 0);
+        assert_eq!(current, 0);
+        assert_eq!(songs[current].id, "a");
     }
 }
