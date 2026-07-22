@@ -156,6 +156,14 @@ impl SearchPage {
                     };
                 }
             }
+            (KeyModifiers::NONE, KeyCode::Char('l')) => {
+                if !self.results.is_empty() {
+                    return AppAction::PlaySong {
+                        songs: self.results.clone(),
+                        index: self.selected,
+                    };
+                }
+            }
             (KeyModifiers::NONE, KeyCode::Enter) => {
                 let keyword = self.input.trim().to_string();
                 if keyword.is_empty() {
@@ -881,6 +889,17 @@ mod tests {
 
         assert_eq!(page.source_filter, Some(SourceId::Kw));
         assert!(matches!(action, AppAction::None));
+    }
+
+    #[test]
+    fn l_plays_the_selected_search_result() {
+        let mut page = SearchPage::new(None, true, 3);
+        page.input_mode = false;
+        page.results = vec![song("kw-1", SourceId::Kw, "晴天", "周杰伦")];
+
+        let action = page.handle_input(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE));
+
+        assert!(matches!(action, AppAction::PlaySong { index: 0, .. }));
     }
 
     #[test]

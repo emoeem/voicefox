@@ -14,9 +14,9 @@ use std::time::{Duration, Instant};
 /// JS 引擎：封装一个 Node.js 子进程运行用户音源脚本
 pub struct JsEngine {
     /// Node.js 子进程
-    _child: Mutex<Child>,
+    child: Mutex<Option<Child>>,
     /// stdin 写入端
-    stdin: Mutex<ChildStdin>,
+    stdin: Mutex<Option<ChildStdin>>,
     /// stdout 由专用线程持续读取，调用方通过通道进行可超时等待。
     output_rx: Mutex<std::sync::mpsc::Receiver<String>>,
     _reader_handle: Mutex<Option<std::thread::JoinHandle<()>>>,
@@ -52,6 +52,7 @@ impl JsEngine {
         // 启动 Node.js 子进程。权限模式只允许读取运行时和当前音源文件，
         // 默认拒绝文件写入、子进程、Worker、原生扩展等高风险能力。
         let mut command = Command::new("node");
+        configure_background_command(&mut command);
         command.arg("--permission");
         if node_supports_flag("--allow-net") {
             // Node 26+ also gates network access behind the permission model.
@@ -89,8 +90,8 @@ impl JsEngine {
         });
 
         let engine = Self {
-            _child: Mutex::new(child),
-            stdin: Mutex::new(stdin),
+            child: Mutex::new(Some(child)),
+            stdin: Mutex::new(Some(stdin)),
             output_rx: Mutex::new(output_rx),
             _reader_handle: Mutex::new(Some(reader_handle)),
             req_id: AtomicU64::new(0),
@@ -215,6 +216,9 @@ impl JsEngine {
             .stdin
             .lock()
             .map_err(|e| format!("stdin lock error: {}", e))?;
+        let stdin = stdin
+            .as_mut()
+            .ok_or_else(|| "JS 引擎子进程已关闭".to_string())?;
         let line = serde_json::to_string(cmd).map_err(|e| format!("序列化命令失败: {}", e))?;
         writeln!(stdin, "{}", line).map_err(|e| format!("写入子进程失败: {}", e))?;
         Ok(())
@@ -286,15 +290,22 @@ impl JsEngine {
 
 impl Drop for JsEngine {
     fn drop(&mut self) {
-        // 尝试优雅关闭子进程
-        if let Ok(mut child) = self._child.lock() {
-            let _ = child.kill();
-            let _ = child.wait();
+        // 先关闭 stdin 触发 wrapper 的退出处理，再终止仍存活的进程。
+        // wait 和 stdout 线程回收放到独立线程，避免 Windows 上删除音源或退出 TUI 时阻塞。
+        if let Ok(mut stdin) = self.stdin.lock() {
+            stdin.take();
         }
-        if let Ok(mut handle) = self._reader_handle.lock()
-            && let Some(handle) = handle.take()
-        {
-            let _ = handle.join();
+        let child = self.child.lock().ok().and_then(|mut child| child.take());
+        if let Some(mut child) = child {
+            let _ = child.kill();
+            let _ = std::thread::Builder::new()
+                .name("voicefox-js-reaper".to_string())
+                .spawn(move || {
+                    let _ = child.wait();
+                });
+        }
+        if let Ok(mut handle) = self._reader_handle.lock() {
+            handle.take();
         }
     }
 }
@@ -306,7 +317,9 @@ fn node_supports_permission_mode() -> bool {
 fn node_supports_flag(flag: &str) -> bool {
     static HELP: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
     HELP.get_or_init(|| {
-        Command::new("node")
+        let mut command = Command::new("node");
+        configure_background_command(&mut command);
+        command
             .arg("--help")
             .output()
             .ok()
@@ -315,4 +328,16 @@ fn node_supports_flag(flag: &str) -> bool {
     })
     .as_deref()
     .is_some_and(|help| help.contains(flag))
+}
+
+fn configure_background_command(command: &mut Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(not(windows))]
+    let _ = command;
 }

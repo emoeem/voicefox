@@ -4,6 +4,7 @@
 
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use super::engine::JsEngine;
@@ -85,13 +86,53 @@ fn write_cache(path: &Path, code: &[u8]) -> Result<(), String> {
         std::fs::create_dir_all(parent).map_err(|e| format!("创建缓存目录失败: {e}"))?;
     }
 
-    let temporary_path = path.with_extension(format!("js.{}.tmp", std::process::id()));
+    let temporary_path = unique_sibling_path(path, "tmp");
     std::fs::write(&temporary_path, code).map_err(|e| format!("写入缓存临时文件失败: {e}"))?;
-    if let Err(error) = std::fs::rename(&temporary_path, path) {
+    if let Err(error) = replace_file(&temporary_path, path) {
         let _ = std::fs::remove_file(&temporary_path);
         return Err(format!("替换 JS 音源缓存失败: {error}"));
     }
     Ok(())
+}
+
+fn unique_sibling_path(path: &Path, suffix: &str) -> PathBuf {
+    static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+
+    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    path.with_extension(format!(
+        "{}.{}.{}.{}",
+        path.extension()
+            .and_then(|extension| extension.to_str())
+            .unwrap_or("cache"),
+        std::process::id(),
+        id,
+        suffix
+    ))
+}
+
+#[cfg(not(windows))]
+fn replace_file(temporary_path: &Path, path: &Path) -> std::io::Result<()> {
+    std::fs::rename(temporary_path, path)
+}
+
+#[cfg(windows)]
+fn replace_file(temporary_path: &Path, path: &Path) -> std::io::Result<()> {
+    if !path.exists() {
+        return std::fs::rename(temporary_path, path);
+    }
+
+    let backup_path = unique_sibling_path(path, "backup");
+    std::fs::rename(path, &backup_path)?;
+    match std::fs::rename(temporary_path, path) {
+        Ok(()) => {
+            let _ = std::fs::remove_file(backup_path);
+            Ok(())
+        }
+        Err(error) => {
+            let _ = std::fs::rename(&backup_path, path);
+            Err(error)
+        }
+    }
 }
 
 fn replace_cache(path: &Path, code: &[u8]) -> Result<(), String> {
@@ -247,4 +288,30 @@ async fn load_source_with_policy(
     }
 
     Err(format!("JS 音源加载失败（已重试 3 次）: {last_error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::write_cache;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn cache_write_replaces_existing_file() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "voicefox-loader-test-{}-{unique}",
+            std::process::id(),
+        ));
+        let path = dir.join("source.js");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&path, b"old").unwrap();
+
+        write_cache(&path, b"new").unwrap();
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"new");
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }

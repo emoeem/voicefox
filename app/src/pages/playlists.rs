@@ -212,9 +212,7 @@ impl PlaylistsPage {
             | (KeyModifiers::NONE, KeyCode::PageDown) => {
                 self.selected = (self.selected + 10).min(self.current_list_len().saturating_sub(1));
             }
-            (KeyModifiers::NONE, KeyCode::Enter)
-            | (KeyModifiers::NONE, KeyCode::Char('\r'))
-            | (KeyModifiers::NONE, KeyCode::Char('l')) => {
+            _ if super::is_song_activation_key(key) => {
                 if self.selected_playlist.is_some() && !self.songs.is_empty() {
                     return AppAction::PlaySong {
                         songs: self.songs.clone(),

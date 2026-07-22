@@ -96,6 +96,19 @@ impl LocalSource {
             .collect()
     }
 
+    /// 从当前扫描结果中移除一个文件，避免异步复扫完成前仍显示已删除歌曲。
+    pub fn remove_by_path(&self, path: &Path) -> bool {
+        let mut groups = self.songs.write().unwrap();
+        let mut removed = false;
+        for songs in groups.values_mut() {
+            let previous_len = songs.len();
+            songs.retain(|song| song.file_path != path);
+            removed |= songs.len() != previous_len;
+        }
+        groups.retain(|_, songs| !songs.is_empty());
+        removed
+    }
+
     /// 根据路径查找歌曲
     pub fn find_by_path(&self, path: &PathBuf) -> Option<SongInfo> {
         for songs in self.songs.read().unwrap().values() {
@@ -239,7 +252,12 @@ fn read_local_lyric(audio_path: &Path) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::LocalSource;
+    use std::path::PathBuf;
+
+    use lx_core::model::song::SongInfo;
+    use lx_core::model::source::SourceId;
+
+    use super::{LocalSong, LocalSource};
 
     #[test]
     fn stale_scan_cannot_replace_newer_paths() {
@@ -251,5 +269,30 @@ mod tests {
         source.scan_for_generation(&[".".to_string()], 0, stale_generation);
 
         assert!(source.loaded_paths().is_empty());
+    }
+
+    #[test]
+    fn deleted_file_is_removed_from_the_current_library_snapshot() {
+        let source = LocalSource::new();
+        let path = PathBuf::from("/music/removed.mp3");
+        let mut song = SongInfo::new(
+            path.to_string_lossy().into_owned(),
+            SourceId::Local,
+            "removed".to_string(),
+            "artist".to_string(),
+        );
+        song.file_path = Some(path.clone());
+        source.songs.write().unwrap().insert(
+            PathBuf::from("/music"),
+            vec![LocalSong {
+                song,
+                file_path: path.clone(),
+            }],
+        );
+
+        assert!(source.remove_by_path(&path));
+        assert!(source.all_songs().is_empty());
+        assert!(source.songs.read().unwrap().is_empty());
+        assert!(!source.remove_by_path(&path));
     }
 }

@@ -87,6 +87,25 @@ lx.send(lx.EVENT_NAMES.inited, {
 }
 
 #[test]
+fn dropping_js_engine_does_not_block_shutdown() {
+    if Command::new("node").arg("--version").output().is_err() {
+        eprintln!("node is unavailable; skipping JS engine shutdown test");
+        return;
+    }
+
+    let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/user_api_v3.js");
+    let engine = JsEngine::new(fixture).expect("fixture source should initialize");
+    let started = Instant::now();
+
+    drop(engine);
+
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "dropping the JS engine should not wait for child reader threads"
+    );
+}
+
+#[test]
 fn source_script_can_initialize_over_network_in_permission_mode() {
     if Command::new("node").arg("--version").output().is_err() {
         eprintln!("node is unavailable; skipping JS network permission test");

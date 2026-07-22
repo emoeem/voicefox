@@ -199,7 +199,12 @@ impl CoverService {
         use std::io::Write;
 
         let current_gen = self.display_gen.load(Ordering::SeqCst);
-        if current_gen == 0 || area.width == 0 || area.height == 0 {
+        if current_gen == 0
+            || area.width == 0
+            || area.height == 0
+            || !supports_kitty_graphics()
+            || viuer::get_kitty_support() == viuer::KittySupport::None
+        {
             return;
         }
         // 如果版本没变，说明同一张图已经显示过了，跳过
@@ -221,10 +226,12 @@ impl CoverService {
 
         // 用 viuer 在指定位置显示图片
         let config = viuer::Config {
-            x: area.x as u16,
+            x: area.x,
             y: area.y as i16,
             width: Some(area.width as u32),
             height: Some(area.height as u32),
+            restore_cursor: true,
+            use_iterm: false,
             ..Default::default()
         };
 
@@ -242,6 +249,23 @@ impl CoverService {
             self.delete_kitty_image();
         }
     }
+}
+
+fn supports_kitty_graphics() -> bool {
+    let term_program = std::env::var("TERM_PROGRAM")
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let term = std::env::var("TERM")
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    term_program.contains("wezterm")
+        || term_program.contains("ghostty")
+        || term.contains("kitty")
+        || std::env::var_os("WEZTERM_PANE").is_some()
+        || std::env::var_os("KITTY_WINDOW_ID").is_some()
+        || std::env::var_os("GHOSTTY_RESOURCES_DIR").is_some()
+        || std::env::var_os("KONSOLE_VERSION").is_some()
 }
 
 fn normalize_url(url: &str) -> String {

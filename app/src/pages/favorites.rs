@@ -119,7 +119,7 @@ impl FavoritesPage {
             | (KeyModifiers::NONE, KeyCode::PageDown) => {
                 self.selected = (self.selected + half_page).min(filtered.len().saturating_sub(1));
             }
-            (KeyModifiers::NONE, KeyCode::Enter) | (KeyModifiers::NONE, KeyCode::Char('\r')) => {
+            _ if super::is_song_activation_key(key) => {
                 if self.selected < filtered.len() {
                     let songs = filtered
                         .iter()

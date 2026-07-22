@@ -128,8 +128,9 @@ pub fn handle_input(key: &KeyEvent, ctx: &AppContext, selected: &mut usize) -> A
         (KeyModifiers::CONTROL, KeyCode::Char('d')) | (KeyModifiers::NONE, KeyCode::PageDown) => {
             *selected = (*selected + 10).min(history.len().saturating_sub(1));
         }
-        (KeyModifiers::NONE, KeyCode::Enter) | (KeyModifiers::NONE, KeyCode::Char('\r'))
-            if !history.is_empty() && *selected < history.len() =>
+        _ if super::is_song_activation_key(key)
+            && !history.is_empty()
+            && *selected < history.len() =>
         {
             let songs = history.clone();
             let index = *selected;

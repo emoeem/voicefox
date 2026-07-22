@@ -27,6 +27,8 @@ use std::os::unix::net::UnixStream as SocketStream;
 /// mpv IPC 客户端
 pub struct MpvIpc {
     process: Mutex<std::process::Child>,
+    #[cfg(windows)]
+    _process_job: std::os::windows::io::OwnedHandle,
     #[cfg(unix)]
     socket_path: String,
     cmd_conn: Mutex<SocketStream>,
@@ -112,7 +114,9 @@ impl MpvIpc {
             args.push(u.to_string());
         }
 
-        let mut process = std::process::Command::new("mpv")
+        let mut command = std::process::Command::new("mpv");
+        configure_background_command(&mut command);
+        let mut process = command
             .args(&args)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -124,6 +128,12 @@ impl MpvIpc {
                     MpvError::Ipc(format!("start mpv: {}", e))
                 }
             })?;
+        #[cfg(windows)]
+        let process_job = assign_process_to_kill_on_close_job(&process).map_err(|error| {
+            let _ = process.kill();
+            let _ = process.wait();
+            MpvError::Ipc(format!("attach mpv process lifetime: {error}"))
+        })?;
 
         // 等待 socket 就绪
         let deadline = Instant::now() + Duration::from_secs(3);
@@ -208,6 +218,8 @@ impl MpvIpc {
 
         Ok(Self {
             process: Mutex::new(process),
+            #[cfg(windows)]
+            _process_job: process_job,
             #[cfg(unix)]
             socket_path,
             cmd_conn: Mutex::new(cmd_conn),
@@ -317,6 +329,65 @@ impl Drop for MpvIpc {
     }
 }
 
+fn configure_background_command(command: &mut std::process::Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(not(windows))]
+    let _ = command;
+}
+
+#[cfg(windows)]
+fn assign_process_to_kill_on_close_job(
+    process: &std::process::Child,
+) -> std::io::Result<std::os::windows::io::OwnedHandle> {
+    use std::mem::size_of;
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+        SetInformationJobObject,
+    };
+
+    let raw_job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+    if raw_job.is_null() {
+        return Err(std::io::Error::last_os_error());
+    }
+    let job = unsafe { OwnedHandle::from_raw_handle(raw_job) };
+
+    let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    let configured = unsafe {
+        SetInformationJobObject(
+            job.as_raw_handle() as HANDLE,
+            JobObjectExtendedLimitInformation,
+            (&raw const limits).cast(),
+            size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        )
+    };
+    if configured == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+
+    let assigned = unsafe {
+        AssignProcessToJobObject(
+            job.as_raw_handle() as HANDLE,
+            process.as_raw_handle() as HANDLE,
+        )
+    };
+    if assigned == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+
+    Ok(job)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{MpvEvent, parse_mpv_event};
@@ -335,5 +406,39 @@ mod tests {
     #[test]
     fn ignores_manual_stop_events() {
         assert!(parse_mpv_event(r#"{"event":"end-file","reason":"stop"}"#).is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn closing_process_job_terminates_child() {
+        use std::os::windows::process::CommandExt;
+
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let mut child = std::process::Command::new("cmd")
+            .args(["/C", "ping", "-n", "30", "127.0.0.1"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let job = super::assign_process_to_kill_on_close_job(&child).unwrap();
+
+        drop(job);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let stopped = loop {
+            if child.try_wait().unwrap().is_some() {
+                break true;
+            }
+            if std::time::Instant::now() >= deadline {
+                break false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        if !stopped {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+
+        assert!(stopped, "closing the job handle should terminate its child");
     }
 }

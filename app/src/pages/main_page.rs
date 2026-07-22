@@ -10,6 +10,31 @@ use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 
 use crate::context::AppContext;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QueueEditCommand {
+    MoveUp,
+    MoveDown,
+    RemoveSelected,
+    Clear,
+}
+
+fn queue_edit_command(key: &KeyEvent) -> Option<QueueEditCommand> {
+    match (key.modifiers, key.code) {
+        (KeyModifiers::SHIFT, KeyCode::Up)
+        | (KeyModifiers::SHIFT, KeyCode::Char('k' | 'K'))
+        | (KeyModifiers::NONE, KeyCode::Char('K')) => Some(QueueEditCommand::MoveUp),
+        (KeyModifiers::SHIFT, KeyCode::Down)
+        | (KeyModifiers::SHIFT, KeyCode::Char('j' | 'J'))
+        | (KeyModifiers::NONE, KeyCode::Char('J')) => Some(QueueEditCommand::MoveDown),
+        (KeyModifiers::NONE, KeyCode::Char('d') | KeyCode::Delete) => {
+            Some(QueueEditCommand::RemoveSelected)
+        }
+        (KeyModifiers::SHIFT, KeyCode::Char('d' | 'D'))
+        | (KeyModifiers::NONE, KeyCode::Char('D')) => Some(QueueEditCommand::Clear),
+        _ => None,
+    }
+}
+
 pub struct MainPage {
     selected: usize,
     scroll: usize,
@@ -30,6 +55,58 @@ impl MainPage {
         if self.selected >= songs.len() {
             self.selected = current.min(songs.len().saturating_sub(1));
         }
+
+        if let Some(command) = queue_edit_command(key) {
+            return match command {
+                QueueEditCommand::MoveUp => {
+                    if self.selected > 0 {
+                        ctx.playlist.move_item(self.selected, self.selected - 1);
+                        self.selected -= 1;
+                    }
+                    AppAction::None
+                }
+                QueueEditCommand::MoveDown => {
+                    if self.selected + 1 < songs.len() {
+                        ctx.playlist.move_item(self.selected, self.selected + 1);
+                        self.selected += 1;
+                    }
+                    AppAction::None
+                }
+                QueueEditCommand::RemoveSelected => {
+                    let removing_current = self.selected == current;
+                    ctx.playlist.remove(self.selected);
+                    self.selected = self.selected.min(songs.len().saturating_sub(2));
+                    if removing_current {
+                        let (remaining, next) = ctx.playlist.snapshot();
+                        if remaining.is_empty() {
+                            ctx.player.stop();
+                            ctx.cover_service.clear();
+                            ctx.lyric_service.clear();
+                            *ctx.current_song.write().unwrap() = None;
+                            AppAction::None
+                        } else {
+                            AppAction::PlaySong {
+                                songs: remaining,
+                                index: next,
+                            }
+                        }
+                    } else {
+                        AppAction::None
+                    }
+                }
+                QueueEditCommand::Clear => {
+                    ctx.playlist.clear();
+                    ctx.player.stop();
+                    ctx.cover_service.clear();
+                    ctx.lyric_service.clear();
+                    *ctx.current_song.write().unwrap() = None;
+                    self.selected = 0;
+                    self.scroll = 0;
+                    AppAction::None
+                }
+            };
+        }
+
         match (key.modifiers, key.code) {
             (KeyModifiers::NONE, KeyCode::Up) | (KeyModifiers::NONE, KeyCode::Char('k')) => {
                 if !songs.is_empty() {
@@ -70,53 +147,11 @@ impl MainPage {
             | (KeyModifiers::NONE, KeyCode::PageDown) => {
                 self.selected = (self.selected + 5).min(songs.len().saturating_sub(1));
             }
-            (KeyModifiers::SHIFT, KeyCode::Up) | (KeyModifiers::SHIFT, KeyCode::Char('K')) => {
-                if self.selected > 0 {
-                    ctx.playlist.move_item(self.selected, self.selected - 1);
-                    self.selected -= 1;
-                }
-            }
-            (KeyModifiers::SHIFT, KeyCode::Down) | (KeyModifiers::SHIFT, KeyCode::Char('J')) => {
-                if self.selected + 1 < songs.len() {
-                    ctx.playlist.move_item(self.selected, self.selected + 1);
-                    self.selected += 1;
-                }
-            }
-            (KeyModifiers::NONE, KeyCode::Enter) => {
-                if self.selected < songs.len() {
-                    return AppAction::PlaySong {
-                        songs,
-                        index: self.selected,
-                    };
-                }
-            }
-            (KeyModifiers::NONE, KeyCode::Char('d')) => {
-                let removing_current = self.selected == current;
-                ctx.playlist.remove(self.selected);
-                self.selected = self.selected.min(songs.len().saturating_sub(2));
-                if removing_current {
-                    let (remaining, next) = ctx.playlist.snapshot();
-                    if remaining.is_empty() {
-                        ctx.player.stop();
-                        ctx.cover_service.clear();
-                        ctx.lyric_service.clear();
-                        *ctx.current_song.write().unwrap() = None;
-                    } else {
-                        return AppAction::PlaySong {
-                            songs: remaining,
-                            index: next,
-                        };
-                    }
-                }
-            }
-            (KeyModifiers::SHIFT, KeyCode::Char('D')) => {
-                ctx.playlist.clear();
-                ctx.player.stop();
-                ctx.cover_service.clear();
-                ctx.lyric_service.clear();
-                *ctx.current_song.write().unwrap() = None;
-                self.selected = 0;
-                self.scroll = 0;
+            (KeyModifiers::NONE, KeyCode::Enter) if self.selected < songs.len() => {
+                return AppAction::PlaySong {
+                    songs,
+                    index: self.selected,
+                };
             }
             _ => {}
         }
@@ -344,4 +379,53 @@ fn render_cover_placeholder(area: Rect, buf: &mut Buffer, ctx: &AppContext) {
     Paragraph::new(lines)
         .alignment(ratatui::layout::Alignment::Center)
         .render(inner, buf);
+}
+
+#[cfg(test)]
+mod tests {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    use super::{QueueEditCommand, queue_edit_command};
+
+    #[test]
+    fn queue_reorder_shortcuts_accept_terminal_shift_variants() {
+        for key in [
+            KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT),
+            KeyEvent::new(KeyCode::Char('K'), KeyModifiers::SHIFT),
+            KeyEvent::new(KeyCode::Char('k'), KeyModifiers::SHIFT),
+            KeyEvent::new(KeyCode::Char('K'), KeyModifiers::NONE),
+        ] {
+            assert_eq!(queue_edit_command(&key), Some(QueueEditCommand::MoveUp));
+        }
+
+        for key in [
+            KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT),
+            KeyEvent::new(KeyCode::Char('J'), KeyModifiers::SHIFT),
+            KeyEvent::new(KeyCode::Char('j'), KeyModifiers::SHIFT),
+            KeyEvent::new(KeyCode::Char('J'), KeyModifiers::NONE),
+        ] {
+            assert_eq!(queue_edit_command(&key), Some(QueueEditCommand::MoveDown));
+        }
+    }
+
+    #[test]
+    fn queue_delete_shortcuts_distinguish_one_song_from_the_whole_queue() {
+        for key in [
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE),
+        ] {
+            assert_eq!(
+                queue_edit_command(&key),
+                Some(QueueEditCommand::RemoveSelected)
+            );
+        }
+
+        for key in [
+            KeyEvent::new(KeyCode::Char('D'), KeyModifiers::SHIFT),
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::SHIFT),
+            KeyEvent::new(KeyCode::Char('D'), KeyModifiers::NONE),
+        ] {
+            assert_eq!(queue_edit_command(&key), Some(QueueEditCommand::Clear));
+        }
+    }
 }
