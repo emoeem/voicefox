@@ -214,6 +214,7 @@ fn run_app(
     let mut history_scroll: usize = 0;
     let mut local_selected: usize = 0;
     let mut local_scroll: usize = 0;
+    let mut confirm_delete: Option<(String, std::path::PathBuf)> = None;
     let mut ui_areas = UiAreas::default();
     let mut click_tracker = ClickTracker::default();
 
@@ -532,6 +533,7 @@ fn run_app(
                 &mut local_selected,
                 &mut local_scroll,
                 &mut ui_areas,
+                &confirm_delete,
             )?;
             needs_render = false;
         }
@@ -913,60 +915,55 @@ fn run_app(
                 NavTab::LocalMusic => {
                     let local_src = ctx.source_manager.local_source();
                     let songs = local_src.all_songs();
-                    match (key.modifiers, key.code) {
-                        (KeyModifiers::NONE, KeyCode::Char('r')) => {
-                            let paths = ctx.config.read().unwrap().local_music.paths.clone();
-                            let max_depth = ctx.config.read().unwrap().local_music.max_depth;
-                            execute_action(
-                                AppAction::ScanLocalMusic { paths, max_depth },
-                                &ctx,
-                                &rt,
-                                &action_tx,
-                                &search_page,
-                                &settings_page,
-                                &search_seq,
-                            );
-                            local_selected = 0;
-                            local_scroll = 0;
-                        }
-                        (KeyModifiers::NONE, KeyCode::Up)
-                        | (KeyModifiers::NONE, KeyCode::Char('k')) => {
-                            if !songs.is_empty() {
-                                local_selected = local_selected.saturating_sub(1);
+                    let paths = ctx.config.read().unwrap().local_music.paths.clone();
+                    let max_depth = ctx.config.read().unwrap().local_music.max_depth;
+
+                    if let Some((ref name, ref path)) = confirm_delete {
+                        match (key.modifiers, key.code) {
+                            (KeyModifiers::NONE, KeyCode::Char('y')) => {
+                                match std::fs::remove_file(path) {
+                                    Ok(()) => {
+                                        ctx.notifications
+                                            .write()
+                                            .unwrap()
+                                            .push_back(Notification::info(format!(
+                                                "已删除: {}", name
+                                            )));
+                                        if local_selected > 0 && local_selected + 1 >= songs.len() {
+                                            local_selected -= 1;
+                                        }
+                                        execute_action(
+                                            AppAction::ScanLocalMusic { paths, max_depth },
+                                            &ctx,
+                                            &rt,
+                                            &action_tx,
+                                            &search_page,
+                                            &settings_page,
+                                            &search_seq,
+                                        );
+                                    }
+                                    Err(e) => {
+                                        ctx.notifications
+                                            .write()
+                                            .unwrap()
+                                            .push_back(Notification::error(format!(
+                                                "删除失败: {}", e
+                                            )));
+                                    }
+                                }
+                                confirm_delete = None;
                             }
-                        }
-                        (KeyModifiers::NONE, KeyCode::Down)
-                        | (KeyModifiers::NONE, KeyCode::Char('j')) => {
-                            if !songs.is_empty() && local_selected + 1 < songs.len() {
-                                local_selected += 1;
+                            (KeyModifiers::NONE, KeyCode::Char('n'))
+                            | (KeyModifiers::NONE, KeyCode::Esc) => {
+                                confirm_delete = None;
                             }
+                            _ => {}
                         }
-                        (KeyModifiers::NONE, KeyCode::Home)
-                        | (KeyModifiers::NONE, KeyCode::Char('g')) => {
-                            local_selected = 0;
-                        }
-                        (KeyModifiers::NONE, KeyCode::End)
-                        | (KeyModifiers::NONE, KeyCode::Char('G'))
-                        | (KeyModifiers::SHIFT, KeyCode::Char('G')) => {
-                            local_selected = songs.len().saturating_sub(1);
-                        }
-                        (KeyModifiers::CONTROL, KeyCode::Char('u'))
-                        | (KeyModifiers::NONE, KeyCode::PageUp) => {
-                            local_selected = local_selected.saturating_sub(10);
-                        }
-                        (KeyModifiers::CONTROL, KeyCode::Char('d'))
-                        | (KeyModifiers::NONE, KeyCode::PageDown) => {
-                            local_selected =
-                                (local_selected + 10).min(songs.len().saturating_sub(1));
-                        }
-                        (KeyModifiers::NONE, KeyCode::Enter)
-                        | (KeyModifiers::NONE, KeyCode::Char('\r')) => {
-                            if !songs.is_empty() && local_selected < songs.len() {
+                    } else {
+                        match (key.modifiers, key.code) {
+                            (KeyModifiers::NONE, KeyCode::Char('r')) => {
                                 execute_action(
-                                    AppAction::PlaySong {
-                                        songs,
-                                        index: local_selected,
-                                    },
+                                    AppAction::ScanLocalMusic { paths, max_depth },
                                     &ctx,
                                     &rt,
                                     &action_tx,
@@ -974,42 +971,105 @@ fn run_app(
                                     &settings_page,
                                     &search_seq,
                                 );
+                                local_selected = 0;
+                                local_scroll = 0;
                             }
-                        }
-                        (KeyModifiers::NONE, KeyCode::Char('a')) => {
-                            if let Some(song) = songs.get(local_selected).cloned() {
-                                execute_action(
-                                    AppAction::AddToQueue {
-                                        song: Box::new(song),
-                                        position: InsertPosition::End,
-                                    },
-                                    &ctx,
-                                    &rt,
-                                    &action_tx,
-                                    &search_page,
-                                    &settings_page,
-                                    &search_seq,
-                                );
+                            (KeyModifiers::NONE, KeyCode::Up)
+                            | (KeyModifiers::NONE, KeyCode::Char('k')) => {
+                                if !songs.is_empty() {
+                                    local_selected = local_selected.saturating_sub(1);
+                                }
                             }
-                        }
-                        (KeyModifiers::NONE, KeyCode::Char('A'))
-                        | (KeyModifiers::SHIFT, KeyCode::Char('A')) => {
-                            if let Some(song) = songs.get(local_selected).cloned() {
-                                execute_action(
-                                    AppAction::AddToQueue {
-                                        song: Box::new(song),
-                                        position: InsertPosition::Next,
-                                    },
-                                    &ctx,
-                                    &rt,
-                                    &action_tx,
-                                    &search_page,
-                                    &settings_page,
-                                    &search_seq,
-                                );
+                            (KeyModifiers::NONE, KeyCode::Down)
+                            | (KeyModifiers::NONE, KeyCode::Char('j')) => {
+                                if !songs.is_empty() && local_selected + 1 < songs.len() {
+                                    local_selected += 1;
+                                }
                             }
+                            (KeyModifiers::NONE, KeyCode::Home)
+                            | (KeyModifiers::NONE, KeyCode::Char('g')) => {
+                                local_selected = 0;
+                            }
+                            (KeyModifiers::NONE, KeyCode::End)
+                            | (KeyModifiers::NONE, KeyCode::Char('G'))
+                            | (KeyModifiers::SHIFT, KeyCode::Char('G')) => {
+                                local_selected = songs.len().saturating_sub(1);
+                            }
+                            (KeyModifiers::CONTROL, KeyCode::Char('u'))
+                            | (KeyModifiers::NONE, KeyCode::PageUp) => {
+                                local_selected = local_selected.saturating_sub(10);
+                            }
+                            (KeyModifiers::CONTROL, KeyCode::Char('d'))
+                            | (KeyModifiers::NONE, KeyCode::PageDown) => {
+                                local_selected =
+                                    (local_selected + 10).min(songs.len().saturating_sub(1));
+                            }
+                            (KeyModifiers::NONE, KeyCode::Enter)
+                            | (KeyModifiers::NONE, KeyCode::Char('\r')) => {
+                                if !songs.is_empty() && local_selected < songs.len() {
+                                    execute_action(
+                                        AppAction::PlaySong {
+                                            songs,
+                                            index: local_selected,
+                                        },
+                                        &ctx,
+                                        &rt,
+                                        &action_tx,
+                                        &search_page,
+                                        &settings_page,
+                                        &search_seq,
+                                    );
+                                }
+                            }
+                            (KeyModifiers::NONE, KeyCode::Char('a')) => {
+                                if let Some(song) = songs.get(local_selected).cloned() {
+                                    execute_action(
+                                        AppAction::AddToQueue {
+                                            song: Box::new(song),
+                                            position: InsertPosition::End,
+                                        },
+                                        &ctx,
+                                        &rt,
+                                        &action_tx,
+                                        &search_page,
+                                        &settings_page,
+                                        &search_seq,
+                                    );
+                                }
+                            }
+                            (KeyModifiers::NONE, KeyCode::Char('A'))
+                            | (KeyModifiers::SHIFT, KeyCode::Char('A')) => {
+                                if let Some(song) = songs.get(local_selected).cloned() {
+                                    execute_action(
+                                        AppAction::AddToQueue {
+                                            song: Box::new(song),
+                                            position: InsertPosition::Next,
+                                        },
+                                        &ctx,
+                                        &rt,
+                                        &action_tx,
+                                        &search_page,
+                                        &settings_page,
+                                        &search_seq,
+                                    );
+                                }
+                            }
+                            (KeyModifiers::NONE, KeyCode::Char('d')) => {
+                                if let Some(song) = songs.get(local_selected) {
+                                    if let Some(path) = &song.file_path {
+                                        confirm_delete = Some((song.name.clone(), path.clone()));
+                                    } else {
+                                        ctx.notifications
+                                            .write()
+                                            .unwrap()
+                                            .push_back(Notification::error(
+                                                "无法删除：没有文件路径",
+                                            ));
+                                    }
+                                }
+                            }
+                            _ => {}
                         }
-                        _ => {}
                     }
                 }
             }
@@ -1131,6 +1191,7 @@ fn run_app(
                 &mut local_selected,
                 &mut local_scroll,
                 &mut ui_areas,
+                &confirm_delete,
             )?;
             needs_render = false;
         }
@@ -1153,6 +1214,7 @@ fn draw_app(
     local_selected: &mut usize,
     local_scroll: &mut usize,
     ui_areas: &mut UiAreas,
+    confirm_delete: &Option<(String, std::path::PathBuf)>,
 ) -> anyhow::Result<()> {
     // Kitty 图片是终端外部图层，必须在绘制非主页前清除，避免它短暂覆盖本地/历史页面。
     if active_tab != NavTab::Main {
@@ -1307,6 +1369,28 @@ fn draw_app(
                     };
                     Paragraph::new(Line::from(Span::styled(text, style)))
                         .render(line_area, frame.buffer_mut());
+                }
+
+                if let Some((name, _)) = confirm_delete {
+                    use ratatui::widgets::Clear;
+                    let dialog_w = (inner.width.saturating_sub(4)).min(60);
+                    let dialog_h = 3u16;
+                    let dialog_x = inner.x + (inner.width.saturating_sub(dialog_w)) / 2;
+                    let dialog_y = inner.y + (inner.height.saturating_sub(dialog_h)) / 2;
+                    let dialog_area = Rect::new(dialog_x, dialog_y, dialog_w, dialog_h);
+                    Clear.render(dialog_area, frame.buffer_mut());
+                    let block = Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(Style::new().fg(crate::theme::rosewater(ctx)))
+                        .title("确认删除");
+                    let inner_dialog = block.inner(dialog_area);
+                    block.render(dialog_area, frame.buffer_mut());
+                    let msg = format!("删除 {}? [y/n]", name);
+                    Paragraph::new(Line::from(Span::styled(
+                        msg,
+                        Style::new().fg(crate::theme::rosewater(ctx)),
+                    )))
+                    .render(inner_dialog, frame.buffer_mut());
                 }
             }
         }
