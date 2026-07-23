@@ -35,6 +35,14 @@ fn migrate_legacy_config(config: &mut Config) -> bool {
     if config.version < CURRENT_CONFIG_VERSION {
         if config.source.enabled == [SourceId::Kw] {
             config.source.enabled = SourceId::all_online().to_vec();
+        } else {
+            let current: std::collections::HashSet<SourceId> =
+                config.source.enabled.iter().copied().collect();
+            for source in SourceId::all_online() {
+                if !current.contains(source) {
+                    config.source.enabled.push(*source);
+                }
+            }
         }
         config.version = CURRENT_CONFIG_VERSION;
         changed = true;

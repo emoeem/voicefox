@@ -2060,6 +2060,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "qrcode"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "27da0765ec67aa59c7ad13ac3c856ae2b2306e68eef4ddf3c19f80a5f4578465"
+
+[[package]]
 name = "quick-error"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3288,6 +3294,7 @@ dependencies = [
  "lx-lyric",
  "lx-player",
  "lx-source",
+ "qrcode",
  "ratatui",
  "reqwest",
  "serde",

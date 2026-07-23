@@ -179,6 +179,14 @@ impl SettingsPage {
                 (KeyModifiers::NONE, KeyCode::Char('s')) => {
                     self.focus = if self.focus == "js" { "local" } else { "js" }.to_string();
                 }
+                (KeyModifiers::NONE, KeyCode::Char('b')) => {
+                    if ctx.bili_source.is_logged_in() {
+                        ctx.bili_source.logout();
+                        self.status_msg = Some("已退出哔哩哔哩登录".to_string());
+                    } else {
+                        return AppAction::BiliLogin;
+                    }
+                }
                 _ => {}
             }
         }
@@ -326,7 +334,7 @@ impl SettingsPage {
         let options_block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::new().fg(crate::theme::border(ctx)))
-            .title(" 界面与播放 · t/g/w/c/m/p ");
+            .title(" 界面与播放 · t/g/w/c/m/p · b 哔哩哔哩登录 ");
         let options_inner = options_block.inner(chunks[0]);
         options_block.render(chunks[0], buf);
         let options = vec![
@@ -352,6 +360,25 @@ impl SettingsPage {
                 format!(" {}", ctx.config_path.display()),
                 Style::new().fg(muted),
             )),
+            Line::from(vec![
+                Span::styled(" [b] ", Style::new().fg(muted)),
+                Span::raw("哔哩哔哩    "),
+                Span::styled(
+                    if ctx.bili_source.is_logged_in() {
+                        ctx.bili_source
+                            .user()
+                            .map(|user| user.name)
+                            .unwrap_or_else(|| "已登录".to_string())
+                    } else {
+                        "未登录".to_string()
+                    },
+                    Style::new().fg(if ctx.bili_source.is_logged_in() {
+                        accent
+                    } else {
+                        muted
+                    }),
+                ),
+            ]),
         ];
         Paragraph::new(options).render(options_inner, buf);
 
@@ -592,6 +619,7 @@ impl SettingsPage {
                         3 => Some('c'),
                         4 => Some('m'),
                         5 => Some('p'),
+                        9 => Some('b'),
                         _ => None,
                     };
                     if let Some(key) = key {

@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use super::source::{Quality, SourceId};
 
-pub const CURRENT_CONFIG_VERSION: u32 = 1;
+pub const CURRENT_CONFIG_VERSION: u32 = 2;
 
 /// 播放器配置
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -265,6 +265,8 @@ fn run_app(
     let mut confirm_delete: Option<LocalDeleteConfirmation> = None;
     let mut ui_areas = UiAreas::default();
     let mut click_tracker = ClickTracker::default();
+    let mut bili_login_page: Option<Arc<std::sync::Mutex<pages::bili_login::BiliLoginPage>>> = None;
+    let mut bili_poll_deadline: Instant = Instant::now();
 
     // 事件驱动渲染：借鉴 rmpc，只在有事件或需要渲染时才 draw()
     let mut needs_render = true;
@@ -325,6 +327,59 @@ fn run_app(
 
         // === 0. 排空异步 action ===
         while let Ok(action) = action_rx.try_recv() {
+            // 拦截哔哩哔哩登录相关 action
+            match &action {
+                AppAction::BiliLogin => {
+                    let page = Arc::new(std::sync::Mutex::new(
+                        pages::bili_login::BiliLoginPage::new(Arc::clone(&ctx.bili_source)),
+                    ));
+                    let page_clone = Arc::clone(&page);
+                    rt.spawn(async move {
+                        let result = {
+                            let source = Arc::clone(&page_clone.lock().unwrap().source);
+                            source.generate_qr_code().await
+                        };
+                        let mut p = page_clone.lock().unwrap();
+                        match result {
+                            Ok(qr) => {
+                                let qr_lines =
+                                    pages::bili_login::render_qr_terminal(&qr.url, 1);
+                                p.set_waiting(qr.key, qr_lines);
+                            }
+                            Err(e) => p.set_error(format!("生成二维码失败: {e}")),
+                        }
+                    });
+                    bili_login_page = Some(page);
+                    bili_poll_deadline = Instant::now();
+                    needs_render = true;
+                    continue;
+                }
+                AppAction::BiliLoginSuccess => {
+                    bili_login_page = None;
+                    let user = ctx.bili_source.user();
+                    let msg = if let Some(user) = user {
+                        format!("哔哩哔哩登录成功: {}", user.name)
+                    } else {
+                        "哔哩哔哩登录成功".to_string()
+                    };
+                    ctx.notifications
+                        .write()
+                        .unwrap()
+                        .push_back(Notification::info(msg));
+                    needs_render = true;
+                    continue;
+                }
+                AppAction::BiliLogout => {
+                    ctx.bili_source.logout();
+                    ctx.notifications
+                        .write()
+                        .unwrap()
+                        .push_back(Notification::info("已退出哔哩哔哩登录"));
+                    needs_render = true;
+                    continue;
+                }
+                _ => {}
+            }
             execute_action(
                 action,
                 &ctx,
@@ -536,6 +591,29 @@ fn run_app(
             }
         }
 
+        if let Some(ref page) = bili_login_page {
+            let should_poll = {
+                let p = page.lock().unwrap();
+                p.should_poll()
+            };
+            if should_poll && bili_poll_deadline.elapsed() >= Duration::from_secs(2) {
+                let page = Arc::clone(page);
+                rt.spawn(async move {
+                    let (source, key) = {
+                        let p = page.lock().unwrap();
+                        match p.poll_params() {
+                            Some(params) => params,
+                            None => return,
+                        }
+                    };
+                    let result = source.poll_qr_code(&key).await;
+                    page.lock().unwrap().apply_check_result(result);
+                });
+                bili_poll_deadline = Instant::now();
+                needs_render = true;
+            }
+        }
+
         if last_notification_cleanup.elapsed() >= Duration::from_millis(250) {
             let mut notifs = ctx.notifications.write().unwrap();
             let previous_len = notifs.len();
@@ -582,6 +660,7 @@ fn run_app(
                 &mut local_scroll,
                 &mut ui_areas,
                 &confirm_delete,
+                &bili_login_page,
             )?;
             needs_render = false;
         }
@@ -605,6 +684,21 @@ fn run_app(
                 active_tab == NavTab::Favorites && favorites_page.input_mode();
             let text_input_active =
                 settings_input_mode || search_input_mode || favorites_input_mode;
+
+            if let Some(ref page) = bili_login_page {
+                let action = page.lock().unwrap().handle_input(key);
+                match action {
+                    AppAction::BiliLoginSuccess => {
+                        let _ = action_tx.send(AppAction::BiliLoginSuccess);
+                    }
+                    AppAction::GoBack => {
+                        bili_login_page = None;
+                    }
+                    _ => {}
+                }
+                needs_render = true;
+                continue;
+            }
 
             if confirm_delete.is_some() {
                 match delete_confirmation_action(&key) {
@@ -713,7 +807,7 @@ fn run_app(
                     needs_render = true;
                     continue;
                 }
-                (KeyModifiers::NONE, KeyCode::Char('b')) if !text_input_active => {
+                (KeyModifiers::NONE, KeyCode::Char('b')) if !text_input_active && active_tab != NavTab::Settings => {
                     if let Some((songs, index)) = ctx.playlist.prev_manual_entry() {
                         execute_action(
                             AppAction::PlaySong { songs, index },
@@ -990,24 +1084,29 @@ fn run_app(
                         let mut sp = settings_page.lock().unwrap();
                         sp.handle_input(key, &ctx)
                     };
-                    if matches!(key.code, KeyCode::Char('g') | KeyCode::Char('w')) {
-                        let config = ctx.config.read().unwrap();
-                        search_page.lock().unwrap().set_preferences(
-                            config.ui.aggregate_search,
-                            config.source.default,
-                            config.ui.wrap_navigation,
-                            config.ui.scroll_amount,
+                    // BiliLogin/BiliLogout 需要发到 channel 让主循环处理（生成 QR 码等）
+                    if matches!(action, AppAction::BiliLogin | AppAction::BiliLoginSuccess) {
+                        let _ = action_tx.send(action);
+                    } else {
+                        if matches!(key.code, KeyCode::Char('g') | KeyCode::Char('w')) {
+                            let config = ctx.config.read().unwrap();
+                            search_page.lock().unwrap().set_preferences(
+                                config.ui.aggregate_search,
+                                config.source.default,
+                                config.ui.wrap_navigation,
+                                config.ui.scroll_amount,
+                            );
+                        }
+                        execute_action(
+                            action,
+                            &ctx,
+                            rt,
+                            &action_tx,
+                            &search_page,
+                            &settings_page,
+                            &search_seq,
                         );
                     }
-                    execute_action(
-                        action,
-                        &ctx,
-                        rt,
-                        &action_tx,
-                        &search_page,
-                        &settings_page,
-                        &search_seq,
-                    );
                 }
                 NavTab::LocalMusic => {
                     let local_src = ctx.source_manager.local_source();
@@ -1245,6 +1344,7 @@ fn run_app(
                 &mut local_scroll,
                 &mut ui_areas,
                 &confirm_delete,
+                &bili_login_page,
             )?;
             needs_render = false;
         }
@@ -1268,6 +1368,7 @@ fn draw_app(
     local_scroll: &mut usize,
     ui_areas: &mut UiAreas,
     confirm_delete: &Option<LocalDeleteConfirmation>,
+    bili_login_page: &Option<Arc<std::sync::Mutex<pages::bili_login::BiliLoginPage>>>,
 ) -> anyhow::Result<()> {
     // Kitty 图片是终端外部图层，必须在绘制非主页前清除，避免它短暂覆盖本地/历史页面。
     if active_tab != NavTab::Main {
@@ -1458,6 +1559,12 @@ fn draw_app(
             }
         }
 
+        if let Some(page) = bili_login_page {
+            let overlay_area = calculate_bili_login_area(area);
+            let p = page.lock().unwrap();
+            p.render(overlay_area, frame.buffer_mut());
+        }
+
         components::progress_bar::render(main_chunks[3], frame.buffer_mut(), ctx);
         components::status_bar::render(main_chunks[4], frame.buffer_mut(), ctx);
         components::notification::render(main_chunks[4], frame.buffer_mut(), ctx);
@@ -1467,6 +1574,16 @@ fn draw_app(
         ctx.cover_service.display_kitty(ui_areas.cover);
     }
     Ok(())
+}
+
+fn calculate_bili_login_area(area: Rect) -> Rect {
+    let qr_width = 56u16;
+    let qr_height = 36u16;
+    let w = qr_width.min(area.width.saturating_sub(4));
+    let h = qr_height.min(area.height.saturating_sub(4));
+    let x = area.x + (area.width.saturating_sub(w)) / 2;
+    let y = area.y + (area.height.saturating_sub(h)) / 2;
+    Rect::new(x, y, w, h)
 }
 
 /// 执行一个 AppAction（简化版，不再处理 Navigate/GoBack）
@@ -1689,8 +1806,14 @@ fn execute_action(
                 }
             });
         }
-        AppAction::Navigate(_) | AppAction::GoBack | AppAction::Quit | AppAction::None => {
-            // 不再使用页面栈导航，忽略这些 action
+        AppAction::Navigate(_)
+        | AppAction::GoBack
+        | AppAction::Quit
+        | AppAction::None
+        | AppAction::BiliLogin
+        | AppAction::BiliLogout
+        | AppAction::BiliLoginSuccess => {
+            // handled elsewhere or ignored
         }
     }
 }

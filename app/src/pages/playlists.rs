@@ -754,6 +754,7 @@ fn source_name(source: SourceId) -> &'static str {
         SourceId::Tx => "QQ",
         SourceId::Wy => "网易云",
         SourceId::Mg => "咪咕",
+        SourceId::Bili => "哔哩哔哩",
         SourceId::Local => "本地",
     }
 }
@@ -766,6 +767,7 @@ fn scope_label(source: Option<SourceId>, full: bool) -> &'static str {
         (Some(SourceId::Tx), true) => "QQ tx",
         (Some(SourceId::Wy), true) => "网易 wy",
         (Some(SourceId::Mg), true) => "咪咕 mg",
+        (Some(SourceId::Bili), true) => "哔哩哔哩 bili",
         (Some(SourceId::Local), true) => "本地 local",
         (Some(source), false) => source.as_str(),
     }

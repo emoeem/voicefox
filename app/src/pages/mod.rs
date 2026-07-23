@@ -1,5 +1,6 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+pub mod bili_login;
 pub mod components;
 pub mod favorites;
 pub mod history;

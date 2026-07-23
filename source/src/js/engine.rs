@@ -46,32 +46,52 @@ impl JsEngine {
             .to_str()
             .ok_or_else(|| "wrapper.js 路径包含无效字符".to_string())?;
         if !node_supports_permission_mode() {
-            return Err("当前 Node.js 不支持权限隔离模式，请升级 Node.js".to_string());
+            tracing::warn!("Node.js 不支持 --permission 模式，将在无沙箱模式下运行");
         }
 
-        // 启动 Node.js 子进程。权限模式只允许读取运行时和当前音源文件，
-        // 默认拒绝文件写入、子进程、Worker、原生扩展等高风险能力。
+        let use_permission = node_supports_permission_mode();
         let mut command = Command::new("node");
         configure_background_command(&mut command);
-        command.arg("--permission");
-        if node_supports_flag("--allow-net") {
-            // Node 26+ also gates network access behind the permission model.
-            command.arg("--allow-net");
+        if use_permission {
+            command.arg("--permission");
+            if node_supports_flag("--allow-net") {
+                command.arg("--allow-net");
+            }
+            command.arg(format!("--allow-fs-read={wrapper_path_string}"));
+            command.arg(format!("--allow-fs-read={source_path}"));
         }
+        command.arg("--disable-proto=throw");
         let mut child = command
-            .arg(format!("--allow-fs-read={wrapper_path_string}"))
-            .arg(format!("--allow-fs-read={source_path}"))
-            .arg("--disable-proto=throw")
             .arg(wrapper_path_string)
             .arg(source_path)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| format!("启动 Node.js 失败（请确认已安装 Node.js）: {}", e))?;
 
         let stdin = child.stdin.take().ok_or("无法获取子进程 stdin")?;
         let stdout = child.stdout.take().ok_or("无法获取子进程 stdout")?;
+        let stderr = child.stderr.take().ok_or("无法获取子进程 stderr")?;
+
+        // 后台线程读取 stderr 并输出到 tracing（避免管道堵塞）
+        std::thread::spawn(move || {
+            let mut stderr = BufReader::new(stderr);
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match stderr.read_line(&mut line) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {
+                        let trimmed = line.trim().to_string();
+                        if !trimmed.is_empty() {
+                            tracing::debug!("JS engine stderr: {}", trimmed);
+                        }
+                    }
+                }
+            }
+        });
+
         let (output_tx, output_rx) = std::sync::mpsc::channel();
         let reader_handle = std::thread::spawn(move || {
             let mut stdout = BufReader::new(stdout);

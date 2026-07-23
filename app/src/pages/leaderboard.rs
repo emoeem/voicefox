@@ -690,6 +690,7 @@ fn source_name(source: SourceId) -> &'static str {
         SourceId::Tx => "QQ",
         SourceId::Wy => "网易云",
         SourceId::Mg => "咪咕",
+        SourceId::Bili => "哔哩哔哩",
         SourceId::Local => "本地",
     }
 }
@@ -701,6 +702,7 @@ fn source_label(source: SourceId) -> &'static str {
         SourceId::Tx => "QQ tx",
         SourceId::Wy => "网易 wy",
         SourceId::Mg => "咪咕 mg",
+        SourceId::Bili => "哔哩哔哩 bili",
         SourceId::Local => "本地 local",
     }
 }

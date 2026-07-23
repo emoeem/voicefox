@@ -12,6 +12,7 @@ use lx_core::model::song::SongInfo;
 use lx_core::model::source::{Quality, SourceId};
 use lx_core::traits::source::{FetchError, MusicSource, SearchError, SearchResult, SongUrl};
 
+use crate::bili::BiliSource;
 use crate::kg::KgSource;
 use crate::kw::KwSource;
 use crate::local::LocalSource;
@@ -31,6 +32,8 @@ pub struct SourceManager {
     js_source: std::sync::RwLock<JsSourceState>,
     /// 本地音乐源（单独存储以便调用扫描等特有方法）
     local_source: Arc<LocalSource>,
+    /// 哔哩哔哩音源（单独存储以便调用登录等特有方法）
+    bili_source: Arc<BiliSource>,
     default: SourceId,
     enabled: HashSet<SourceId>,
 }
@@ -38,6 +41,7 @@ pub struct SourceManager {
 impl SourceManager {
     pub fn new(default: SourceId, enabled: &[SourceId]) -> Self {
         let local_source = Arc::new(LocalSource::new());
+        let bili_source = Arc::new(BiliSource::new());
         let mut manager = Self {
             sources: HashMap::new(),
             js_source: std::sync::RwLock::new(JsSourceState {
@@ -45,6 +49,7 @@ impl SourceManager {
                 source: None,
             }),
             local_source: Arc::clone(&local_source),
+            bili_source: Arc::clone(&bili_source),
             default,
             enabled: enabled.iter().copied().collect(),
         };
@@ -54,6 +59,7 @@ impl SourceManager {
         manager.register(Arc::new(MgSource::new()));
         manager.register(Arc::new(TxSource::new()));
         manager.register(Arc::new(WySource::new()));
+        manager.register(bili_source);
         // 注册本地音源
         manager.register(local_source);
         manager
@@ -108,6 +114,11 @@ impl SourceManager {
     /// 获取本地音乐源（可直接调用 scan 等特有方法）
     pub fn local_source(&self) -> Arc<LocalSource> {
         Arc::clone(&self.local_source)
+    }
+
+    /// 获取哔哩哔哩音源（可直接调用登录等特有方法）
+    pub fn bili_source(&self) -> Arc<BiliSource> {
+        Arc::clone(&self.bili_source)
     }
 
     pub fn default_source(&self) -> Arc<dyn MusicSource> {

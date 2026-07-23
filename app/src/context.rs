@@ -15,6 +15,7 @@ use crate::cover::CoverService;
 use crate::playlist::manager::PlaylistManager;
 use crate::storage::Storage;
 use lx_lyric::service::LyricService;
+use lx_source::bili::BiliSource;
 use lx_source::manager::SourceManager;
 
 /// 全局共享状态
@@ -27,6 +28,7 @@ pub struct AppContext {
 
     // --- 音源 ---
     pub source_manager: Arc<SourceManager>,
+    pub bili_source: Arc<BiliSource>,
 
     // --- 歌词 ---
     pub lyric_service: Arc<LyricService>,
@@ -65,6 +67,7 @@ impl AppContext {
             config.source.default,
             &config.source.enabled,
         ));
+        let bili_source = source_manager.bili_source();
 
         let lyric_service = Arc::new(LyricService::new(Arc::new(
             lx_lyric::fetcher::SourceLyricFetcher::new(source_manager.clone()),
@@ -89,6 +92,7 @@ impl AppContext {
             position,
             duration,
             source_manager,
+            bili_source,
             lyric_service,
             cover_service,
             playlist,

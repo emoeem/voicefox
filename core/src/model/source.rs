@@ -13,6 +13,8 @@ pub enum SourceId {
     Wy,
     #[serde(rename = "mg")]
     Mg,
+    #[serde(rename = "bili")]
+    Bili,
     #[serde(rename = "local")]
     Local,
 }
@@ -25,12 +27,20 @@ impl SourceId {
             SourceId::Tx => "tx",
             SourceId::Wy => "wy",
             SourceId::Mg => "mg",
+            SourceId::Bili => "bili",
             SourceId::Local => "local",
         }
     }
 
     pub fn all_online() -> &'static [SourceId] {
-        &[SourceId::Kw, SourceId::Kg, SourceId::Tx, SourceId::Wy, SourceId::Mg]
+        &[
+            SourceId::Kw,
+            SourceId::Kg,
+            SourceId::Tx,
+            SourceId::Wy,
+            SourceId::Mg,
+            SourceId::Bili,
+        ]
     }
 }
 

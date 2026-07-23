@@ -63,6 +63,9 @@ pub enum AppAction {
         paths: Vec<String>,
         max_depth: u32,
     },
+    BiliLogin,
+    BiliLogout,
+    BiliLoginSuccess,
     None,
 }
 
