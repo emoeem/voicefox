@@ -34,9 +34,7 @@ pub async fn get_lyric(song: &SongInfo) -> Result<LyricData, FetchError> {
 
     // TRC 翻译歌词
     let tlyric = match song.extra.get("trcUrl") {
-        Some(trc_url) if !trc_url.is_empty() => {
-            fetch_text(&client, trc_url).await.ok()
-        }
+        Some(trc_url) if !trc_url.is_empty() => fetch_text(&client, trc_url).await.ok(),
         _ => None,
     };
 

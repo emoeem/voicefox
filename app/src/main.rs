@@ -267,6 +267,8 @@ fn run_app(
     let mut click_tracker = ClickTracker::default();
     let mut bili_login_page: Option<Arc<std::sync::Mutex<pages::bili_login::BiliLoginPage>>> = None;
     let mut bili_poll_deadline: Instant = Instant::now();
+    let mut bili_generate_task: Option<tokio::task::JoinHandle<()>> = None;
+    let mut bili_poll_task: Option<tokio::task::JoinHandle<()>> = None;
 
     // 事件驱动渲染：借鉴 rmpc，只在有事件或需要渲染时才 draw()
     let mut needs_render = true;
@@ -314,6 +316,24 @@ fn run_app(
         );
     }
 
+    if ctx.bili_source.is_logged_in() {
+        let bili_source = Arc::clone(&ctx.bili_source);
+        let tx = action_tx.clone();
+        rt.spawn(async move {
+            match tokio::time::timeout(Duration::from_secs(8), bili_source.login_status()).await {
+                Ok(Ok(Some(_))) => {}
+                Ok(Ok(None)) => {
+                    let _ = tx.send(AppAction::ShowNotification(Notification::info(
+                        "哔哩哔哩登录已失效，请重新扫码",
+                    )));
+                }
+                Ok(Err(error)) => tracing::warn!("validate Bilibili session failed: {error}"),
+                Err(_) => tracing::warn!("validate Bilibili session timed out"),
+            }
+            let _ = tx.send(AppAction::None);
+        });
+    }
+
     loop {
         let mouse_requested = ctx.config.read().unwrap().ui.enable_mouse;
         if mouse_requested != mouse_capture_enabled {
@@ -330,11 +350,18 @@ fn run_app(
             // 拦截哔哩哔哩登录相关 action
             match &action {
                 AppAction::BiliLogin => {
+                    if let Some(task) = bili_generate_task.take() {
+                        task.abort();
+                    }
+                    if let Some(task) = bili_poll_task.take() {
+                        task.abort();
+                    }
                     let page = Arc::new(std::sync::Mutex::new(
                         pages::bili_login::BiliLoginPage::new(Arc::clone(&ctx.bili_source)),
                     ));
                     let page_clone = Arc::clone(&page);
-                    rt.spawn(async move {
+                    let wake_tx = action_tx.clone();
+                    bili_generate_task = Some(rt.spawn(async move {
                         let result = {
                             let source = Arc::clone(&page_clone.lock().unwrap().source);
                             source.generate_qr_code().await
@@ -342,19 +369,25 @@ fn run_app(
                         let mut p = page_clone.lock().unwrap();
                         match result {
                             Ok(qr) => {
-                                let qr_lines =
-                                    pages::bili_login::render_qr_terminal(&qr.url, 1);
-                                p.set_waiting(qr.key, qr_lines);
+                                let qr_lines = pages::bili_login::render_qr_terminal(&qr.url, 1);
+                                p.set_waiting(qr.key, qr_lines, qr.expires_in);
                             }
                             Err(e) => p.set_error(format!("生成二维码失败: {e}")),
                         }
-                    });
+                        let _ = wake_tx.send(AppAction::None);
+                    }));
                     bili_login_page = Some(page);
                     bili_poll_deadline = Instant::now();
                     needs_render = true;
                     continue;
                 }
                 AppAction::BiliLoginSuccess => {
+                    if let Some(task) = bili_generate_task.take() {
+                        task.abort();
+                    }
+                    if let Some(task) = bili_poll_task.take() {
+                        task.abort();
+                    }
                     bili_login_page = None;
                     let user = ctx.bili_source.user();
                     let msg = if let Some(user) = user {
@@ -370,11 +403,18 @@ fn run_app(
                     continue;
                 }
                 AppAction::BiliLogout => {
-                    ctx.bili_source.logout();
-                    ctx.notifications
-                        .write()
-                        .unwrap()
-                        .push_back(Notification::info("已退出哔哩哔哩登录"));
+                    if let Some(task) = bili_generate_task.take() {
+                        task.abort();
+                    }
+                    if let Some(task) = bili_poll_task.take() {
+                        task.abort();
+                    }
+                    bili_login_page = None;
+                    let notification = match ctx.bili_source.logout() {
+                        Ok(()) => Notification::info("已退出哔哩哔哩登录"),
+                        Err(error) => Notification::error(error),
+                    };
+                    ctx.notifications.write().unwrap().push_back(notification);
                     needs_render = true;
                     continue;
                 }
@@ -591,24 +631,39 @@ fn run_app(
             }
         }
 
-        if let Some(ref page) = bili_login_page {
-            let should_poll = {
-                let p = page.lock().unwrap();
-                p.should_poll()
+        if bili_generate_task
+            .as_ref()
+            .is_some_and(tokio::task::JoinHandle::is_finished)
+        {
+            bili_generate_task.take();
+        }
+        if bili_poll_task
+            .as_ref()
+            .is_some_and(tokio::task::JoinHandle::is_finished)
+        {
+            bili_poll_task.take();
+        }
+
+        if let Some(ref page) = bili_login_page
+            && bili_poll_task.is_none()
+            && bili_poll_deadline.elapsed() >= Duration::from_secs(2)
+        {
+            let params = {
+                let mut page = page.lock().unwrap();
+                if page.should_poll() {
+                    page.begin_poll()
+                } else {
+                    None
+                }
             };
-            if should_poll && bili_poll_deadline.elapsed() >= Duration::from_secs(2) {
+            if let Some((source, key)) = params {
                 let page = Arc::clone(page);
-                rt.spawn(async move {
-                    let (source, key) = {
-                        let p = page.lock().unwrap();
-                        match p.poll_params() {
-                            Some(params) => params,
-                            None => return,
-                        }
-                    };
+                let wake_tx = action_tx.clone();
+                bili_poll_task = Some(rt.spawn(async move {
                     let result = source.poll_qr_code(&key).await;
                     page.lock().unwrap().apply_check_result(result);
-                });
+                    let _ = wake_tx.send(AppAction::None);
+                }));
                 bili_poll_deadline = Instant::now();
                 needs_render = true;
             }
@@ -637,7 +692,8 @@ fn run_app(
                 lx_core::model::source::PlayerState::Playing
                     | lx_core::model::source::PlayerState::Loading
             ) || input_active
-                || notification_active;
+                || notification_active
+                || bili_login_page.is_some();
             last_periodic_render = Instant::now();
         }
 
@@ -692,6 +748,12 @@ fn run_app(
                         let _ = action_tx.send(AppAction::BiliLoginSuccess);
                     }
                     AppAction::GoBack => {
+                        if let Some(task) = bili_generate_task.take() {
+                            task.abort();
+                        }
+                        if let Some(task) = bili_poll_task.take() {
+                            task.abort();
+                        }
                         bili_login_page = None;
                     }
                     _ => {}
@@ -807,7 +869,9 @@ fn run_app(
                     needs_render = true;
                     continue;
                 }
-                (KeyModifiers::NONE, KeyCode::Char('b')) if !text_input_active && active_tab != NavTab::Settings => {
+                (KeyModifiers::NONE, KeyCode::Char('b'))
+                    if !text_input_active && active_tab != NavTab::Settings =>
+                {
                     if let Some((songs, index)) = ctx.playlist.prev_manual_entry() {
                         execute_action(
                             AppAction::PlaySong { songs, index },
@@ -1085,7 +1149,10 @@ fn run_app(
                         sp.handle_input(key, &ctx)
                     };
                     // BiliLogin/BiliLogout 需要发到 channel 让主循环处理（生成 QR 码等）
-                    if matches!(action, AppAction::BiliLogin | AppAction::BiliLoginSuccess) {
+                    if matches!(
+                        action,
+                        AppAction::BiliLogin | AppAction::BiliLogout | AppAction::BiliLoginSuccess
+                    ) {
                         let _ = action_tx.send(action);
                     } else {
                         if matches!(key.code, KeyCode::Char('g') | KeyCode::Char('w')) {
@@ -1577,8 +1644,8 @@ fn draw_app(
 }
 
 fn calculate_bili_login_area(area: Rect) -> Rect {
-    let qr_width = 56u16;
-    let qr_height = 36u16;
+    let qr_width = 66u16;
+    let qr_height = 40u16;
     let w = qr_width.min(area.width.saturating_sub(4));
     let h = qr_height.min(area.height.saturating_sub(4));
     let x = area.x + (area.width.saturating_sub(w)) / 2;
@@ -1918,13 +1985,14 @@ fn start_song_playback(
         };
 
         let url = song_url.url;
+        let headers = song_url.headers;
         let player_for_start = Arc::clone(&player);
         let request_guard = Arc::clone(&play_request_id);
         let accepted = tokio::task::spawn_blocking(move || {
             if request_guard.load(Ordering::SeqCst) != request_id {
                 return false;
             }
-            player_for_start.play(&url, player_generation)
+            player_for_start.play_with_headers(&url, player_generation, &headers)
         })
         .await
         .unwrap_or(false);
@@ -2256,8 +2324,13 @@ fn spawn_playlist_request(
                 source,
                 playlist_id,
             } => {
+                let timeout = if source == SourceId::Bili {
+                    Duration::from_secs(45)
+                } else {
+                    Duration::from_secs(15)
+                };
                 let result = tokio::time::timeout(
-                    Duration::from_secs(15),
+                    timeout,
                     source_manager.playlist_detail(source, &playlist_id, 1),
                 )
                 .await;

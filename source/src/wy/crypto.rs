@@ -3,9 +3,9 @@
 //! eapi: AES-128-ECB + MD5 签名
 //! 参考: lx-music src/renderer/utils/musicSdk/wy/
 
+use aes::Aes128;
 use aes::cipher::generic_array::GenericArray;
 use aes::cipher::{BlockEncrypt, KeyInit};
-use aes::Aes128;
 
 /// eapi 加密
 /// key: "e82ckenh8dichen8" (ASCII bytes, 16 bytes)
@@ -30,7 +30,7 @@ pub fn eapi(url: &str, data: &serde_json::Value) -> String {
 fn pkcs7_pad(data: &[u8], block_size: usize) -> Vec<u8> {
     let pad_len = block_size - (data.len() % block_size);
     let mut padded = data.to_vec();
-    padded.extend(std::iter::repeat(pad_len as u8).take(pad_len));
+    padded.extend(std::iter::repeat_n(pad_len as u8, pad_len));
     padded
 }
 

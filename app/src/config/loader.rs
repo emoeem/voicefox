@@ -4,6 +4,14 @@ use std::path::PathBuf;
 use lx_core::model::config::{CURRENT_CONFIG_VERSION, Config, ThemeConfig};
 use lx_core::model::source::SourceId;
 
+const VERSION_1_DEFAULT_SOURCES: &[SourceId] = &[
+    SourceId::Kw,
+    SourceId::Kg,
+    SourceId::Tx,
+    SourceId::Wy,
+    SourceId::Mg,
+];
+
 /// 加载配置：优先读用户配置文件，否则用默认值
 pub fn load(custom_path: &str) -> anyhow::Result<(Config, PathBuf)> {
     let config_path = resolve_config_path(custom_path);
@@ -32,22 +40,26 @@ pub fn load(custom_path: &str) -> anyhow::Result<(Config, PathBuf)> {
 
 fn migrate_legacy_config(config: &mut Config) -> bool {
     let mut changed = migrate_legacy_theme(config);
-    if config.version < CURRENT_CONFIG_VERSION {
+    if config.version < 1 {
         if config.source.enabled == [SourceId::Kw] {
-            config.source.enabled = SourceId::all_online().to_vec();
-        } else {
-            let current: std::collections::HashSet<SourceId> =
-                config.source.enabled.iter().copied().collect();
-            for source in SourceId::all_online() {
-                if !current.contains(source) {
-                    config.source.enabled.push(*source);
-                }
-            }
+            config.source.enabled = VERSION_1_DEFAULT_SOURCES.to_vec();
         }
-        config.version = CURRENT_CONFIG_VERSION;
+        config.version = 1;
         changed = true;
     }
+    if config.version < 2 {
+        if same_sources(&config.source.enabled, VERSION_1_DEFAULT_SOURCES) {
+            config.source.enabled.push(SourceId::Bili);
+        }
+        config.version = 2;
+        changed = true;
+    }
+    debug_assert!(config.version <= CURRENT_CONFIG_VERSION);
     changed
+}
+
+fn same_sources(left: &[SourceId], right: &[SourceId]) -> bool {
+    left.len() == right.len() && right.iter().all(|source| left.contains(source))
 }
 
 fn migrate_legacy_theme(config: &mut Config) -> bool {
@@ -101,8 +113,10 @@ mod tests {
 
     #[test]
     fn migrates_the_original_default_theme_to_mocha() {
-        let mut config = Config::default();
-        config.version = 0;
+        let mut config = Config {
+            version: 0,
+            ..Config::default()
+        };
         config.theme.accent = "cyan".into();
         config.theme.text = "white".into();
         config.theme.muted = "dark_gray".into();
@@ -116,8 +130,10 @@ mod tests {
 
     #[test]
     fn expands_the_original_kw_only_source_default_once() {
-        let mut config = Config::default();
-        config.version = 0;
+        let mut config = Config {
+            version: 0,
+            ..Config::default()
+        };
         config.source.enabled = vec![SourceId::Kw];
 
         assert!(migrate_legacy_config(&mut config));
@@ -127,6 +143,19 @@ mod tests {
         config.source.enabled = vec![SourceId::Kw];
         assert!(!migrate_legacy_config(&mut config));
         assert_eq!(config.source.enabled, vec![SourceId::Kw]);
+    }
+
+    #[test]
+    fn preserves_a_custom_source_selection_during_version_two_migration() {
+        let mut config = Config {
+            version: 1,
+            ..Config::default()
+        };
+        config.source.enabled = vec![SourceId::Kg, SourceId::Wy];
+
+        assert!(migrate_legacy_config(&mut config));
+        assert_eq!(config.version, CURRENT_CONFIG_VERSION);
+        assert_eq!(config.source.enabled, vec![SourceId::Kg, SourceId::Wy]);
     }
 
     #[test]

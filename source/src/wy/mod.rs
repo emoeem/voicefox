@@ -26,6 +26,12 @@ impl WySource {
     }
 }
 
+impl Default for WySource {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[async_trait]
 impl MusicSource for WySource {
     fn id(&self) -> SourceId {

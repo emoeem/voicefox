@@ -23,6 +23,7 @@ pub struct SongUrl {
     pub duration: Duration,
     pub cover_url: Option<String>,
     pub qualities: Vec<Quality>,
+    pub headers: Vec<(String, String)>,
 }
 
 /// 音源统一接口

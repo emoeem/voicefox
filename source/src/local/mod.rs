@@ -190,6 +190,7 @@ impl MusicSource for LocalSource {
             duration: song.duration,
             cover_url: song.cover_url.clone(),
             qualities: vec![Quality::High320],
+            headers: vec![],
         })
     }
 

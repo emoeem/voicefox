@@ -363,6 +363,8 @@ impl PlaylistsPage {
     fn render_playlists(&mut self, area: Rect, buf: &mut Buffer, ctx: &AppContext) {
         let title = if self.current_source().is_none() {
             format!("收藏歌单 ({})", self.playlists.len())
+        } else if self.current_source() == Some(SourceId::Bili) {
+            format!("我的收藏夹 ({})", self.playlists.len())
         } else {
             format!("热门歌单 ({})", self.playlists.len())
         };
@@ -381,12 +383,19 @@ impl PlaylistsPage {
                 return;
             }
             if self.list_loading {
-                render_muted("加载热门歌单...", inner, buf, ctx);
+                let message = if self.current_source() == Some(SourceId::Bili) {
+                    "加载哔哩哔哩收藏夹..."
+                } else {
+                    "加载热门歌单..."
+                };
+                render_muted(message, inner, buf, ctx);
                 return;
             }
             if self.list_loaded && self.playlists.is_empty() {
                 let message = if self.current_source().is_none() {
                     "暂无收藏歌单"
+                } else if self.current_source() == Some(SourceId::Bili) {
+                    "暂无收藏夹，或尚未登录哔哩哔哩"
                 } else {
                     "该音源暂无热门歌单"
                 };

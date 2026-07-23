@@ -47,7 +47,10 @@ pub async fn get_lyric(song: &SongInfo) -> Result<LyricData, FetchError> {
     let client = http::client();
     let resp = client
         .post("https://interface3.music.163.com/eapi/song/lyric/v1")
-        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+        .header(
+            "User-Agent",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        )
         .header("origin", "https://music.163.com")
         .header("Content-Type", "application/x-www-form-urlencoded")
         .body(format!("params={}", encrypted))
@@ -60,8 +63,7 @@ pub async fn get_lyric(song: &SongInfo) -> Result<LyricData, FetchError> {
         .await
         .map_err(|e| FetchError::Network(e.to_string()))?;
 
-    let json: Value =
-        serde_json::from_str(&text).map_err(|e| FetchError::Parse(e.to_string()))?;
+    let json: Value = serde_json::from_str(&text).map_err(|e| FetchError::Parse(e.to_string()))?;
 
     // 检查响应码
     let code = json["code"].as_i64().unwrap_or(0);

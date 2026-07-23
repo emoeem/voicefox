@@ -12,7 +12,7 @@ use crate::http;
 
 pub async fn get_list(page: u32) -> Result<Vec<Playlist>, FetchError> {
     let url = format!(
-        "http://www2.kugou.kugou.com/yueku/v9/special/getSpecial?is_ajax=1&cdn=cdn&t=6&c=&p={page}"
+        "http://www2.kugou.kugou.com/yueku/v9/special/getSpecial?is_ajax=1&cdn=cdn&t=6&c=&p={page}&pagesize=36"
     );
     let json: Value = http::client()
         .get(url)

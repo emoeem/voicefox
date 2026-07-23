@@ -35,11 +35,11 @@ fn parse_qualities(n_minfo: &str) -> BTreeSet<Quality> {
         let mut bitrate = 0u32;
         for kv in part.split(',') {
             let kv = kv.trim();
-            if let Some((k, v)) = kv.split_once(':') {
-                if k == "bitrate" {
-                    bitrate = v.parse().unwrap_or(0);
-                    break;
-                }
+            if let Some((k, v)) = kv.split_once(':')
+                && k == "bitrate"
+            {
+                bitrate = v.parse().unwrap_or(0);
+                break;
             }
         }
         if let Some(q) = bitrate_to_quality(bitrate) {
@@ -78,8 +78,7 @@ pub async fn search(keyword: &str, page: u32, limit: u32) -> Result<SearchResult
         .await
         .map_err(|e| SearchError::Network(e.to_string()))?;
 
-    let json: Value =
-        serde_json::from_str(&text).map_err(|e| SearchError::Parse(e.to_string()))?;
+    let json: Value = serde_json::from_str(&text).map_err(|e| SearchError::Parse(e.to_string()))?;
 
     let total = json_u32(&json["TOTAL"]).unwrap_or(0);
     let show_count = json_u32(&json["SHOW"]).unwrap_or(0);
@@ -108,10 +107,7 @@ pub async fn search(keyword: &str, page: u32, limit: u32) -> Result<SearchResult
         let name = item["SONGNAME"].as_str().unwrap_or("").to_string();
 
         // 歌手名：& 替换为 、
-        let artist = item["ARTIST"]
-            .as_str()
-            .unwrap_or("")
-            .replace('&', "、");
+        let artist = item["ARTIST"].as_str().unwrap_or("").replace('&', "、");
 
         let album = item["ALBUM"].as_str().unwrap_or("").to_string();
         let album_id = item["ALBUMID"].as_str().unwrap_or("").to_string();

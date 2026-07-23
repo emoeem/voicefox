@@ -5,7 +5,7 @@ volume = 80
 play_mode = "list-loop"
 
 [source]
-enabled = ["kw", "kg", "tx", "wy", "mg"]
+enabled = ["kw", "kg", "tx", "wy", "mg", "bili"]
 default = "kw"
 auto_toggle = true
 # JS 音源脚本 URL 或本地路径（lx-music user API 协议）

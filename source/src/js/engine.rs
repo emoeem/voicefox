@@ -46,21 +46,19 @@ impl JsEngine {
             .to_str()
             .ok_or_else(|| "wrapper.js 路径包含无效字符".to_string())?;
         if !node_supports_permission_mode() {
-            tracing::warn!("Node.js 不支持 --permission 模式，将在无沙箱模式下运行");
+            return Err("当前 Node.js 不支持权限隔离模式，请升级 Node.js".to_string());
         }
 
-        let use_permission = node_supports_permission_mode();
         let mut command = Command::new("node");
         configure_background_command(&mut command);
-        if use_permission {
-            command.arg("--permission");
-            if node_supports_flag("--allow-net") {
-                command.arg("--allow-net");
-            }
-            command.arg(format!("--allow-fs-read={wrapper_path_string}"));
-            command.arg(format!("--allow-fs-read={source_path}"));
+        command.arg("--permission");
+        if node_supports_flag("--allow-net") {
+            command.arg("--allow-net");
         }
-        command.arg("--disable-proto=throw");
+        command
+            .arg(format!("--allow-fs-read={wrapper_path_string}"))
+            .arg(format!("--allow-fs-read={source_path}"))
+            .arg("--disable-proto=throw");
         let mut child = command
             .arg(wrapper_path_string)
             .arg(source_path)
@@ -360,4 +358,14 @@ fn configure_background_command(command: &mut Command) {
     }
     #[cfg(not(windows))]
     let _ = command;
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn wrapper_disables_dynamic_string_code_generation() {
+        let wrapper = include_str!("wrapper.js");
+        assert!(wrapper.contains("strings: false"));
+        assert!(!wrapper.contains("strings: true"));
+    }
 }

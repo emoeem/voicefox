@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -24,6 +25,7 @@ pub struct MpvEngine {
     event_rx: Mutex<Option<mpsc::UnboundedReceiver<PlayerEvent>>>,
     volume: AtomicU32,
     generation: Arc<AtomicU64>,
+    pending_headers: Mutex<HashMap<u64, Vec<(String, String)>>>,
 }
 
 impl MpvEngine {
@@ -46,6 +48,7 @@ impl MpvEngine {
             event_rx: Mutex::new(Some(event_rx)),
             volume: AtomicU32::new(80),
             generation: Arc::new(AtomicU64::new(0)),
+            pending_headers: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -72,6 +75,12 @@ impl Player for MpvEngine {
     }
 
     fn play(&self, url: &str, generation: u64) -> bool {
+        let headers = self
+            .pending_headers
+            .lock()
+            .unwrap()
+            .remove(&generation)
+            .unwrap_or_default();
         let _play_guard = self.play_lock.lock().unwrap();
         if self.generation.load(Ordering::SeqCst) != generation {
             return false;
@@ -172,6 +181,26 @@ impl Player for MpvEngine {
                 });
 
                 let _ = ipc.set_volume(self.volume());
+                if !headers.is_empty() {
+                    let fields = headers
+                        .iter()
+                        .filter(|(name, value)| {
+                            !name.contains(['\r', '\n']) && !value.contains(['\r', '\n'])
+                        })
+                        .map(|(name, value)| format!("{name}: {value}"))
+                        .collect::<Vec<_>>();
+                    let header_command = serde_json::json!({
+                        "command": ["set_property", "http-header-fields", fields]
+                    })
+                    .to_string();
+                    if let Err(error) = ipc.send_command(&header_command) {
+                        polling.store(false, Ordering::SeqCst);
+                        ipc.stop();
+                        let _ = self.state_tx.send(PlayerState::Stopped);
+                        let _ = self.event_tx.send(PlayerEvent::Error(error.to_string()));
+                        return false;
+                    }
+                }
                 let load_command = serde_json::json!({
                     "command": ["loadfile", url, "replace"]
                 })
@@ -196,6 +225,14 @@ impl Player for MpvEngine {
                 false
             }
         }
+    }
+
+    fn play_with_headers(&self, url: &str, generation: u64, headers: &[(String, String)]) -> bool {
+        self.pending_headers
+            .lock()
+            .unwrap()
+            .insert(generation, headers.to_vec());
+        self.play(url, generation)
     }
 
     fn pause(&self) {

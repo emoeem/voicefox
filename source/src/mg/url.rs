@@ -24,17 +24,12 @@ fn quality_to_format(quality: Quality) -> &'static str {
 pub async fn get_song_url(song: &SongInfo, quality: Quality) -> Result<SongUrl, FetchError> {
     let client = http::client();
 
-    let copyright_id = song
-        .extra
-        .get("copyrightId")
-        .ok_or(FetchError::NotFound)?;
+    let copyright_id = song.extra.get("copyrightId").ok_or(FetchError::NotFound)?;
 
-    let url = format!(
-        "https://c.musicapp.migu.cn/MIGUM2.0/v1.0/content/resourceinfo.do?resourceType=2"
-    );
+    let url = "https://c.musicapp.migu.cn/MIGUM2.0/v1.0/content/resourceinfo.do?resourceType=2";
 
     let resp = client
-        .post(&url)
+        .post(url)
         .header("User-Agent", "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36")
         .form(&[("resourceId", copyright_id.as_str())])
         .send()
@@ -101,5 +96,6 @@ pub async fn get_song_url(song: &SongInfo, quality: Quality) -> Result<SongUrl, 
         duration: song.duration,
         cover_url,
         qualities,
+        headers: vec![],
     })
 }

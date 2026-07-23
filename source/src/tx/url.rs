@@ -39,8 +39,7 @@ pub async fn get_song_url(song: &SongInfo, quality: Quality) -> Result<SongUrl, 
         }
     });
 
-    let body_str =
-        serde_json::to_string(&body).map_err(|e| FetchError::Parse(e.to_string()))?;
+    let body_str = serde_json::to_string(&body).map_err(|e| FetchError::Parse(e.to_string()))?;
     let sign = crypto::zzc_sign(&body_str);
 
     let url = format!("https://u.y.qq.com/cgi-bin/musicu.fcg?sign={}", sign);
@@ -59,8 +58,7 @@ pub async fn get_song_url(song: &SongInfo, quality: Quality) -> Result<SongUrl, 
         .await
         .map_err(|e| FetchError::Network(e.to_string()))?;
 
-    let json: Value =
-        serde_json::from_str(&text).map_err(|e| FetchError::Parse(e.to_string()))?;
+    let json: Value = serde_json::from_str(&text).map_err(|e| FetchError::Parse(e.to_string()))?;
 
     let req_code = json["req"]["code"].as_i64().unwrap_or(-1);
     if req_code != 0 {
@@ -68,9 +66,7 @@ pub async fn get_song_url(song: &SongInfo, quality: Quality) -> Result<SongUrl, 
     }
 
     let midurlinfo = &json["req"]["data"]["midurlinfo"];
-    let purl = midurlinfo[0]["purl"]
-        .as_str()
-        .unwrap_or("");
+    let purl = midurlinfo[0]["purl"].as_str().unwrap_or("");
 
     if purl.is_empty() {
         return Err(FetchError::NotFound);
@@ -86,5 +82,6 @@ pub async fn get_song_url(song: &SongInfo, quality: Quality) -> Result<SongUrl, 
         duration: song.duration,
         cover_url: song.cover_url.clone(),
         qualities,
+        headers: vec![],
     })
 }

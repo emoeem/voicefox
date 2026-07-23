@@ -8,20 +8,28 @@ use serde_json::Value;
 
 use super::BiliSource;
 
-const MUSIC_HOT: &str =
-    "https://api.bilibili.com/x/centralization/interface/music/hot/rank";
-const REGION_RECOMMEND: &str =
-    "https://api.bilibili.com/x/web-interface/region/feed/rcmd";
-const POPULAR: &str =
-    "https://api.bilibili.com/x/web-interface/popular";
-const RANKING_V2: &str =
-    "https://api.bilibili.com/x/web-interface/ranking/v2";
+const MUSIC_HOT: &str = "https://api.bilibili.com/x/centralization/interface/music/hot/rank";
+const REGION_RECOMMEND: &str = "https://api.bilibili.com/x/web-interface/region/feed/rcmd";
+const POPULAR: &str = "https://api.bilibili.com/x/web-interface/popular";
+const RANKING_V2: &str = "https://api.bilibili.com/x/web-interface/ranking/v2";
 
 pub fn get_boards() -> Result<Vec<LeaderboardInfo>, SearchError> {
     Ok(vec![
-        LeaderboardInfo::new("popular".to_string(), "全网热门".to_string(), SourceId::Bili),
-        LeaderboardInfo::new("ranking".to_string(), "全站排行榜".to_string(), SourceId::Bili),
-        LeaderboardInfo::new("music-hot".to_string(), "音乐热歌榜".to_string(), SourceId::Bili),
+        LeaderboardInfo::new(
+            "popular".to_string(),
+            "全网热门".to_string(),
+            SourceId::Bili,
+        ),
+        LeaderboardInfo::new(
+            "ranking".to_string(),
+            "全站排行榜".to_string(),
+            SourceId::Bili,
+        ),
+        LeaderboardInfo::new(
+            "music-hot".to_string(),
+            "音乐热歌榜".to_string(),
+            SourceId::Bili,
+        ),
         LeaderboardInfo::new(
             "recommend".to_string(),
             "热门推荐".to_string(),
@@ -51,14 +59,11 @@ async fn get_music_hot(
     limit: u32,
 ) -> Result<SearchResult, SearchError> {
     let json = source
-        .get_json(
-            MUSIC_HOT,
-            &[("plat", "2".to_string())],
-            false,
-        )
+        .get_json(MUSIC_HOT, &[("plat", "2".to_string())], false)
         .await
         .map_err(|e| SearchError::Network(format!("哔哩哔哩热歌榜网络错误: {e}")))?;
     let code = json["code"].as_i64().unwrap_or(-1);
+    tracing::debug!("bili music-hot response: code={code}");
     if code != 0 {
         let msg = json["message"].as_str().unwrap_or("unknown");
         return Err(SearchError::Api(format!(
@@ -79,12 +84,13 @@ async fn get_recommend(
     page: u32,
     limit: u32,
 ) -> Result<SearchResult, SearchError> {
+    let request_limit = limit.clamp(1, 50);
     let json = source
         .get_json(
             REGION_RECOMMEND,
             &[
                 ("display_id", page.max(1).to_string()),
-                ("request_cnt", limit.to_string()),
+                ("request_cnt", request_limit.to_string()),
                 ("from_region", "1003".to_string()),
             ],
             false,
@@ -92,6 +98,7 @@ async fn get_recommend(
         .await
         .map_err(|e| SearchError::Network(format!("哔哩哔哩热门推荐网络错误: {e}")))?;
     let code = json["code"].as_i64().unwrap_or(-1);
+    tracing::debug!("bili recommend response: code={code}");
     if code != 0 {
         let msg = json["message"].as_str().unwrap_or("unknown");
         return Err(SearchError::Api(format!(
@@ -103,11 +110,16 @@ async fn get_recommend(
         .ok_or_else(|| SearchError::Parse("哔哩哔哩热门推荐数据为空".to_string()))?
         .iter()
         .filter_map(parse_recommend_song)
-        .take(limit as usize)
+        .take(request_limit as usize)
         .collect::<Vec<_>>();
     Ok(SearchResult {
-        total: items.len() as u32 + if items.len() >= limit as usize { limit } else { 0 },
-        has_more: items.len() >= limit as usize,
+        total: items.len() as u32
+            + if items.len() >= request_limit as usize {
+                request_limit
+            } else {
+                0
+            },
+        has_more: items.len() >= request_limit as usize,
         items,
     })
 }
@@ -117,11 +129,12 @@ async fn get_popular(
     page: u32,
     limit: u32,
 ) -> Result<SearchResult, SearchError> {
+    let request_limit = limit.clamp(1, 50);
     let json = source
         .get_json(
             POPULAR,
             &[
-                ("ps", limit.min(50).max(1).to_string()),
+                ("ps", request_limit.to_string()),
                 ("pn", page.max(1).to_string()),
             ],
             false,
@@ -139,17 +152,29 @@ async fn get_popular(
     let list = match json["data"]["list"].as_array() {
         Some(list) => list,
         None => {
-            tracing::warn!("bili popular: no list field, data keys: {:?}", json["data"].as_object().map(|o| o.keys().collect::<Vec<_>>()));
+            tracing::warn!(
+                "bili popular: no list field, data keys: {:?}",
+                json["data"]
+                    .as_object()
+                    .map(|o| o.keys().collect::<Vec<_>>())
+            );
             return Err(SearchError::Parse("哔哩哔哩全网热门数据为空".to_string()));
         }
     };
-    let items: Vec<_> = list.iter().filter_map(parse_popular_song).take(limit as usize).collect();
+    let items: Vec<_> = list
+        .iter()
+        .filter_map(parse_popular_song)
+        .take(request_limit as usize)
+        .collect();
     tracing::debug!("bili popular: parsed {} items", items.len());
+    let no_more = json["data"]["no_more"].as_bool();
     Ok(SearchResult {
-        total: json["data"]["no_more"].as_bool()
+        total: no_more
             .map(|no_more| if no_more { items.len() } else { items.len().saturating_add(1) } as u32)
             .unwrap_or(items.len() as u32),
-        has_more: items.len() >= limit as usize,
+        has_more: no_more
+            .map(|no_more| !no_more && !items.is_empty())
+            .unwrap_or(items.len() >= request_limit as usize),
         items,
     })
 }
@@ -162,10 +187,7 @@ async fn get_ranking(
     let json = source
         .signed_get(
             RANKING_V2,
-            &[
-                ("rid", "0".to_string()),
-                ("type", "all".to_string()),
-            ],
+            &[("rid", "0".to_string()), ("type", "all".to_string())],
         )
         .await
         .map_err(|e| SearchError::Network(format!("哔哩哔哩全站排行榜网络错误: {e}")))?;
@@ -176,6 +198,7 @@ async fn get_ranking(
             "哔哩哔哩全站排行榜失败 (code={code}, msg={msg})",
         )));
     }
+    tracing::debug!("bili ranking response: code={code}");
     let all = json["data"]["list"]
         .as_array()
         .ok_or_else(|| SearchError::Parse("哔哩哔哩全站排行榜数据为空".to_string()))?
@@ -205,7 +228,7 @@ fn parse_popular_song(value: &Value) -> Option<SongInfo> {
     song.cover_url = non_empty_url(value["pic"].as_str().or_else(|| value["cover"].as_str()));
     song.duration = value["duration"]
         .as_str()
-        .and_then(|v| parse_duration_str(v))
+        .and_then(parse_duration_str)
         .or_else(|| value["duration"].as_u64().map(Duration::from_secs))
         .unwrap_or_default();
     song.extra.insert("bvid".to_string(), bvid);
@@ -223,12 +246,18 @@ fn parse_music_song(value: &Value) -> Option<SongInfo> {
     let mut song = SongInfo::new(
         bvid.clone(),
         SourceId::Bili,
-        value["music_title"].as_str().unwrap_or_default().to_string(),
+        value["music_title"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
         value["author"].as_str().unwrap_or_default().to_string(),
     );
     song.album_name = value["album"].as_str().unwrap_or_default().to_string();
     song.cover_url = non_empty_url(value["cover"].as_str());
-    song.duration = value["duration"].as_u64().map(Duration::from_secs).unwrap_or_default();
+    song.duration = value["duration"]
+        .as_u64()
+        .map(Duration::from_secs)
+        .unwrap_or_default();
     song.extra.insert("bvid".to_string(), bvid);
     if let Some(cid) = value["cid"].as_u64() {
         song.extra.insert("cid".to_string(), cid.to_string());
@@ -253,7 +282,10 @@ fn parse_recommend_song(value: &Value) -> Option<SongInfo> {
     );
     song.album_name = song.name.clone();
     song.cover_url = non_empty_url(value["pic"].as_str().or_else(|| value["cover"].as_str()));
-    song.duration = value["duration"].as_u64().map(Duration::from_secs).unwrap_or_default();
+    song.duration = value["duration"]
+        .as_u64()
+        .map(Duration::from_secs)
+        .unwrap_or_default();
     song.extra.insert("bvid".to_string(), bvid);
     if let Some(cid) = value["cid"].as_u64() {
         song.extra.insert("cid".to_string(), cid.to_string());
@@ -261,14 +293,14 @@ fn parse_recommend_song(value: &Value) -> Option<SongInfo> {
     Some(song)
 }
 
-fn page_slice(
-    all: Vec<SongInfo>,
-    page: u32,
-    limit: u32,
-) -> Result<SearchResult, SearchError> {
+fn page_slice(all: Vec<SongInfo>, page: u32, limit: u32) -> Result<SearchResult, SearchError> {
     let offset = page.saturating_sub(1).saturating_mul(limit) as usize;
     let total = all.len() as u32;
-    let items = all.into_iter().skip(offset).take(limit as usize).collect::<Vec<_>>();
+    let items = all
+        .into_iter()
+        .skip(offset)
+        .take(limit as usize)
+        .collect::<Vec<_>>();
     Ok(SearchResult {
         has_more: offset + items.len() < total as usize,
         total,
@@ -277,21 +309,21 @@ fn page_slice(
 }
 
 fn non_empty_url(value: Option<&str>) -> Option<String> {
-    value
-        .filter(|value| !value.trim().is_empty())
-        .map(|value| {
-            if value.starts_with("//") {
-                format!("https:{value}")
-            } else {
-                value.to_string()
-            }
-        })
+    value.filter(|value| !value.trim().is_empty()).map(|value| {
+        if value.starts_with("//") {
+            format!("https:{value}")
+        } else {
+            value.to_string()
+        }
+    })
 }
 
 fn parse_duration_str(value: &str) -> Option<Duration> {
     let parts: Vec<u64> = value.split(':').filter_map(|p| p.parse().ok()).collect();
     match parts.len() {
-        3 => Some(Duration::from_secs(parts[0] * 3600 + parts[1] * 60 + parts[2])),
+        3 => Some(Duration::from_secs(
+            parts[0] * 3600 + parts[1] * 60 + parts[2],
+        )),
         2 => Some(Duration::from_secs(parts[0] * 60 + parts[1])),
         1 => Some(Duration::from_secs(parts[0])),
         _ => None,

@@ -377,7 +377,7 @@ try {
     sandbox.globalThis = sandbox;
     vm.createContext(sandbox, {
         codeGeneration: {
-            strings: true,
+            strings: false,
             wasm: false,
         },
     });

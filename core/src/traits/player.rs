@@ -18,6 +18,9 @@ pub trait Player: Send + Sync {
     fn prepare(&self) -> u64;
     /// 仅当代次令牌仍有效时开始播放，返回是否接受了本次请求。
     fn play(&self, url: &str, generation: u64) -> bool;
+    fn play_with_headers(&self, url: &str, generation: u64, _headers: &[(String, String)]) -> bool {
+        self.play(url, generation)
+    }
     fn pause(&self);
     fn resume(&self);
     fn stop(&self);

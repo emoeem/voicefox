@@ -26,6 +26,12 @@ impl KwSource {
     }
 }
 
+impl Default for KwSource {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[async_trait]
 impl MusicSource for KwSource {
     fn id(&self) -> SourceId {

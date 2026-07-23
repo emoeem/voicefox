@@ -91,5 +91,6 @@ pub async fn get_song_url(song: &SongInfo, quality: Quality) -> Result<SongUrl, 
         duration: song.duration,
         cover_url: None,
         qualities,
+        headers: vec![],
     })
 }

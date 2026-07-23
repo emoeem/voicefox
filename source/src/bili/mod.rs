@@ -1,13 +1,14 @@
 //! 哔哩哔哩音源：视频音乐搜索、播放、热门推荐和二维码登录。
 
-mod auth;
 mod leaderboard;
 mod playlist;
 mod search;
 mod url;
 
 use std::collections::BTreeMap;
+use std::io::Write;
 use std::sync::RwLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
 use md5::Digest;
@@ -28,12 +29,12 @@ pub(crate) const USER_AGENT: &str =
 pub(crate) const BILI_REFERER: &str = "https://www.bilibili.com/";
 
 const WBI_MIXIN_KEY_TABLE: [usize; 64] = [
-    46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49, 33, 9, 42,
-    19, 29, 28, 14, 39, 12, 38, 41, 13, 37, 48, 7, 16, 24, 55, 40, 61, 26, 17, 0, 1, 60, 51,
-    30, 4, 22, 25, 54, 21, 56, 59, 6, 63, 57, 62, 11, 36, 20, 34, 44, 52,
+    46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49, 33, 9, 42, 19, 29,
+    28, 14, 39, 12, 38, 41, 13, 37, 48, 7, 16, 24, 55, 40, 61, 26, 17, 0, 1, 60, 51, 30, 4, 22, 25,
+    54, 21, 56, 59, 6, 63, 57, 62, 11, 36, 20, 34, 44, 52,
 ];
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Clone, Serialize, Deserialize, Default)]
 pub struct BiliSession {
     pub sessdata: Option<String>,
     pub bili_jct: Option<String>,
@@ -65,8 +66,9 @@ impl BiliSession {
     }
 
     fn has_login_cookie(&self) -> bool {
-        self.sessdata.as_deref().is_some_and(|value| !value.is_empty())
-            || self.access_key.as_deref().is_some_and(|value| !value.is_empty())
+        self.sessdata
+            .as_deref()
+            .is_some_and(|value| !value.is_empty())
     }
 }
 
@@ -107,6 +109,7 @@ struct WbiKeys {
 pub struct BiliSource {
     session: RwLock<BiliSession>,
     wbi_keys: RwLock<Option<WbiKeys>>,
+    session_generation: AtomicU64,
 }
 
 impl BiliSource {
@@ -114,6 +117,7 @@ impl BiliSource {
         Self {
             session: RwLock::new(load_session()),
             wbi_keys: RwLock::new(None),
+            session_generation: AtomicU64::new(0),
         }
     }
 
@@ -137,25 +141,34 @@ impl BiliSource {
         }
     }
 
-    pub fn logout(&self) {
+    pub fn logout(&self) -> Result<(), String> {
+        self.session_generation.fetch_add(1, Ordering::SeqCst);
         *self.session.write().unwrap() = BiliSession::default();
-        let _ = std::fs::remove_file(session_path());
+        remove_session_file()
     }
 
     pub async fn login_status(&self) -> Result<Option<BiliUser>, String> {
+        let generation = self.session_generation.load(Ordering::SeqCst);
         let json = self
-            .get_json(
-                "https://api.bilibili.com/x/web-interface/nav",
-                &[],
-                false,
-            )
+            .get_json("https://api.bilibili.com/x/web-interface/nav", &[], false)
             .await?;
-        if json["code"].as_i64() != Some(0) || json["data"]["isLogin"] != true {
+        if self.session_generation.load(Ordering::SeqCst) != generation {
+            return Ok(self.is_logged_in().then(|| self.user()).flatten());
+        }
+        if json["code"].as_i64() != Some(0) {
+            return Err(api_error(&json, "检查哔哩哔哩登录状态失败"));
+        }
+        if json["data"]["isLogin"] != true {
+            self.logout()?;
             return Ok(None);
         }
         let user = parse_user(&json)?;
         {
             let mut session = self.session.write().unwrap();
+            if self.session_generation.load(Ordering::SeqCst) != generation {
+                drop(session);
+                return Ok(self.is_logged_in().then(|| self.user()).flatten());
+            }
             session.user_name = Some(user.name.clone());
             session.user_id = Some(user.id.clone());
             session.avatar = Some(user.avatar.clone());
@@ -222,18 +235,21 @@ impl BiliSource {
             0 => {
                 // 真正的登录成功：data 中有 url / refresh_token，Set-Cookie 中有 SESSDATA
                 self.capture_login_session(&headers, data)?;
-                let _ = self.login_status().await?;
-                BiliQrStatus::Success
+                let user = self
+                    .login_status()
+                    .await?
+                    .ok_or_else(|| "哔哩哔哩会话校验失败，请重新扫码".to_string())?;
+                return Ok(BiliQrPoll {
+                    status: BiliQrStatus::Success,
+                    user: Some(user),
+                });
             }
             86101 => BiliQrStatus::Waiting,
             86090 => BiliQrStatus::Scanned,
             86038 => BiliQrStatus::Expired,
-            _ => return Err(api_error(&json, "检查哔哩哔哩二维码失败")),
+            _ => return Err(qr_api_error(data)),
         };
-        let user = (status == BiliQrStatus::Success)
-            .then(|| self.user())
-            .flatten();
-        Ok(BiliQrPoll { status, user })
+        Ok(BiliQrPoll { status, user: None })
     }
 
     fn capture_login_session(
@@ -269,6 +285,7 @@ impl BiliSource {
         }
         save_session(&session)?;
         *self.session.write().unwrap() = session;
+        self.session_generation.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
 
@@ -328,8 +345,14 @@ impl BiliSource {
         let json = self
             .request_json("https://api.bilibili.com/x/web-interface/nav".to_string())
             .await?;
+        if json["code"].as_i64() != Some(0) {
+            return Err(api_error(&json, "获取哔哩哔哩 WBI 密钥失败"));
+        }
         let img_key = key_from_url(json["data"]["wbi_img"]["img_url"].as_str());
         let sub_key = key_from_url(json["data"]["wbi_img"]["sub_url"].as_str());
+        if img_key.is_empty() || sub_key.is_empty() {
+            return Err("哔哩哔哩 WBI 密钥为空".to_string());
+        }
         let keys = WbiKeys { img_key, sub_key };
         *self.wbi_keys.write().unwrap() = Some(keys.clone());
         Ok(keys)
@@ -367,6 +390,12 @@ impl BiliSource {
         params: &[(&str, String)],
     ) -> Result<Value, String> {
         self.ensure_buvid().await?;
+        let json = self.get_json(endpoint, params, true).await?;
+        if json["code"].as_i64() != Some(-403) {
+            return Ok(json);
+        }
+
+        *self.wbi_keys.write().unwrap() = None;
         self.get_json(endpoint, params, true).await
     }
 }
@@ -439,14 +468,21 @@ impl MusicSource for BiliSource {
 }
 
 fn parse_user(json: &Value) -> Result<BiliUser, String> {
+    let id = value_string(&json["data"]["mid"]);
+    if id.is_empty() {
+        return Err("哔哩哔哩用户 ID 为空".to_string());
+    }
     Ok(BiliUser {
         name: json["data"]["uname"]
             .as_str()
             .filter(|value| !value.is_empty())
             .ok_or_else(|| "哔哩哔哩用户名称为空".to_string())?
             .to_string(),
-        id: value_string(&json["data"]["mid"]),
-        avatar: json["data"]["face"].as_str().unwrap_or_default().to_string(),
+        id,
+        avatar: json["data"]["face"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
     })
 }
 
@@ -456,6 +492,15 @@ fn api_error(json: &Value, fallback: &str) -> String {
         .as_str()
         .filter(|value| !value.is_empty())
         .unwrap_or(fallback);
+    format!("{message} (code={code})")
+}
+
+fn qr_api_error(data: &Value) -> String {
+    let code = data["code"].as_i64().unwrap_or(-1);
+    let message = data["message"]
+        .as_str()
+        .filter(|value| !value.is_empty())
+        .unwrap_or("检查哔哩哔哩二维码失败");
     format!("{message} (code={code})")
 }
 
@@ -520,7 +565,56 @@ fn save_session(session: &BiliSession) -> Result<(), String> {
         std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
     let content = serde_json::to_string_pretty(session).map_err(|error| error.to_string())?;
-    std::fs::write(path, content).map_err(|error| error.to_string())
+    save_session_file(&path, content.as_bytes())
+}
+
+fn save_session_file(path: &std::path::Path, content: &[u8]) -> Result<(), String> {
+    static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    let suffix = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let temp_path = path.with_extension(format!("json.tmp-{}-{suffix}", std::process::id()));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+
+    let result = (|| {
+        let mut file = options
+            .open(&temp_path)
+            .map_err(|error| error.to_string())?;
+        file.write_all(content).map_err(|error| error.to_string())?;
+        file.sync_all().map_err(|error| error.to_string())?;
+        drop(file);
+
+        #[cfg(unix)]
+        {
+            std::fs::rename(&temp_path, path).map_err(|error| error.to_string())?;
+        }
+        #[cfg(windows)]
+        {
+            if path.exists() {
+                std::fs::remove_file(path).map_err(|error| error.to_string())?;
+            }
+            std::fs::rename(&temp_path, path).map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    })();
+
+    if result.is_err() {
+        let _ = std::fs::remove_file(temp_path);
+    }
+    result
+}
+
+fn remove_session_file() -> Result<(), String> {
+    match std::fs::remove_file(session_path()) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("删除哔哩哔哩会话文件失败: {error}")),
+    }
 }
 
 fn parse_cookie_pair(value: &str, session: &mut BiliSession) {
@@ -554,7 +648,7 @@ fn value_string(value: &Value) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{BiliSession, WbiKeys, encode_wbi_query};
+    use super::{BiliSession, WbiKeys, encode_wbi_query, save_session_file};
 
     #[test]
     fn cookie_header_contains_only_supported_cookie_values() {
@@ -576,16 +670,29 @@ mod tests {
             sub_key: "b".repeat(32),
         };
         let query = encode_wbi_query(
-            &[
-                ("keyword", "晴天".to_string()),
-                ("page", "1".to_string()),
-            ]
-            .into_iter()
-            .collect(),
+            &[("keyword", "晴天".to_string()), ("page", "1".to_string())]
+                .into_iter()
+                .collect(),
             &keys,
         );
         assert!(query.starts_with("keyword="));
         assert!(query.contains("&page=1"));
         assert!(query.contains("&w_rid="));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn session_file_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = std::env::temp_dir().join(format!(
+            "voicefox-bili-session-test-{}-{}.json",
+            std::process::id(),
+            super::unix_timestamp()
+        ));
+        save_session_file(&path, br#"{"sessdata":"secret"}"#).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        let _ = std::fs::remove_file(path);
     }
 }

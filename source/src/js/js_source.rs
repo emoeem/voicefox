@@ -317,6 +317,7 @@ impl MusicSource for JsSource {
                                 _ => None,
                             })
                             .collect(),
+                        headers: vec![],
                     })
                 }
                 Err(error) => Err(FetchError::Other(error)),

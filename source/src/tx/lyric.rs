@@ -57,8 +57,7 @@ pub async fn get_lyric(song: &SongInfo) -> Result<LyricData, FetchError> {
         }
     });
 
-    let body_str =
-        serde_json::to_string(&body).map_err(|e| FetchError::Parse(e.to_string()))?;
+    let body_str = serde_json::to_string(&body).map_err(|e| FetchError::Parse(e.to_string()))?;
     let sign = crypto::zzc_sign(&body_str);
 
     let url = format!("https://u.y.qq.com/cgi-bin/musicu.fcg?sign={}", sign);
@@ -77,8 +76,7 @@ pub async fn get_lyric(song: &SongInfo) -> Result<LyricData, FetchError> {
         .await
         .map_err(|e| FetchError::Network(e.to_string()))?;
 
-    let json: Value =
-        serde_json::from_str(&text).map_err(|e| FetchError::Parse(e.to_string()))?;
+    let json: Value = serde_json::from_str(&text).map_err(|e| FetchError::Parse(e.to_string()))?;
 
     let req_code = json["req"]["code"].as_i64().unwrap_or(-1);
     if req_code != 0 {

@@ -26,6 +26,12 @@ impl TxSource {
     }
 }
 
+impl Default for TxSource {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[async_trait]
 impl MusicSource for TxSource {
     fn id(&self) -> SourceId {

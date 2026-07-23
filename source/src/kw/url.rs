@@ -32,10 +32,7 @@ fn fallback_cover_url(song_id: &str) -> String {
 
 /// 通过 musicInfo API 获取封面图片 URL
 async fn fetch_cover_url(client: &reqwest::Client, song_id: &str) -> Option<String> {
-    let url = format!(
-        "http://www.kuwo.cn/api/www/music/musicInfo?mid={}",
-        song_id
-    );
+    let url = format!("http://www.kuwo.cn/api/www/music/musicInfo?mid={}", song_id);
 
     let resp = client
         .get(&url)
@@ -112,5 +109,6 @@ pub async fn get_song_url(song: &SongInfo, quality: Quality) -> Result<SongUrl, 
         duration: song.duration,
         cover_url: Some(cover_url),
         qualities,
+        headers: vec![],
     })
 }

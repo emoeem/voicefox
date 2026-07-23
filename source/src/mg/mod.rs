@@ -27,6 +27,12 @@ impl MgSource {
     }
 }
 
+impl Default for MgSource {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[async_trait]
 impl MusicSource for MgSource {
     fn id(&self) -> SourceId {

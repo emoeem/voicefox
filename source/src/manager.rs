@@ -325,6 +325,14 @@ impl SourceManager {
             }
             return Err(FetchError::Other("本地音源不可用".to_string()));
         }
+        if song.source == SourceId::Bili {
+            return self
+                .sources
+                .get(&SourceId::Bili)
+                .ok_or_else(|| FetchError::Other("哔哩哔哩音源不可用".to_string()))?
+                .get_song_url(song, quality)
+                .await;
+        }
         // 在线歌曲优先使用 JS 音源。
         let js_source = self
             .js_source

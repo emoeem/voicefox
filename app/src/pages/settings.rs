@@ -181,8 +181,7 @@ impl SettingsPage {
                 }
                 (KeyModifiers::NONE, KeyCode::Char('b')) => {
                     if ctx.bili_source.is_logged_in() {
-                        ctx.bili_source.logout();
-                        self.status_msg = Some("已退出哔哩哔哩登录".to_string());
+                        return AppAction::BiliLogout;
                     } else {
                         return AppAction::BiliLogin;
                     }
@@ -334,7 +333,7 @@ impl SettingsPage {
         let options_block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::new().fg(crate::theme::border(ctx)))
-            .title(" 界面与播放 · t/g/w/c/m/p · b 哔哩哔哩登录 ");
+            .title(" 界面与播放 · t/g/w/c/m/p · b 哔哩哔哩登录/退出 ");
         let options_inner = options_block.inner(chunks[0]);
         options_block.render(chunks[0], buf);
         let options = vec![

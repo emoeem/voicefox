@@ -10,9 +10,9 @@ use lx_core::model::lyric::LyricData;
 use lx_core::model::song::SongInfo;
 use lx_core::traits::source::FetchError;
 
-use super::crypto::kw_lyric_crypto;
 use super::super::crypto;
 use super::super::http;
+use super::crypto::kw_lyric_crypto;
 
 /// 加密请求参数：XOR → base64
 fn encrypt_params(params: &str) -> String {
@@ -75,7 +75,8 @@ async fn fetch_raw_lyric(song_id: &str, with_lrcx: bool) -> Result<String, Fetch
         Ok(cow.into_owned())
     } else {
         // lrcx 逐字歌词：过滤非ASCII字节 → Base64 解码 → XOR 解密
-        let base64_str: String = decompressed.iter()
+        let base64_str: String = decompressed
+            .iter()
             .filter(|b| b.is_ascii())
             .map(|&b| b as char)
             .collect();
@@ -92,10 +93,7 @@ pub async fn get_lyric(song: &SongInfo) -> Result<LyricData, FetchError> {
     let song_id = &song.id;
 
     // 先请求逐字歌词（lrcx=1），失败不阻断
-    let lxlyric = match fetch_raw_lyric(song_id, true).await {
-        Ok(text) => Some(text),
-        Err(_) => None, // lrcx 失败就跳过，不影响主流程
-    };
+    let lxlyric = fetch_raw_lyric(song_id, true).await.ok();
 
     // 再请求普通歌词（不含 lrcx）
     let lyric = fetch_raw_lyric(song_id, false).await.unwrap_or_default();
