@@ -8,6 +8,10 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # audio-only 的 libmpv 构建，随 sha256 一同固定
+  # 升级时同时改这两行：https://github.com/Uyanide/mpv-winbuild-audio/releases
+  LIBMPV_TAG: v0.41.0-1
+  LIBMPV_SHA256: 4cbc2f77c1380b0fb4d7d1f0373d881038f5f974f1c4799d0405eda54a488ee5
 
 jobs:
   # ── Linux 构建 ──
@@ -62,52 +66,48 @@ jobs:
           "C:\msys64\mingw64\bin" |
             Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
-          # Files live directly under /libmpv/ (no mpv-dev/ subdirectory);
-          # resolve the latest mpv-dev-x86_64 build from the SourceForge RSS.
-          $rssUrl = "https://sourceforge.net/projects/mpv-player-windows/rss?path=/libmpv"
-          $fallbackUrl = "https://downloads.sourceforge.net/project/mpv-player-windows/libmpv/mpv-dev-x86_64-20260809-git-dd5d17d328.7z"
+          # A general-purpose libmpv links against libraries that exist only once
+          # some driver or runtime has installed them. Every import is resolved
+          # before main() runs, so a single missing file stops the process from
+          # starting at all, with no error it could report. This build imports
+          # nothing beyond what Windows itself ships, and the sha256 fixes which
+          # bytes that is.
+          $archive = "libmpv-audio-x86_64-${env:LIBMPV_TAG}.7z"
+          $url = "https://github.com/Uyanide/mpv-winbuild-audio/releases/download/${env:LIBMPV_TAG}/$archive"
 
-          $libmpvUrl = $null
-          try {
-            [xml]$rss = (Invoke-WebRequest -Uri $rssUrl -UseBasicParsing).Content
-            $libmpvUrl = $rss.rss.channel.item.link |
-              Where-Object { $_ -match "/files/libmpv/mpv-dev-x86_64-[^/]+\.7z/download" -and $_ -notmatch "-v3-" } |
-              Select-Object -First 1
-          }
-          catch {
-            Write-Warning "Resolving latest libmpv from RSS failed: $_"
-          }
-
-          if (-not $libmpvUrl) {
-            Write-Warning "Falling back to pinned libmpv URL"
-            $libmpvUrl = $fallbackUrl
-          }
-
-          Write-Host "Downloading libmpv from $libmpvUrl"
+          Write-Host "Downloading libmpv from $url"
 
           curl.exe --location --fail --retry 3 --retry-delay 2 `
-            --output mpv-dev.7z $libmpvUrl
+            --output libmpv.7z $url
 
           if ($LASTEXITCODE -ne 0) {
             throw "Downloading libmpv failed with exit code $LASTEXITCODE"
           }
 
-          if ((Get-Item mpv-dev.7z).Length -lt 1MB) {
-            throw "Downloaded libmpv archive is unexpectedly small"
+          $actual = (Get-FileHash libmpv.7z -Algorithm SHA256).Hash.ToLowerInvariant()
+
+          if ($actual -ne $env:LIBMPV_SHA256) {
+            throw "libmpv archive checksum mismatch: expected ${env:LIBMPV_SHA256}, got $actual"
           }
 
-          7z t mpv-dev.7z | Out-Host
-
-          if ($LASTEXITCODE -ne 0) {
-            throw "Downloaded libmpv archive is invalid"
-          }
-
-          New-Item -ItemType Directory -Force -Path mpv-source/64 | Out-Null
-
-          7z x mpv-dev.7z "-ompv-source/64" | Out-Host
+          7z x libmpv.7z "-olibmpv-extract" | Out-Host
 
           if ($LASTEXITCODE -ne 0) {
             throw "Extracting libmpv failed with exit code $LASTEXITCODE"
+          }
+
+          # The archive holds one version directory at its root; flatten the two
+          # files libmpv2 looks for into the $MPV_SOURCE/64 layout it expects.
+          New-Item -ItemType Directory -Force -Path mpv-source/64 | Out-Null
+
+          Get-ChildItem -Path libmpv-extract -Recurse -File |
+            Where-Object { $_.Name -in "libmpv-2.dll", "libmpv.dll.a" } |
+            ForEach-Object { Copy-Item $_.FullName mpv-source/64 }
+
+          foreach ($file in "libmpv-2.dll", "libmpv.dll.a") {
+            if (-not (Test-Path "mpv-source/64/$file")) {
+              throw "$file is missing from the libmpv archive"
+            }
           }
 
           "MPV_SOURCE=$((Get-Location).Path)\mpv-source" |
@@ -157,17 +157,47 @@ jobs:
               Write-Warning "objdump.exe was not found; skipping import-table diagnostics"
             }
             else {
-              $imports = (& $objdump.Path -p voicefox.exe | Out-String)
+              # Left as a string array. Out-String would collapse it into one
+              # value that Select-String matches as a single line, echoing the
+              # entire dump into the log.
+              $imports = & $objdump.Path -p voicefox.exe
 
-              $imports |
-                Select-String "DLL Name:|mpv_client_api_version"
+              $imports | Select-String "DLL Name:|mpv_client_api_version"
 
-              if ($imports -notmatch "DLL Name:\s+libmpv-2\.dll") {
+              if (-not ($imports | Select-String -Quiet "DLL Name:\s+libmpv-2\.dll")) {
                 throw "voicefox.exe does not import the bundled libmpv-2.dll"
               }
 
-              if ($imports -notmatch "mpv_client_api_version") {
+              if (-not ($imports | Select-String -Quiet "mpv_client_api_version")) {
                 throw "voicefox.exe does not import mpv_client_api_version"
+              }
+
+              # Whether the process starts at all is decided by libmpv's own
+              # imports, and an upstream build is free to pick up a dependency on
+              # anything. Naming the unacceptable ones would only ever catch the
+              # breakage that already happened, so this is an allowlist: an import
+              # outside it is a decision to make, not a default to accept.
+              $allowed = @(
+                "advapi32.dll", "avrt.dll", "bcrypt.dll", "crypt32.dll",
+                "dwmapi.dll", "gdi32.dll", "imm32.dll", "kernel32.dll",
+                "msvcrt.dll", "ncrypt.dll", "ntdll.dll", "ole32.dll",
+                "secur32.dll", "shcore.dll", "shell32.dll", "shlwapi.dll",
+                "user32.dll", "uxtheme.dll", "ws2_32.dll"
+              )
+
+              $mpvImports = & $objdump.Path -p libmpv-2.dll |
+                Select-String "DLL Name:\s+(\S+)" |
+                ForEach-Object { $_.Matches[0].Groups[1].Value.ToLowerInvariant() } |
+                Sort-Object -Unique
+
+              $mpvImports
+
+              # api-ms-win-* are OS API sets, resolved by Windows itself.
+              $unexpected = $mpvImports |
+                Where-Object { $_ -notlike "api-ms-win-*" -and $allowed -notcontains $_ }
+
+              if ($unexpected) {
+                throw "libmpv-2.dll imports $($unexpected -join ', '), which this workflow has not reviewed; confirm Windows ships each one, then add it to the allowlist"
               }
             }
 

@@ -233,11 +233,17 @@ cp target/release/voicefox /usr/local/bin/
 
 ```bash
 # 在 Linux 上交叉编译 Windows 版本
-sudo apt install gcc-mingw-w64-x86-64
+sudo apt install gcc-mingw-w64-x86-64 p7zip-full
 rustup target add x86_64-pc-windows-gnu
 
-# 下载 Windows libmpv 开发包，将 libmpv.dll.a 和 libmpv-2.dll
-# 解压到 .deps/mpv/64 后编译
+# 取 audio-only 的 libmpv
+# 版本列表：https://github.com/Uyanide/mpv-winbuild-audio/releases
+tag=v0.41.0-1
+curl -LO "https://github.com/Uyanide/mpv-winbuild-audio/releases/download/$tag/libmpv-audio-x86_64-$tag.7z"
+
+mkdir -p .deps/mpv/64
+7z e "libmpv-audio-x86_64-$tag.7z" -o.deps/mpv/64 -r libmpv-2.dll libmpv.dll.a
+
 MPV_SOURCE="$PWD/.deps/mpv" cargo build --release \
   --target x86_64-pc-windows-gnu \
   --features lx-player/build_libmpv
@@ -251,7 +257,9 @@ MPV_SOURCE="$PWD/.deps/mpv" cargo build --release \
 
 ```powershell
 # 安装 Rust 和 MinGW-w64
-# 下载 Windows libmpv 开发包，将其解压到 .deps/mpv/64
+# 从 https://github.com/Uyanide/mpv-winbuild-audio/releases 下载
+# libmpv-audio-x86_64-<tag>.7z，把其中的 libmpv-2.dll 与 libmpv.dll.a
+# 解压到 .deps\mpv\64
 
 git clone https://github.com/emoeem/voicefox.git
 cd voicefox
