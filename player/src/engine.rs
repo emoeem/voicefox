@@ -5,13 +5,13 @@ use std::time::Duration;
 
 use anyhow::Context;
 use libmpv2::events::{Event, PropertyData};
-use libmpv2::{Format, Mpv, mpv_end_file_reason};
+use libmpv2::{Error, Format, Mpv, mpv_end_file_reason, mpv_error};
 use lx_core::model::source::PlayerState;
 use lx_core::traits::player::{
     AbLoop, AudioInfo, ChannelMode, EqualizerBand, Player, PlayerEvent, ReplayGainMode,
 };
 use tokio::sync::{mpsc, watch};
-use tracing::warn;
+use tracing::{debug, warn};
 
 const TIME_POS_OBSERVER: u64 = 1;
 const AUDIO_PTS_OBSERVER: u64 = 2;
@@ -97,7 +97,14 @@ impl MpvEngine {
                 // 进程内 libmpv 在网络流播放时多占用数百 MB（实测同一份配置下
                 // HTTP 播放 RSS 从约 76MB 涨到 568MB）。
                 init.set_option("config", false)?;
-                init.set_option("load-scripts", false)?;
+                // mpv defines this option only when built with a scripting
+                // backend. Its absence already means scripts cannot load.
+                match init.set_option("load-scripts", false) {
+                    Err(Error::Raw(mpv_error::OptionNotFound)) => {
+                        debug!("libmpv built without scripting support");
+                    }
+                    result => result?,
+                }
                 init.set_option("vo", "null")?;
                 init.set_option("cache", "yes")?;
                 init.set_option("audio-client-name", "voicefox")?;

@@ -92,12 +92,8 @@ jobs:
           "C:\msys64\mingw64\bin" |
             Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
-          # A general-purpose libmpv links against libraries that exist only once
-          # some driver or runtime has installed them. Every import is resolved
-          # before main() runs, so a single missing file stops the process from
-          # starting at all, with no error it could report. This build imports
-          # nothing beyond what Windows itself ships, and the sha256 fixes which
-          # bytes that is.
+          # Every import is resolved before main() runs, so the DLL must
+          # import only what Windows ships. The sha256 pins which bytes that is.
           $archive = "libmpv-audio-x86_64-${env:LIBMPV_TAG}.7z"
           $url = "https://github.com/Uyanide/mpv-winbuild-audio/releases/download/${env:LIBMPV_TAG}/$archive"
 
@@ -122,8 +118,8 @@ jobs:
             throw "Extracting libmpv failed with exit code $LASTEXITCODE"
           }
 
-          # The archive holds one version directory at its root; flatten the two
-          # files libmpv2 looks for into the $MPV_SOURCE/64 layout it expects.
+          # The archive holds one version directory at its root. Flatten the
+          # two files libmpv2 looks for into the $MPV_SOURCE/64 layout it expects.
           New-Item -ItemType Directory -Force -Path mpv-source/64 | Out-Null
 
           Get-ChildItem -Path libmpv-extract -Recurse -File |
@@ -221,9 +217,8 @@ jobs:
               Write-Warning "objdump.exe was not found; skipping import-table diagnostics"
             }
             else {
-              # Left as a string array. Out-String would collapse it into one
-              # value that Select-String matches as a single line, echoing the
-              # entire dump into the log.
+              # Select-String matches this array one element at a time, so the
+              # output holds one line per match.
               $imports = & $objdump.Path -p voicefox.exe
 
               $imports | Select-String "DLL Name:|mpv_client_api_version"
@@ -236,11 +231,8 @@ jobs:
                 throw "voicefox.exe does not import mpv_client_api_version"
               }
 
-              # Whether the process starts at all is decided by libmpv's own
-              # imports, and an upstream build is free to pick up a dependency on
-              # anything. Naming the unacceptable ones would only ever catch the
-              # breakage that already happened, so this is an allowlist: an import
-              # outside it is a decision to make, not a default to accept.
+              # Every import is resolved before main() runs, so each name here
+              # has been confirmed to ship with Windows.
               $allowed = @(
                 "advapi32.dll", "avrt.dll", "bcrypt.dll", "crypt32.dll",
                 "dwmapi.dll", "gdi32.dll", "imm32.dll", "kernel32.dll",
