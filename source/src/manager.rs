@@ -593,7 +593,11 @@ impl SourceManager {
         SourceId::all_online()
             .iter()
             .copied()
-            .filter(|source| enabled.contains(source) && self.sources.contains_key(source))
+            .filter(|source| {
+                enabled.contains(source)
+                    && self.sources.contains_key(source)
+                    && self.capabilities(*source).leaderboard
+            })
             .collect()
     }
 
@@ -720,7 +724,16 @@ impl SourceManager {
     }
 
     pub fn playlist_sources(&self) -> Vec<SourceId> {
-        self.leaderboard_sources()
+        let enabled = self.enabled.read().unwrap_or_else(|e| e.into_inner());
+        SourceId::all_online()
+            .iter()
+            .copied()
+            .filter(|source| {
+                enabled.contains(source)
+                    && self.sources.contains_key(source)
+                    && self.capabilities(*source).playlists
+            })
+            .collect()
     }
 
     fn online_source(&self, source: SourceId) -> Result<Arc<dyn MusicSource>, SearchError> {

@@ -1913,7 +1913,7 @@ checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
 name = "lx-core"
-version = "0.3.11"
+version = "0.3.12"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1927,7 +1927,7 @@ dependencies = [
 
 [[package]]
 name = "lx-lyric"
-version = "0.3.11"
+version = "0.3.12"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1940,7 +1940,7 @@ dependencies = [
 
 [[package]]
 name = "lx-player"
-version = "0.3.11"
+version = "0.3.12"
 dependencies = [
  "anyhow",
  "libmpv2",
@@ -1951,7 +1951,7 @@ dependencies = [
 
 [[package]]
 name = "lx-source"
-version = "0.3.11"
+version = "0.3.12"
 dependencies = [
  "aes",
  "anyhow",
@@ -1984,7 +1984,7 @@ dependencies = [
 
 [[package]]
 name = "lx-test"
-version = "0.3.11"
+version = "0.3.12"
 dependencies = [
  "lx-core",
  "lx-player",
@@ -4265,7 +4265,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "voicefox-app"
-version = "0.3.11"
+version = "0.3.12"
 dependencies = [
  "anyhow",
  "base64",

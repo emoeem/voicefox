@@ -10,7 +10,7 @@ use lx_core::model::playlist::{Playlist, PlaylistCategory};
 use lx_core::model::song::SongInfo;
 use lx_core::model::source::SourceId;
 use ratatui::buffer::Buffer;
-use ratatui::layout::{Alignment, Constraint, Direction, Layout, Position, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
@@ -1135,7 +1135,7 @@ impl PlaylistsPage {
                 }
             }
             MouseEventKind::Down(MouseButton::Left) => {
-                for (index, tab) in scope_tab_rects(page.scopes, self.scopes.len())
+                for (index, tab) in scope_tab_rects(page.scopes, &self.scopes)
                     .iter()
                     .enumerate()
                 {
@@ -1220,6 +1220,21 @@ impl PlaylistsPage {
     }
 
     pub fn render(&mut self, area: Rect, buf: &mut Buffer, ctx: &AppContext) {
+        let sources = ctx.source_manager.playlist_sources();
+        let current_scope = self.scopes.get(self.scope_index).copied();
+        let new_scopes = [PlaylistScope::Custom, PlaylistScope::Favorites]
+            .into_iter()
+            .chain(sources.into_iter().map(PlaylistScope::Source))
+            .collect::<Vec<_>>();
+        if new_scopes != self.scopes {
+            self.scopes = new_scopes;
+            self.scope_index = current_scope
+                .and_then(|cur| self.scopes.iter().position(|s| *s == cur))
+                .unwrap_or(0);
+            if self.scope_index >= self.scopes.len() {
+                self.scope_index = 0;
+            }
+        }
         let page = page_chunks(area, self.playlists.len());
         self.render_scopes(page.scopes, buf, ctx);
         self.render_playlists(page.playlists, buf, ctx);
@@ -1313,22 +1328,33 @@ impl PlaylistsPage {
     }
 
     fn render_scopes(&self, area: Rect, buf: &mut Buffer, ctx: &AppContext) {
-        for (index, tab) in scope_tab_rects(area, self.scopes.len()).iter().enumerate() {
-            let label = scope_label(self.scopes[index], area.width >= 66);
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+        let accent = crate::theme::accent(ctx);
+        let sel_fg = crate::theme::selection_fg(ctx);
+        let muted = crate::theme::muted(ctx);
+        let surface = crate::theme::surface0(ctx);
+
+        let mut row: Vec<Span> = Vec::new();
+        for (index, scope) in self.scopes.iter().enumerate() {
+            if index > 0 {
+                row.push(Span::styled("  ", Style::new().bg(surface)));
+            }
+            let label = format!(" {} ", scope_label(*scope, area.width >= 60));
             let style = if index == self.scope_index {
                 Style::new()
-                    .bg(crate::theme::accent(ctx))
-                    .fg(crate::theme::selection_fg(ctx))
+                    .bg(accent)
+                    .fg(sel_fg)
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::new().fg(crate::theme::muted(ctx))
+                Style::new().bg(surface).fg(muted)
             };
-            let label = format!(" {} ", label);
-            Paragraph::new(label)
-                .alignment(Alignment::Center)
-                .style(style)
-                .render(*tab, buf);
+            row.push(Span::styled(label, style));
         }
+        Paragraph::new(Line::from(row))
+            .style(Style::new().bg(surface))
+            .render(Rect::new(area.x, area.y, area.width, 1), buf);
     }
 
     fn render_playlists(&mut self, area: Rect, buf: &mut Buffer, ctx: &AppContext) {
@@ -1394,13 +1420,13 @@ impl PlaylistsPage {
             }
             if self.list_loaded && self.playlists.is_empty() {
                 let message = if self.is_custom_scope() {
-                    "暂无自建歌单，按 c 创建"
+                    "暂无自建歌单 · 按 c 创建一个"
                 } else if self.is_favorites_scope() {
-                    "暂无收藏歌单"
+                    "暂无收藏歌单 · 在其他歌单里右键收藏"
                 } else if self.current_source() == Some(SourceId::Bili) {
-                    "暂无收藏夹，或尚未登录哔哩哔哩"
+                    "暂无收藏夹 · 或尚未登录哔哩哔哩"
                 } else {
-                    "该音源暂无热门歌单"
+                    "该音源暂无热门歌单 · 试试切换其他音源"
                 };
                 render_muted(message, inner, buf, ctx);
                 return;
@@ -1459,22 +1485,38 @@ impl PlaylistsPage {
     }
 
     fn render_songs(&mut self, area: Rect, buf: &mut Buffer, ctx: &AppContext) {
-        let title = self
-            .current_playlist()
-            .map(|playlist| {
-                if self.is_custom_scope() {
-                    format!("自建 · {} · d 移除", playlist.name)
+        let title = {
+            let base = self
+                .current_playlist()
+                .map(|playlist| {
+                    if self.is_custom_scope() {
+                        format!("自建 · {} · d 移除", playlist.name)
+                    } else {
+                        format!("{} · {}", source_name(playlist.source), playlist.name)
+                    }
+                })
+                .unwrap_or_else(|| "歌曲列表".to_string());
+            if self.selected_playlist.is_some() {
+                let stat = if self.songs_loading {
+                    " · ⏳ 加载中".to_string()
+                } else if let Some(err) = &self.error_message {
+                    format!(" · ⚠ {}", err.chars().take(20).collect::<String>())
+                } else if self.songs_loaded {
+                    format!(" · {} 首", self.songs.len())
                 } else {
-                    format!("{} · {}", source_name(playlist.source), playlist.name)
-                }
-            })
-            .unwrap_or_else(|| "歌曲列表".to_string());
+                    String::new()
+                };
+                format!("{base}{stat}")
+            } else {
+                base
+            }
+        };
         let block = super::components::chrome::card(ctx, title);
         let inner = block.inner(area);
         block.render(area, buf);
 
         if self.selected_playlist.is_none() {
-            render_muted("选择一个歌单", inner, buf, ctx);
+            render_muted("左侧选一个歌单 · Enter 查看 · f 收藏", inner, buf, ctx);
             return;
         }
         if let Some(error) = &self.error_message {
@@ -1484,13 +1526,13 @@ impl PlaylistsPage {
             return;
         }
         if self.songs_loading {
-            render_muted("加载歌单歌曲...", inner, buf, ctx);
+            render_muted("⏳ 加载歌单歌曲...", inner, buf, ctx);
             return;
         }
         if self.songs_loaded && self.songs.is_empty() {
             render_muted(
                 if self.is_custom_scope() {
-                    "该自建歌单暂无歌曲，可在任意歌曲右键菜单中加入"
+                    "该自建歌单暂无歌曲 · 在任意歌曲右键菜单中加入"
                 } else {
                     "该歌单暂无歌曲"
                 },
@@ -1919,14 +1961,23 @@ fn name_input_with_cursor(value: &str, width: usize) -> String {
     visible.into_iter().chain(std::iter::once('█')).collect()
 }
 
-fn scope_tab_rects(area: Rect, count: usize) -> std::rc::Rc<[Rect]> {
-    if count == 0 {
-        return std::rc::Rc::from([]);
+fn scope_tab_rects(area: Rect, scopes: &[PlaylistScope]) -> Vec<Rect> {
+    if scopes.is_empty() {
+        return Vec::new();
     }
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints(vec![Constraint::Ratio(1, count as u32); count])
-        .split(area)
+    let gap = 2u16;
+    let mut rects = Vec::with_capacity(scopes.len());
+    let mut x = area.x;
+    for scope in scopes.iter() {
+        let label = scope_label(*scope, area.width >= 60);
+        let width = label.chars().count() as u16 + 2;
+        if x + width > area.x + area.width {
+            break;
+        }
+        rects.push(Rect::new(x, area.y, width.min(area.width), 1));
+        x += width + gap;
+    }
+    rects
 }
 
 fn ensure_visible(selected: usize, visible: usize, total: usize, offset: &mut usize) {
@@ -1944,12 +1995,11 @@ fn source_name(source: SourceId) -> &'static str {
     source.display_name()
 }
 
-fn scope_label(scope: PlaylistScope, full: bool) -> &'static str {
-    match (scope, full) {
-        (PlaylistScope::Custom, _) => "自建",
-        (PlaylistScope::Favorites, _) => "已收藏",
-        (PlaylistScope::Source(source), true) => source.display_label(),
-        (PlaylistScope::Source(source), false) => source.as_str(),
+fn scope_label(scope: PlaylistScope, _full: bool) -> &'static str {
+    match scope {
+        PlaylistScope::Custom => "自建",
+        PlaylistScope::Favorites => "已收藏",
+        PlaylistScope::Source(source) => source.display_name(),
     }
 }
 

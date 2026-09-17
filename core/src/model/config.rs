@@ -6,6 +6,39 @@ use crate::traits::player::EqualizerBand;
 
 pub const CURRENT_CONFIG_VERSION: u32 = 16;
 
+/// 侧边栏背景样式。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SidebarBg {
+    Transparent,
+    Mantle,
+    Surface0,
+    Surface1,
+    Base,
+}
+
+impl SidebarBg {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Transparent => "透明（跟随终端）",
+            Self::Mantle => "Mantle（默认深色）",
+            Self::Surface0 => "Surface0（稍亮）",
+            Self::Surface1 => "Surface1（更亮）",
+            Self::Base => "Base",
+        }
+    }
+
+    pub fn cycle_next(self) -> Self {
+        match self {
+            Self::Transparent => Self::Mantle,
+            Self::Mantle => Self::Surface0,
+            Self::Surface0 => Self::Surface1,
+            Self::Surface1 => Self::Base,
+            Self::Base => Self::Transparent,
+        }
+    }
+}
+
 /// 可显示在底部状态栏中的内容。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -265,6 +298,9 @@ pub struct UiConfig {
     pub aggregate_search: bool,
     /// 侧边导航是否使用终端原生背景，便于与透明终端主题融合。
     pub sidebar_transparent: bool,
+    /// 侧边栏背景样式（优先于 sidebar_transparent）。
+    #[serde(default)]
+    pub sidebar_style: Option<SidebarBg>,
     pub show_cover: bool,
     /// 封面渲染协议：auto / kitty / sixel / iterm2 / halfblocks。
     /// auto 表示由终端探测决定，探测不准时可以指定具体协议。
@@ -292,6 +328,7 @@ impl Default for UiConfig {
             scroll_amount: 3,
             aggregate_search: true,
             sidebar_transparent: false,
+            sidebar_style: None,
             show_cover: true,
             cover_protocol: "auto".to_string(),
             show_notifications: None,

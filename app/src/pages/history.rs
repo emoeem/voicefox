@@ -65,15 +65,15 @@ pub fn render(
         format!(" · 过滤 '{}' ({} 匹配)", filter.query(), history_len)
     };
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::new().fg(crate::theme::border(ctx)))
-        .title(format!(
+    let block = super::components::chrome::card(
+        ctx,
+        format!(
             "播放历史 ({} 首) · 排序 {} · s 切换{}",
             history_len,
             state.mode.label(SortTarget::History),
             filter_suffix
-        ));
+        ),
+    );
 
     let inner = block.inner(area);
     block.render(area, buf);
@@ -92,9 +92,9 @@ pub fn render(
     if history_len == 0 {
         Paragraph::new(Line::from(Span::styled(
             if filter.query().is_empty() {
-                "暂无播放历史"
+                "暂无播放历史 · 播放歌曲后会自动记录在这里"
             } else {
-                "无匹配历史记录，按 Esc 清除过滤"
+                "无匹配历史记录 · 按 Esc 清除过滤"
             },
             Style::new().fg(crate::theme::muted(ctx)),
         )))

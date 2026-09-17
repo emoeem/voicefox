@@ -64,7 +64,6 @@ impl DownloadsPanel {
         self.open = false;
     }
 
-    /// 专用下载页渲染：复用下载管理器的成熟布局，但不改变浮层开关状态。
     pub fn render_page(
         &mut self,
         area: Rect,
@@ -72,10 +71,119 @@ impl DownloadsPanel {
         ctx: &AppContext,
         tasks: &[DownloadTaskView],
     ) {
-        let was_open = self.open;
-        self.open = true;
-        self.render(area, buf, ctx, tasks);
-        self.open = was_open;
+        if area.width < 20 || area.height < 5 {
+            return;
+        }
+        use ratatui::layout::{Constraint, Direction, Layout};
+
+        let active = ctx.downloads.active_count();
+        let history = ctx.downloads.records_recent(HISTORY_LIMIT);
+        let history_rows = history_rows(history.len()) as u16;
+
+        let title_card = if tasks.is_empty() && history.is_empty() {
+            "下载 · 暂无任务"
+        } else if tasks.is_empty() {
+            &format!("下载 · 历史 {} 条", ctx.downloads.record_count())
+        } else {
+            let queued = tasks
+                .iter()
+                .filter(|t| t.state == DownloadState::Queued)
+                .count();
+            let done = tasks
+                .iter()
+                .filter(|t| t.state == DownloadState::Done)
+                .count();
+            let failed = tasks
+                .iter()
+                .filter(|t| matches!(t.state, DownloadState::Failed | DownloadState::Cancelled))
+                .count();
+            &format!(
+                "下载 · {} 条 · ▶ {} 进行 · {} 等待 · ✓ {} 完成 · ✗ {} 失败 · 历史 {} 条",
+                tasks.len(),
+                active,
+                queued,
+                done,
+                failed,
+                ctx.downloads.record_count(),
+            )
+        };
+        let card = super::components::chrome::card(ctx, title_card.to_string());
+        let inner = card.inner(area);
+        card.render(area, buf);
+
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Min(3),
+                Constraint::Length(history_rows.max(1)),
+                Constraint::Length(1),
+            ])
+            .split(inner);
+
+        let list_area = chunks[0];
+        let history_area = chunks[1];
+        let footer_area = chunks[2];
+
+        if tasks.is_empty() {
+            let hint = Line::from(vec![
+                Span::styled(
+                    "暂无下载任务  ",
+                    Style::new().fg(crate::theme::overlay1(ctx)),
+                ),
+                Span::styled(
+                    "D",
+                    Style::new()
+                        .fg(crate::theme::accent(ctx))
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    " 歌曲列表下载当前 · ",
+                    Style::new().fg(crate::theme::muted(ctx)),
+                ),
+                Span::styled(
+                    "Ctrl+s",
+                    Style::new()
+                        .fg(crate::theme::accent(ctx))
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    " 任意页下载 · 右键菜单也可下载",
+                    Style::new().fg(crate::theme::muted(ctx)),
+                ),
+            ]);
+            Paragraph::new(hint)
+                .wrap(ratatui::widgets::Wrap { trim: false })
+                .render(list_area, buf);
+        } else {
+            let rows = (list_area.height as usize) / 2;
+            self.clamp_scroll(tasks.len(), rows.max(1));
+            let width = list_area.width as usize;
+            let mut lines: Vec<Line> = Vec::new();
+            for (index, task) in tasks.iter().enumerate().skip(self.scroll).take(rows.max(1)) {
+                let selected = index == self.selected;
+                lines.push(task_title_line(task, selected, width, ctx));
+                lines.push(task_progress_line(task, selected, width, ctx));
+            }
+            Paragraph::new(lines).render(list_area, buf);
+        }
+
+        if !history.is_empty() {
+            render_history(history_area, buf, ctx, &history);
+        }
+
+        if footer_area.height > 0 && footer_area.width > 0 {
+            let mut parts: Vec<Span> = Vec::new();
+            parts.push(Span::styled(
+                format!("⌘ {}", ctx.downloads.download_dir().display()),
+                Style::new().fg(crate::theme::overlay1(ctx)),
+            ));
+            parts.push(Span::styled("   ", Style::new()));
+            parts.push(Span::styled(
+                "c 取消/移除 · x 清理完成 · C 清空历史 · Esc 返回",
+                Style::new().fg(crate::theme::muted(ctx)),
+            ));
+            Paragraph::new(Line::from(parts)).render(footer_area, buf);
+        }
     }
 
     /// 处理按键；`tasks` 为当前任务快照。
@@ -399,9 +507,7 @@ fn task_title_line(
     let name = truncate_to_width(&task.display_name(), width.saturating_sub(prefix_width + 8));
     let mut style = Style::new().fg(state_color);
     if selected {
-        style = style
-            .bg(crate::theme::surface0(ctx))
-            .add_modifier(Modifier::BOLD);
+        style = style.add_modifier(Modifier::BOLD);
     }
     Line::from(vec![
         Span::styled(
@@ -429,7 +535,7 @@ fn task_progress_line(
     let style = if selected {
         Style::new()
             .fg(crate::theme::text(ctx))
-            .bg(crate::theme::surface0(ctx))
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::new().fg(crate::theme::muted(ctx))
     };

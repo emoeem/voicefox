@@ -640,6 +640,7 @@ fn run_app(
         &enabled_sources,
     )));
     let settings_page = Arc::new(std::sync::Mutex::new(pages::settings::SettingsPage::new()));
+    let sources_page = Arc::new(std::sync::Mutex::new(pages::sources::SourcesPage::new()));
     let (cover_protocol, mut cover_enabled) = {
         let config = ctx.config.read().unwrap_or_else(|e| e.into_inner());
         (config.ui.cover_protocol.clone(), config.ui.show_cover)
@@ -1527,6 +1528,7 @@ fn run_app(
                 active_tab,
                 &search_page,
                 &settings_page,
+                &sources_page,
                 &mut main_page,
                 &mut leaderboard,
                 &mut playlists,
@@ -1563,7 +1565,7 @@ fn run_app(
         {
             let key = *key;
             // 1a. 侧边栏全局快捷键（1-0）—— 输入模式下跳过
-            let settings_input_mode = matches!(active_tab, NavTab::Settings | NavTab::Sources)
+            let settings_input_mode = active_tab == NavTab::Settings
                 && settings_page
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
@@ -1809,15 +1811,17 @@ fn run_app(
 
             // 设置页独占自己的选项键；数字键 1-0 则始终留给侧边栏。
             // 先判断页面归属，再分发全局快捷键。
-            let settings_owns_key = matches!(active_tab, NavTab::Settings | NavTab::Sources)
+            let settings_owns_key = active_tab == NavTab::Settings
                 && !text_input_active
                 && settings_page
                     .lock()
                     .unwrap()
                     .consumes_key(&key, &kb_resolver);
+            let sources_owns_key = active_tab == NavTab::Sources && !text_input_active;
 
             if !text_input_active
                 && !settings_owns_key
+                && !sources_owns_key
                 && let Some(tab) = pages::sidebar::handle_input(&key)
             {
                 active_tab = tab;
@@ -1827,7 +1831,10 @@ fn run_app(
 
             // 1b. 全局快捷键（查表模式）；页面专属动作在下方处理
             // 设置页的选项键覆盖了大半个字母表，与全局键位必然冲突，交由页面独占
-            if !settings_owns_key && let Some(action) = kb_resolver.resolve_global(&key) {
+            if !settings_owns_key
+                && !sources_owns_key
+                && let Some(action) = kb_resolver.resolve_global(&key)
+            {
                 match action {
                     Action::GlobalQuit if !text_input_active => {
                         tracing::info!("quit requested");
@@ -2231,15 +2238,11 @@ fn run_app(
                     needs_render = true;
                     continue;
                 }
-                NavTab::Sources | NavTab::Settings => {
+                NavTab::Sources => {
                     let action = {
-                        let mut sp = settings_page.lock().unwrap_or_else(|e| e.into_inner());
-                        if active_tab == NavTab::Sources {
-                            sp.focus_sources();
-                        }
-                        sp.handle_input(key, &ctx, &kb_resolver)
+                        let mut sp = sources_page.lock().unwrap_or_else(|e| e.into_inner());
+                        sp.handle_key(key, &ctx)
                     };
-                    // 扫码登录相关 action 需要发到 channel 交给主循环（生成二维码等）
                     if matches!(
                         action,
                         AppAction::QrLogin(_)
@@ -2248,7 +2251,30 @@ fn run_app(
                     ) {
                         let _ = action_tx.send(action);
                     } else {
-                        // 'z' 切换滚动步长；'j' 在设置页无功能，属死键，移除
+                        execute_action(
+                            action,
+                            &ctx,
+                            rt,
+                            &action_tx,
+                            &search_page,
+                            &settings_page,
+                            &search_seq,
+                        );
+                    }
+                }
+                NavTab::Settings => {
+                    let action = {
+                        let mut sp = settings_page.lock().unwrap_or_else(|e| e.into_inner());
+                        sp.handle_input(key, &ctx, &kb_resolver)
+                    };
+                    if matches!(
+                        action,
+                        AppAction::QrLogin(_)
+                            | AppAction::QrLogout(_)
+                            | AppAction::QrLoginSuccess(_)
+                    ) {
+                        let _ = action_tx.send(action);
+                    } else {
                         if matches!(key.code, KeyCode::Char('g' | 'w' | 'z' | 'K')) {
                             let config = ctx.config.read().unwrap_or_else(|e| e.into_inner());
                             search_page
@@ -2716,7 +2742,7 @@ fn run_app(
                 && matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
             {
                 let duration = *ctx.duration.borrow();
-                if let Some(position) = components::progress_bar::seek_position(
+                if let Some(position) = components::player_controls::seek_position(
                     ui_areas.progress,
                     mouse.column,
                     duration,
@@ -2841,7 +2867,11 @@ fn run_app(
                         &mut data_cache.history,
                         activate,
                     ),
-                    NavTab::Sources | NavTab::Settings => settings_page
+                    NavTab::Sources => sources_page
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .handle_mouse(mouse, ui_areas.content, &ctx),
+                    NavTab::Settings => settings_page
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
                         .handle_mouse(mouse, ui_areas.content, &ctx, &kb_resolver),
@@ -2906,6 +2936,7 @@ fn run_app(
                 active_tab,
                 &search_page,
                 &settings_page,
+                &sources_page,
                 &mut main_page,
                 &mut leaderboard,
                 &mut playlists,
@@ -2937,6 +2968,7 @@ fn draw_app(
     active_tab: NavTab,
     search_page: &Arc<std::sync::Mutex<pages::search::SearchPage>>,
     settings_page: &Arc<std::sync::Mutex<pages::settings::SettingsPage>>,
+    sources_page: &Arc<std::sync::Mutex<pages::sources::SourcesPage>>,
     main_page: &mut pages::main_page::MainPage,
     leaderboard: &mut pages::leaderboard::LeaderboardPage,
     playlists: &mut pages::playlists::PlaylistsPage,
@@ -2969,30 +3001,31 @@ fn draw_app(
         // TUI 2.0：固定导航 + 内容工作区 + 播放/状态底栏。
         let body = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Length(pages::sidebar::WIDTH),
-                Constraint::Min(30),
-            ])
+            .constraints([pages::sidebar::constraint(), Constraint::Min(30)])
             .split(area);
         let main_area = body[1];
         let main_chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(3), // header
+                Constraint::Length(1), // SourceBar (tab + 歌名)
                 Constraint::Min(3),    // page content
-                Constraint::Length(1), // playback progress
-                Constraint::Length(1), // status / download summary
+                Constraint::Length(3), // PlayerBar (歌名 / 进度 / 控制)
             ])
             .split(main_area);
 
+        let tab_label = active_tab.tab_label();
         pages::sidebar::render(body[0], frame.buffer_mut(), active_tab, ctx);
-        components::header::render(main_chunks[0], frame.buffer_mut(), ctx);
+        components::header::render(main_chunks[0], frame.buffer_mut(), ctx, tab_label);
         let content_area = main_chunks[1];
+        let controls_area = main_chunks[2];
         let tasks = ctx.downloads.snapshot();
+
+        components::player_controls::render(controls_area, frame.buffer_mut(), ctx);
+
         *ui_areas = UiAreas {
             tabs: body[0],
             content: content_area,
-            progress: main_chunks[2],
+            progress: controls_area,
             notification: Rect::default(),
         };
 
@@ -3024,8 +3057,7 @@ fn draw_app(
                 );
             }
             NavTab::Sources => {
-                let mut sp = settings_page.lock().unwrap_or_else(|e| e.into_inner());
-                sp.focus_sources();
+                let mut sp = sources_page.lock().unwrap_or_else(|e| e.into_inner());
                 sp.render(content_area, frame.buffer_mut(), ctx);
             }
             NavTab::Settings => {
@@ -3071,12 +3103,11 @@ fn draw_app(
                     } else {
                         String::new()
                     };
-                    let block = Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(Style::new().fg(crate::theme::muted(ctx)))
-                        .title(if is_scanning {
+                    let block = crate::pages::components::chrome::card(
+                        ctx,
+                        if is_scanning {
                             format!(
-                                "本地音乐 ({} 首，扫描中) · 排序 {} · s 切换{}{}",
+                                " 本地音乐 · {} 首 · ⏳ 扫描中 · 排序 {} · s 切换{}{} ",
                                 songs.len(),
                                 local_state.mode.label(SortTarget::Local),
                                 filter_suffix,
@@ -3084,13 +3115,14 @@ fn draw_app(
                             )
                         } else {
                             format!(
-                                "本地音乐 ({} 首) · 排序 {} · s 切换{}{}",
+                                " 本地音乐 · {} 首 · 排序 {} · s 切换{}{} ",
                                 songs.len(),
                                 local_state.mode.label(SortTarget::Local),
                                 filter_suffix,
                                 diagnostics
                             )
-                        });
+                        },
+                    );
                     let inner = block.inner(content_area);
                     block.render(content_area, frame.buffer_mut());
 
@@ -3244,20 +3276,6 @@ fn draw_app(
             p.render(overlay_area, frame.buffer_mut(), ctx);
         }
 
-        components::progress_bar::render(main_chunks[2], frame.buffer_mut(), ctx);
-        let sort_status = match active_tab {
-            NavTab::Favorites => Some(favorites_page.sort_label()),
-            NavTab::History => Some(history_state.mode.label(SortTarget::History)),
-            NavTab::LocalMusic => Some(local_state.mode.label(SortTarget::Local)),
-            _ => None,
-        };
-        components::status_bar::render(
-            main_chunks[3],
-            frame.buffer_mut(),
-            ctx,
-            sort_status,
-            nav_page_scope(active_tab),
-        );
         ui_areas.notification = components::notification::area(area, ctx).unwrap_or_default();
         components::notification::render(area, frame.buffer_mut(), ctx);
         if let Some(menu) = song_menu {

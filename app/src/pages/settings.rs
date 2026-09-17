@@ -198,6 +198,7 @@ pub struct SettingsPage {
 }
 
 impl SettingsPage {
+    #[allow(dead_code)]
     pub fn focus_sources(&mut self) {
         self.category = SettingsCategory::Sources;
     }
@@ -454,8 +455,18 @@ impl SettingsPage {
                     });
                 }
                 (KeyModifiers::NONE, KeyCode::Char('l')) => {
+                    use lx_core::model::config::SidebarBg;
                     self.update_config(ctx, |config| {
-                        config.ui.sidebar_transparent = !config.ui.sidebar_transparent;
+                        let current = config.ui.sidebar_style.unwrap_or({
+                            if config.ui.sidebar_transparent {
+                                SidebarBg::Transparent
+                            } else {
+                                SidebarBg::Mantle
+                            }
+                        });
+                        let next = current.cycle_next();
+                        config.ui.sidebar_transparent = matches!(next, SidebarBg::Transparent);
+                        config.ui.sidebar_style = Some(next);
                     });
                 }
                 (KeyModifiers::NONE, KeyCode::Char('w')) => {
@@ -2038,9 +2049,19 @@ impl SettingsPage {
                 accent,
                 muted,
             ),
-            setting_line(
-                "导航栏透明背景",
-                config.ui.sidebar_transparent,
+            setting_value_line(
+                "侧边栏背景",
+                {
+                    use lx_core::model::config::SidebarBg;
+                    let style = config.ui.sidebar_style.unwrap_or_else(|| {
+                        if config.ui.sidebar_transparent {
+                            SidebarBg::Transparent
+                        } else {
+                            SidebarBg::Mantle
+                        }
+                    });
+                    style.label()
+                },
                 "l",
                 accent,
                 muted,

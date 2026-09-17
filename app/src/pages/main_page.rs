@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use lx_core::events::{AppAction, Notification};
 use lx_core::keybinding::{Action, KeybindingResolver};
+use lx_core::model::source::PlayerState;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
@@ -437,14 +438,11 @@ impl MainPage {
         // 借用队列快照，每帧渲染不再复制整张播放列表。
         let songs = ctx.playlist.borrow();
         let current = ctx.playlist.current_index();
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::new().fg(crate::theme::border(ctx)))
-            .title(format!(" 队列 · {} 歌曲 ", songs.len()));
+        let block = super::components::chrome::card(ctx, format!(" 队列 · {} 歌曲 ", songs.len()));
         let inner = block.inner(area);
         block.render(area, buf);
         if songs.is_empty() {
-            Paragraph::new("队列为空")
+            Paragraph::new("队列为空 · 按 2 搜索歌曲并播放")
                 .style(Style::new().fg(crate::theme::muted(ctx)))
                 .render(inner, buf);
             return;
@@ -478,23 +476,60 @@ impl MainPage {
         }
         self.scroll = self.scroll.min(songs.len().saturating_sub(visible));
 
+        let playing = ctx.current_song.read().unwrap_or_else(|e| e.into_inner());
+        let playing_source_name = playing
+            .as_ref()
+            .map(|s| s.source.display_name().to_string())
+            .unwrap_or_default();
+        let state = *ctx.player_state.borrow();
+        let is_playing = matches!(state, PlayerState::Playing);
+
         for (row, index) in (self.scroll..songs.len().min(self.scroll + visible)).enumerate() {
-            let mut style = if index == current {
+            let song = &songs[index];
+            let is_current = index == current;
+            let is_selected = index == self.selected;
+
+            let marker = if is_current {
+                if is_playing { "▶ " } else { "♪ " }
+            } else if is_selected {
+                "▌ "
+            } else {
+                "  "
+            };
+
+            let mut spans: Vec<Span<'static>> = Vec::new();
+            let marker_style = if is_current {
+                Style::new()
+                    .fg(crate::theme::green(ctx))
+                    .add_modifier(Modifier::BOLD)
+            } else if is_selected {
                 Style::new().fg(accent).add_modifier(Modifier::BOLD)
             } else {
-                Style::new()
+                Style::new().fg(crate::theme::overlay0(ctx))
             };
-            if index == self.selected {
-                style = Style::new()
-                    .fg(crate::theme::selection_fg(ctx))
-                    .bg(accent)
-                    .add_modifier(Modifier::BOLD);
-            }
-            Paragraph::new(Line::from(Span::styled(
-                super::components::song_table::row(&songs[index], index, list.width),
-                style,
-            )))
-            .render(Rect::new(list.x, list.y + row as u16, list.width, 1), buf);
+            spans.push(Span::styled(marker, marker_style));
+
+            let row_style = if is_current {
+                let same_source = song.source.display_name() == playing_source_name.as_str();
+                if same_source {
+                    Style::new().fg(accent).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::new().fg(crate::theme::blue(ctx))
+                }
+            } else if is_selected {
+                Style::new()
+                    .fg(crate::theme::text(ctx))
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::new().fg(crate::theme::text(ctx))
+            };
+
+            let text =
+                super::components::song_table::row(song, index, list.width.saturating_sub(2));
+            spans.push(Span::styled(text, row_style));
+
+            Paragraph::new(Line::from(spans))
+                .render(Rect::new(list.x, list.y + row as u16, list.width, 1), buf);
         }
     }
 }
@@ -537,10 +572,7 @@ impl MainPage {
         ctx: &AppContext,
         geometry: CoverGeometry,
     ) {
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::new().fg(crate::theme::border(ctx)))
-            .title(" 封面 ");
+        let block = super::components::chrome::card(ctx, " 封面 ");
         let inner = block.inner(area);
         block.render(area, buf);
 

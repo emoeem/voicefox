@@ -16,19 +16,19 @@ use crate::context::AppContext;
 
 const SEARCH_SCOPES: &[(Option<SourceId>, &str)] = &[
     (None, "全部"),
-    (Some(SourceId::Kw), "酷我 kw"),
-    (Some(SourceId::Kg), "酷狗 kg"),
-    (Some(SourceId::Tx), "QQ tx"),
-    (Some(SourceId::Mg), "咪咕 mg"),
-    (Some(SourceId::Wy), "网易 wy"),
-    (Some(SourceId::Bili), "哔哩哔哩 bili"),
-    (Some(SourceId::Soda), "汽水 soda"),
-    (Some(SourceId::Qianqian), "千千 qianqian"),
-    (Some(SourceId::Joox), "JOOX joox"),
-    (Some(SourceId::Fivesing), "5sing fivesing"),
-    (Some(SourceId::Jamendo), "Jamendo jamendo"),
-    (Some(SourceId::Apple), "Apple Music apple"),
-    (Some(SourceId::Local), "本地 local"),
+    (Some(SourceId::Kw), "酷我"),
+    (Some(SourceId::Kg), "酷狗"),
+    (Some(SourceId::Tx), "QQ音乐"),
+    (Some(SourceId::Mg), "咪咕"),
+    (Some(SourceId::Wy), "网易云"),
+    (Some(SourceId::Bili), "哔哩哔哩"),
+    (Some(SourceId::Soda), "汽水音乐"),
+    (Some(SourceId::Qianqian), "千千音乐"),
+    (Some(SourceId::Joox), "JOOX"),
+    (Some(SourceId::Fivesing), "5sing"),
+    (Some(SourceId::Jamendo), "Jamendo"),
+    (Some(SourceId::Apple), "Apple Music"),
+    (Some(SourceId::Local), "本地"),
 ];
 
 /// Deferred multi-part selection. It owns the original result list so confirming a part can
@@ -677,6 +677,16 @@ impl SearchPage {
     }
 
     pub fn render(&mut self, area: Rect, buf: &mut Buffer, ctx: &AppContext) {
+        let current_enabled = ctx.source_manager.enabled_sources();
+        let updated = enabled_search_scopes(&current_enabled);
+        if updated != self.search_scopes {
+            self.search_scopes = updated;
+            if let Some(source) = self.source_filter
+                && !self.search_scopes.iter().any(|(s, _)| *s == Some(source))
+            {
+                self.source_filter = None;
+            }
+        }
         let accent = crate::theme::accent(ctx);
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -846,32 +856,38 @@ impl SearchPage {
             .iter()
             .position(|(scope, _)| *scope == self.source_filter)
             .unwrap_or(0);
-        for (index, tab_area) in source_tab_areas(area, self.search_scopes.len())
-            .iter()
-            .copied()
-            .enumerate()
-        {
-            let label = if area.width >= 66 {
-                self.search_scopes[index].1
+        let tabs = compact_source_tabs(area, &self.search_scopes);
+        let accent = crate::theme::accent(ctx);
+        let sel_fg = crate::theme::selection_fg(ctx);
+        let muted = crate::theme::muted(ctx);
+        let dim = crate::theme::overlay0(ctx);
+        let surface = crate::theme::surface0(ctx);
+
+        let mut row: Vec<Span> = Vec::new();
+        for (i, tab) in tabs.iter().enumerate() {
+            if i > 0 {
+                row.push(Span::styled(" ", Style::new().bg(surface)));
+                row.push(Span::styled(" ", Style::new().bg(surface)));
+            }
+            let label = if i == selected {
+                format!(" {} ", tab.label)
             } else {
-                self.search_scopes[index]
-                    .0
-                    .map(|source| source.as_str())
-                    .unwrap_or("all")
+                format!(" {} ", tab.label)
             };
-            let style = if index == selected {
+            let style = if i == selected {
                 Style::new()
-                    .fg(crate::theme::selection_fg(ctx))
-                    .bg(crate::theme::accent(ctx))
+                    .bg(accent)
+                    .fg(sel_fg)
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::new().fg(crate::theme::muted(ctx))
+                Style::new().bg(surface).fg(muted)
             };
-            Paragraph::new(Line::from(Span::styled(label, style)))
-                .alignment(ratatui::layout::Alignment::Center)
-                .style(style)
-                .render(tab_area, buf);
+            row.push(Span::styled(label, style));
         }
+        Paragraph::new(Line::from(row))
+            .style(Style::new().bg(surface))
+            .render(Rect::new(area.x, area.y, area.width, 1), buf);
+        let _ = dim;
     }
 
     pub fn handle_mouse(&mut self, event: MouseEvent, area: Rect, activate: bool) -> AppAction {
@@ -901,9 +917,9 @@ impl SearchPage {
         }
         if chunks[1].contains((event.column, event.row).into())
             && matches!(event.kind, MouseEventKind::Down(MouseButton::Left))
-            && let Some(index) = source_tab_areas(chunks[1], self.search_scopes.len())
+            && let Some(index) = compact_source_tabs(chunks[1], &self.search_scopes)
                 .iter()
-                .position(|tab| tab.contains((event.column, event.row).into()))
+                .position(|tab| tab.rect.contains((event.column, event.row).into()))
         {
             self.input_mode = false;
             return self.select_source(index);
@@ -1443,17 +1459,41 @@ impl SearchPage {
     }
 }
 
-fn source_tab_areas(area: Rect, count: usize) -> std::rc::Rc<[Rect]> {
-    if count == 0 {
-        return std::rc::Rc::from([]);
+#[derive(Clone)]
+struct CompactTabRect {
+    label: String,
+    rect: Rect,
+}
+
+fn compact_source_tabs(
+    area: Rect,
+    scopes: &[(Option<SourceId>, &'static str)],
+) -> Vec<CompactTabRect> {
+    let gap = 3u16;
+    let max_label_width = 7u16;
+    let mut tabs = Vec::with_capacity(scopes.len());
+    let mut x = area.x;
+    for (i, (source, full_label)) in scopes.iter().enumerate() {
+        let _ = source;
+        let label = full_label.to_string();
+        let display = label
+            .chars()
+            .take(max_label_width as usize)
+            .collect::<String>();
+        let width = display.chars().count() as u16;
+        if x + width > area.x + area.width {
+            break;
+        }
+        let rect = Rect::new(x, area.y, width.min(area.width), 2);
+        tabs.push(CompactTabRect {
+            label: display,
+            rect,
+        });
+        let advance = width + gap;
+        x = (x + advance).min(area.x + area.width);
+        let _ = i;
     }
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints(std::iter::repeat_n(
-            Constraint::Ratio(1, count as u32),
-            count,
-        ))
-        .split(area)
+    tabs
 }
 
 fn enabled_search_scopes(enabled_sources: &[SourceId]) -> Vec<(Option<SourceId>, &'static str)> {

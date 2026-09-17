@@ -9,7 +9,7 @@ use lx_core::model::leaderboard::LeaderboardInfo;
 use lx_core::model::song::SongInfo;
 use lx_core::model::source::SourceId;
 use ratatui::buffer::Buffer;
-use ratatui::layout::{Alignment, Constraint, Direction, Layout, Position, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Widget};
@@ -65,6 +65,21 @@ impl LeaderboardPage {
         self.sources.get(self.source_index).copied()
     }
 
+    /// 重新从 SourceManager 拉取可用音源；设置页启用/禁用音源后自动生效。
+    /// 保留已选中 source 的缓存和选择位置。
+    pub fn update_sources(&mut self, sources: Vec<SourceId>) {
+        let old_current = self.current_source();
+        self.sources = sources;
+        self.source_index = self
+            .sources
+            .iter()
+            .position(|s| Some(*s) == old_current)
+            .unwrap_or(0);
+        if self.sources.is_empty() {
+            self.source_index = 0;
+        }
+    }
+
     pub fn current_board(&self) -> Option<&LeaderboardInfo> {
         self.selected_board.and_then(|index| self.boards.get(index))
     }
@@ -82,6 +97,20 @@ impl LeaderboardPage {
             return Some(LeaderboardLoadRequest::Boards { source });
         }
         None
+    }
+
+    fn sync_source_state(&mut self) {
+        if self.source_index >= self.sources.len() {
+            self.source_index = self.sources.len().saturating_sub(1);
+        }
+        if self.sources.is_empty() {
+            self.boards.clear();
+            self.boards_loaded = false;
+            self.songs.clear();
+            self.songs_loaded = false;
+            self.selected_board = None;
+            self.error_message = None;
+        }
     }
 
     pub fn begin_loading(&mut self, request: &LeaderboardLoadRequest) {
@@ -332,6 +361,11 @@ impl LeaderboardPage {
     }
 
     pub fn render(&mut self, area: Rect, buf: &mut Buffer, ctx: &AppContext) {
+        let current_sources = ctx.source_manager.leaderboard_sources();
+        if current_sources != self.sources {
+            self.update_sources(current_sources);
+        }
+        self.sync_source_state();
         let page = page_chunks(area, self.boards.len());
         self.render_sources(page.sources, buf, ctx);
         self.render_boards(page.boards, buf, ctx);
@@ -363,7 +397,7 @@ impl LeaderboardPage {
                     (self.selected + scroll_amount).min(self.current_list_len().saturating_sub(1));
             }
             MouseEventKind::Down(MouseButton::Left) => {
-                for (index, tab) in source_tab_rects(page.sources, self.sources.len())
+                for (index, tab) in source_tab_rects(page.sources, &self.sources)
                     .iter()
                     .enumerate()
                 {
@@ -431,40 +465,52 @@ impl LeaderboardPage {
             return;
         }
         let accent = crate::theme::accent(ctx);
-        for (index, tab) in source_tab_rects(area, self.sources.len())
-            .iter()
-            .enumerate()
-        {
-            let source = self.sources[index];
-            let label = if area.width >= 48 {
-                source_label(source)
-            } else {
-                source.as_str()
-            };
+        let sel_fg = crate::theme::selection_fg(ctx);
+        let muted = crate::theme::muted(ctx);
+        let surface = crate::theme::surface0(ctx);
+
+        let mut row: Vec<Span> = Vec::new();
+        for (index, source) in self.sources.iter().enumerate() {
+            if index > 0 {
+                row.push(Span::styled("  ", Style::new().bg(surface)));
+            }
+            let label = format!(" {} ", source_name(*source));
             let style = if index == self.source_index {
                 Style::new()
                     .bg(accent)
-                    .fg(crate::theme::selection_fg(ctx))
+                    .fg(sel_fg)
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::new().fg(crate::theme::muted(ctx))
+                Style::new().bg(surface).fg(muted)
             };
-            Paragraph::new(label)
-                .alignment(Alignment::Center)
-                .style(style)
-                .render(*tab, buf);
+            row.push(Span::styled(label, style));
         }
+        Paragraph::new(Line::from(row))
+            .style(Style::new().bg(surface))
+            .render(Rect::new(area.x, area.y, area.width, 1), buf);
     }
 
     fn render_boards(&mut self, area: Rect, buf: &mut Buffer, ctx: &AppContext) {
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::new().fg(crate::theme::border(ctx)))
-            .title(format!("榜单 ({})", self.boards.len()));
+        let source_label = self
+            .current_source()
+            .map(|s| source_name(s).to_string())
+            .unwrap_or_else(|| "—".to_string());
+        let status = if self.sources.is_empty() {
+            String::new()
+        } else if self.boards_loading {
+            " · ⏳ 加载中".to_string()
+        } else if let Some(err) = &self.error_message {
+            format!(" · ⚠ {}", err.chars().take(24).collect::<String>())
+        } else if self.boards_loaded {
+            format!(" · {} 榜", self.boards.len())
+        } else {
+            String::new()
+        };
+        let block = super::components::chrome::card(ctx, format!("榜单 · {source_label}{status}"));
         let inner = block.inner(area);
         block.render(area, buf);
         if self.sources.is_empty() {
-            self.render_muted("没有启用在线音源", inner, buf, ctx);
+            self.render_muted("没有启用在线音源 · 按 9 前往音源页面启用", inner, buf, ctx);
             return;
         }
         if self.selected_board.is_none() {
@@ -479,7 +525,7 @@ impl LeaderboardPage {
                 return;
             }
             if self.boards_loaded && self.boards.is_empty() {
-                self.render_muted("该音源暂无榜单", inner, buf, ctx);
+                self.render_muted("该音源暂无榜单 · 按 R 切换音源或刷新", inner, buf, ctx);
                 return;
             }
         }
@@ -535,19 +581,25 @@ impl LeaderboardPage {
     }
 
     fn render_songs(&mut self, area: Rect, buf: &mut Buffer, ctx: &AppContext) {
-        let title = self
-            .current_board()
-            .map(|board| format!("{} · {}", source_name(board.source), board.name))
-            .unwrap_or_else(|| "歌曲列表".to_string());
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::new().fg(crate::theme::border(ctx)))
-            .title(title);
+        let title = {
+            let base = self
+                .current_board()
+                .map(|board| format!("{} · {}", source_name(board.source), board.name))
+                .unwrap_or_else(|| "歌曲列表".to_string());
+            if self.songs_loading {
+                format!("{base} · ⏳ 加载中")
+            } else if self.songs_loaded {
+                format!("{base} · {} 首", self.songs.len())
+            } else {
+                base
+            }
+        };
+        let block = super::components::chrome::focused_card(ctx, title);
         let inner = block.inner(area);
         block.render(area, buf);
 
         if self.selected_board.is_none() {
-            self.render_muted("选择一个榜单", inner, buf, ctx);
+            self.render_muted("选择左侧一个榜单开始浏览", inner, buf, ctx);
             return;
         }
         if let Some(error) = &self.error_message {
@@ -561,7 +613,7 @@ impl LeaderboardPage {
             return;
         }
         if self.songs_loaded && self.songs.is_empty() {
-            self.render_muted("该榜单暂无歌曲", inner, buf, ctx);
+            self.render_muted("该榜单暂无歌曲 · 按 R 刷新或换一个榜单", inner, buf, ctx);
             return;
         }
         if self.songs.is_empty() || inner.height == 0 {
@@ -812,14 +864,23 @@ fn page_chunks(area: Rect, board_count: usize) -> PageChunks {
     }
 }
 
-fn source_tab_rects(area: Rect, count: usize) -> std::rc::Rc<[Rect]> {
-    if count == 0 {
-        return std::rc::Rc::from([]);
+fn source_tab_rects(area: Rect, sources: &[SourceId]) -> Vec<Rect> {
+    if sources.is_empty() {
+        return Vec::new();
     }
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints(vec![Constraint::Ratio(1, count as u32); count])
-        .split(area)
+    let gap = 2u16;
+    let mut rects = Vec::with_capacity(sources.len());
+    let mut x = area.x;
+    for (i, source) in sources.iter().enumerate() {
+        let label = source_name(*source).chars().count() as u16 + 2;
+        if x + label > area.x + area.width {
+            break;
+        }
+        rects.push(Rect::new(x, area.y, label.min(area.width), 1));
+        x += label + gap;
+        let _ = i;
+    }
+    rects
 }
 
 fn ensure_visible(selected: usize, visible: usize, total: usize, offset: &mut usize) {
@@ -829,10 +890,6 @@ fn ensure_visible(selected: usize, visible: usize, total: usize, offset: &mut us
 
 fn source_name(source: SourceId) -> &'static str {
     source.display_name()
-}
-
-fn source_label(source: SourceId) -> &'static str {
-    source.display_label()
 }
 
 fn truncate_chars(value: &str, max: usize) -> String {
