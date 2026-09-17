@@ -161,7 +161,7 @@ pub fn render(area: Rect, buf: &mut Buffer, active: NavTab, ctx: &crate::context
     }
     if inner.height >= 4 {
         Paragraph::new(Line::from(Span::styled(
-            "↑↓ 导航 · Enter 选择",
+            "1-0 切页 · Tab/Shift+Tab 切换 · \\ 关闭帮助",
             Style::new().fg(crate::theme::overlay1(ctx)),
         )))
         .block(Block::default().padding(ratatui::widgets::Padding::left(1)))

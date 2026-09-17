@@ -663,7 +663,7 @@ fn run_app(
     let mut ui_areas = UiAreas::default();
     let mut click_tracker = ClickTracker::default();
     let mut qr_login_page: Option<Arc<std::sync::Mutex<pages::qr_login::QrLoginPage>>> = None;
-    // 快捷键说明浮层（? / F1 开关）
+    // 快捷键说明浮层（? / \ 开关）
     let mut help_page: Option<pages::help::HelpPage> = None;
     // 下载面板浮层（Ctrl+o 开关）
     let mut downloads_panel = pages::downloads::DownloadsPanel::new();
@@ -1711,7 +1711,7 @@ fn run_app(
                 continue;
             }
 
-            // 快捷键说明浮层：? / F1 开关；打开时独占按键
+            // 快捷键说明浮层：? / \ 开关；打开时独占按键
             if help_page.is_some() {
                 let keep = help_page
                     .as_mut()
@@ -1726,7 +1726,7 @@ fn run_app(
             if !text_input_active
                 && matches!(
                     (key.modifiers, key.code),
-                    (KeyModifiers::NONE, KeyCode::Char('\\'))
+                    (KeyModifiers::NONE, KeyCode::Char('?') | KeyCode::Char('\\'))
                 )
             {
                 help_page = Some(pages::help::HelpPage::from_config(
@@ -2845,7 +2845,11 @@ fn run_app(
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
                         .handle_mouse(mouse, ui_areas.content, &ctx, &kb_resolver),
-                    NavTab::Downloads => AppAction::None,
+                    NavTab::Downloads => {
+                        let tasks = ctx.downloads.snapshot();
+                        downloads_panel.handle_mouse(mouse, ui_areas.content, &tasks);
+                        AppAction::None
+                    }
                     NavTab::LocalMusic => pages::local_music::handle_mouse(
                         mouse,
                         ui_areas.content,
@@ -3103,9 +3107,11 @@ fn draw_app(
                     }
 
                     if paths.is_empty() {
-                        Paragraph::new(Line::from(" 未配置音乐目录，请在设置（8）中添加"))
-                            .style(Style::new().fg(Color::DarkGray))
-                            .render(inner, frame.buffer_mut());
+                        Paragraph::new(Line::from(
+                            " 未配置音乐目录，请在设置（0）→ 数据与本地库中添加",
+                        ))
+                        .style(Style::new().fg(Color::DarkGray))
+                        .render(inner, frame.buffer_mut());
                         break 'local_content;
                     }
 
@@ -3245,7 +3251,13 @@ fn draw_app(
             NavTab::LocalMusic => Some(local_state.mode.label(SortTarget::Local)),
             _ => None,
         };
-        components::status_bar::render(main_chunks[3], frame.buffer_mut(), ctx, sort_status);
+        components::status_bar::render(
+            main_chunks[3],
+            frame.buffer_mut(),
+            ctx,
+            sort_status,
+            nav_page_scope(active_tab),
+        );
         ui_areas.notification = components::notification::area(area, ctx).unwrap_or_default();
         components::notification::render(area, frame.buffer_mut(), ctx);
         if let Some(menu) = song_menu {

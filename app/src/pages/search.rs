@@ -747,7 +747,7 @@ impl SearchPage {
                 (None, None) => String::new(),
             };
             format!(
-                "搜索结果 {}/{}{}{} · v 音源 · @ 歌手(再按删除) · # 专辑(再按删除)",
+                "搜索结果 {}/{}{}{} · v 聚合/单源 · ←→ 音源 · @ 歌手(再按删除) · # 专辑(再按删除)",
                 self.results.len(),
                 self.total,
                 loading_more,

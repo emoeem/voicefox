@@ -1,5 +1,6 @@
 //! 底部状态栏
 
+use lx_core::keybinding::{Action, KeybindingConfig};
 use lx_core::model::config::StatusBarItem;
 use lx_core::model::source::PlayerState;
 use ratatui::buffer::Buffer;
@@ -11,7 +12,13 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::context::AppContext;
 
-pub fn render(area: Rect, buf: &mut Buffer, ctx: &AppContext, sort_status: Option<&'static str>) {
+pub fn render(
+    area: Rect,
+    buf: &mut Buffer,
+    ctx: &AppContext,
+    sort_status: Option<&'static str>,
+    page_scope: &str,
+) {
     if area.height == 0 || area.width == 0 {
         return;
     }
@@ -29,9 +36,13 @@ pub fn render(area: Rect, buf: &mut Buffer, ctx: &AppContext, sort_status: Optio
     let volume = ctx.player.volume();
     let queue = ctx.playlist.borrow();
     let queue_index = ctx.playlist.current_index();
-    let (quality, status_bar_items) = {
+    let (quality, status_bar_items, keybindings) = {
         let config = ctx.config.read().unwrap_or_else(|e| e.into_inner());
-        (config.player.quality, config.ui.status_bar_items.clone())
+        (
+            config.player.quality,
+            config.ui.status_bar_items.clone(),
+            config.keybindings.clone(),
+        )
     };
 
     let (state_text, state_color) = match state {
@@ -206,9 +217,85 @@ pub fn render(area: Rect, buf: &mut Buffer, ctx: &AppContext, sort_status: Optio
         }
     }
 
+    let hint = page_hint(page_scope, &keybindings);
+    if !hint.is_empty() {
+        append_segment(
+            &mut spans,
+            &mut used_width,
+            total_width,
+            hint,
+            Style::new().fg(crate::theme::overlay1(ctx)).bg(background),
+            ctx,
+            background,
+        );
+    }
+
     Paragraph::new(Line::from(spans))
         .style(Style::new().bg(background))
         .render(Rect::new(area.x, area.y, area.width, 1), buf);
+}
+
+fn configured_key(config: &KeybindingConfig, page: &str, action: Action, fallback: &str) -> String {
+    config
+        .pages
+        .get(page)
+        .and_then(|bindings| bindings.get(&action))
+        .map(|key| key.as_str())
+        .unwrap_or(fallback)
+        .to_string()
+}
+
+fn page_hint(page: &str, config: &KeybindingConfig) -> String {
+    match page {
+        "main" => format!(
+            "{} / {} 上下 · Enter 播放 · a 加队尾 · D 清空",
+            configured_key(config, page, Action::ListSelectUp, "k"),
+            configured_key(config, page, Action::ListSelectDown, "j")
+        ),
+        "search" => format!(
+            "{} 搜索 · {} 播放 · {} 收藏 · {} 下载 · ←/→ 音源",
+            configured_key(config, page, Action::SearchInputMode, "i"),
+            configured_key(config, page, Action::ListActivate, "l"),
+            configured_key(config, page, Action::ListToggleFavorite, "f"),
+            configured_key(config, page, Action::ListDownload, "D"),
+        ),
+        "leaderboard" | "playlists" => format!(
+            "{} / {} 导航 · Enter 进入/播放 · a 加队列 · {} 下载 · Esc 返回",
+            configured_key(config, page, Action::ListSelectUp, "k"),
+            configured_key(config, page, Action::ListSelectDown, "j"),
+            configured_key(config, page, Action::ListDownload, "D"),
+        ),
+        "favorites" => format!(
+            "{} / {} 导航 · Enter 播放 · {} 收藏 · {} 下载 · {} 排序 · / 筛选",
+            configured_key(config, page, Action::ListSelectUp, "k"),
+            configured_key(config, page, Action::ListSelectDown, "j"),
+            configured_key(config, page, Action::ListToggleFavorite, "f"),
+            configured_key(config, page, Action::ListDownload, "D"),
+            configured_key(config, page, Action::ListCycleSort, "s"),
+        ),
+        "history" => format!(
+            "{} / {} 导航 · Enter 播放 · {} 下载 · {} 排序 · / 筛选 · D 清空",
+            configured_key(config, page, Action::ListSelectUp, "k"),
+            configured_key(config, page, Action::ListSelectDown, "j"),
+            configured_key(config, page, Action::ListDownload, "D"),
+            configured_key(config, page, Action::ListCycleSort, "s"),
+        ),
+        "local" => format!(
+            "{} / {} 导航 · Enter 播放 · {} 加队列 · {} 排序 · {} 扫描 · {} 删除 · / 筛选",
+            configured_key(config, page, Action::ListSelectUp, "k"),
+            configured_key(config, page, Action::ListSelectDown, "j"),
+            configured_key(config, page, Action::ListAddToQueue, "a"),
+            configured_key(config, page, Action::ListCycleSort, "s"),
+            configured_key(config, page, Action::LocalRescan, "r"),
+            configured_key(config, page, Action::LocalDelete, "d"),
+        ),
+        "downloads" => {
+            "↑/k ↓/j 导航 · d 取消/移除 · x 清理完成 · C 清空历史 · Esc 返回".to_string()
+        }
+        "sources" => "←/→ 分类 · s 切换区域 · a 添加 · d 删除 · h 检测 · l 导航栏透明".to_string(),
+        "settings" => "←/→ 分类 · s 切换区域 · 1-0 切换页面 · Esc 取消输入".to_string(),
+        _ => String::new(),
+    }
 }
 
 fn separator(ctx: &AppContext, background: ratatui::style::Color) -> Span<'static> {
@@ -236,8 +323,8 @@ fn download_indicator(ctx: &AppContext) -> Option<String> {
         Some((average * 100.0).round() as u32)
     };
     Some(match percent {
-        Some(percent) => format!("下载 {} 项 {percent}% (Ctrl+O)", active.len()),
-        None => format!("下载 {} 项 (Ctrl+O)", active.len()),
+        Some(percent) => format!("下载 {} 项 {percent}% (Ctrl+o)", active.len()),
+        None => format!("下载 {} 项 (Ctrl+o)", active.len()),
     })
 }
 

@@ -2,7 +2,7 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
+use ratatui::layout::{Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph, Widget};
@@ -150,6 +150,52 @@ impl DownloadsPanel {
             _ => return PanelOutcome::Ignore,
         }
         PanelOutcome::Consumed
+    }
+
+    /// 鼠标操作与键盘列表行为保持一致：滚轮移动，左键选择。
+    /// 下载任务没有可直接播放的 SongInfo，因此这里不伪造右键歌曲菜单。
+    pub fn handle_mouse(
+        &mut self,
+        event: crossterm::event::MouseEvent,
+        area: Rect,
+        tasks: &[DownloadTaskView],
+    ) -> bool {
+        match event.kind {
+            crossterm::event::MouseEventKind::ScrollUp => {
+                self.selected = self.selected.saturating_sub(1);
+                true
+            }
+            crossterm::event::MouseEventKind::ScrollDown => {
+                self.selected = (self.selected + 1).min(tasks.len().saturating_sub(1));
+                true
+            }
+            crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left)
+                if !tasks.is_empty() =>
+            {
+                let inner = Rect::new(
+                    area.x
+                        + area
+                            .width
+                            .saturating_sub(area.width.saturating_sub(2).clamp(20, 96))
+                            / 2
+                        + 1,
+                    area.y + 1,
+                    area.width.saturating_sub(4).clamp(16, 94),
+                    area.height.saturating_sub(2),
+                );
+                if inner.contains(Position::new(event.column, event.row)) {
+                    let row = event.row.saturating_sub(inner.y) as usize / 2;
+                    let rows = (inner.height as usize / 2).max(1);
+                    let index = self.scroll + row;
+                    if row < rows && index < tasks.len() {
+                        self.selected = index;
+                        return true;
+                    }
+                }
+                false
+            }
+            _ => false,
+        }
     }
 
     /// 把选中项保持在可视区域内。

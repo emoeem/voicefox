@@ -31,6 +31,25 @@ impl HelpPage {
     pub fn from_config(config: &KeybindingConfig) -> Self {
         let mut sections = Vec::new();
 
+        sections.push(Section {
+            title: "侧边栏导航（固定）".to_string(),
+            entries: vec![
+                ("1".to_string(), "队列"),
+                ("2".to_string(), "搜索"),
+                ("3".to_string(), "排行榜"),
+                ("4".to_string(), "歌单"),
+                ("5".to_string(), "收藏"),
+                ("6".to_string(), "历史"),
+                ("7".to_string(), "本地音乐"),
+                ("8".to_string(), "下载"),
+                ("9".to_string(), "音源"),
+                ("0".to_string(), "设置"),
+                ("Tab".to_string(), "下一个标签页"),
+                ("Shift+Tab".to_string(), "上一个标签页"),
+                ("? / \\".to_string(), "打开 / 关闭快捷键说明"),
+            ],
+        });
+
         let mut global: Vec<(String, &'static str)> = config
             .global
             .iter()
@@ -40,6 +59,39 @@ impl HelpPage {
         sections.push(Section {
             title: "全局快捷键".to_string(),
             entries: global,
+        });
+
+        let downloads = vec![
+            ("j / ↓".to_string(), "选择下一项"),
+            ("k / ↑".to_string(), "选择上一项"),
+            ("g / Home".to_string(), "跳到第一项"),
+            ("G / End".to_string(), "跳到最后一项"),
+            ("Ctrl+d / PageDown".to_string(), "向下翻页"),
+            ("Ctrl+u / PageUp".to_string(), "向上翻页"),
+            ("c / d / Delete".to_string(), "取消任务 / 移除记录"),
+            ("x".to_string(), "清理已完成记录"),
+            ("C".to_string(), "清空下载历史"),
+            ("Esc / q".to_string(), "关闭下载浮层"),
+        ];
+        sections.push(Section {
+            title: "下载页 / 下载面板".to_string(),
+            entries: downloads,
+        });
+
+        // 音源页复用设置页的实际处理器，因此这里明确展示它真正响应的键，
+        // 不虚构一个独立的 `sources` keybinding scope。
+        sections.push(Section {
+            title: "音源页（复用设置键位）".to_string(),
+            entries: vec![
+                ("← / →".to_string(), "切换设置分类"),
+                ("s".to_string(), "切换管理区域"),
+                ("a".to_string(), "添加 JS 音源"),
+                ("d".to_string(), "删除选中的 JS 音源（需再次确认）"),
+                ("h".to_string(), "检测音源健康状态"),
+                ("y / K".to_string(), "选择 / 切换内置音源"),
+                ("b".to_string(), "打开扫码登录选择器"),
+                ("l".to_string(), "切换导航栏透明背景"),
+            ],
         });
 
         for (page, display) in PAGE_ORDER {
@@ -67,7 +119,7 @@ impl HelpPage {
         match (key.modifiers, key.code) {
             (KeyModifiers::NONE, KeyCode::Esc)
             | (KeyModifiers::NONE, KeyCode::Char('q'))
-            | (KeyModifiers::NONE, KeyCode::Char('\\')) => return false,
+            | (KeyModifiers::NONE, KeyCode::Char('\\') | KeyCode::Char('?')) => return false,
             (KeyModifiers::NONE, KeyCode::Char('j' | 'J'))
             | (KeyModifiers::NONE, KeyCode::Down) => {
                 self.scroll = self.scroll.saturating_add(1);
@@ -139,7 +191,7 @@ impl HelpPage {
             .borders(Borders::ALL)
             .border_style(Style::new().fg(theme::rosewater(ctx)))
             .title(format!(
-                "快捷键说明 · {}/{} 行 · j/k 滚动 · Esc 关闭",
+                "快捷键说明 · {}/{} 行 · j/k 滚动 · ? / \\ 关闭",
                 (start + visible).min(total_lines),
                 total_lines
             ));
@@ -199,10 +251,10 @@ mod tests {
     fn help_lists_global_and_all_default_pages() {
         let config = KeybindingConfig::default();
         let help = HelpPage::from_config(&config);
-        assert_eq!(help.sections.len(), 1 + PAGE_ORDER.len());
+        assert_eq!(help.sections.len(), 4 + PAGE_ORDER.len());
         // 全局区包含退出动作
         assert!(
-            help.sections[0]
+            help.sections[1]
                 .entries
                 .iter()
                 .any(|(_, label)| *label == "退出应用")
@@ -225,7 +277,7 @@ mod tests {
         config.global.insert(Action::GlobalQuit, "Q".to_string());
         let help = HelpPage::from_config(&config);
         assert!(
-            help.sections[0]
+            help.sections[1]
                 .entries
                 .iter()
                 .any(|(key, label)| key == "Q" && *label == "退出应用")
