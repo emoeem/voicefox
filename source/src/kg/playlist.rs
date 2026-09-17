@@ -39,6 +39,40 @@ pub async fn get_detail(raw_id: &str) -> Result<Vec<SongInfo>, FetchError> {
     get_detail_with_title(raw_id).await.map(|(_, songs)| songs)
 }
 
+/// 直接通过酷狗专辑接口获取曲目，避免走“歌手 + 专辑名”搜索兜底。
+pub async fn get_album_songs(id: &str) -> Result<Vec<SongInfo>, FetchError> {
+    let album_id = id.strip_prefix("id_").unwrap_or(id).trim();
+    if album_id.is_empty() {
+        return Err(FetchError::Other("酷狗专辑 ID 为空".to_string()));
+    }
+    let url = format!(
+        "http://mobilecdnbj.kugou.com/api/v3/album/song?albumid={album_id}&page=1&pagesize=-1"
+    );
+    let json: Value = super::with_cookie(http::client().get(url))
+        .header("User-Agent", MOBILE_UA)
+        .header("Referer", MOBILE_REFERER)
+        .send_with_retry(crate::http::RETRY_ATTEMPTS)
+        .await
+        .map_err(|error| FetchError::Network(error.to_string()))?
+        .json()
+        .await
+        .map_err(|error| FetchError::Parse(error.to_string()))?;
+    if json["status"].as_i64() == Some(0) || json["errcode"].as_i64().unwrap_or(0) != 0 {
+        return Err(FetchError::Other("酷狗专辑曲目请求失败".to_string()));
+    }
+    let items = json["data"]["info"]
+        .as_array()
+        .ok_or_else(|| FetchError::Parse("酷狗专辑曲目列表为空".to_string()))?;
+    let songs = items
+        .iter()
+        .filter_map(parse_album_song)
+        .collect::<Vec<_>>();
+    if songs.is_empty() {
+        return Err(FetchError::NotFound);
+    }
+    Ok(songs)
+}
+
 /// 取歌单曲目，顺带解析页面标题作为歌单名。
 ///
 /// 酷狗的歌单页把歌单名放在 `<title>` 里（形如「歌单名-酷狗音乐」），
@@ -359,6 +393,16 @@ fn embedded_song_data(html: &str) -> Result<Vec<Value>, FetchError> {
     serde_json::from_str(raw).map_err(|error| FetchError::Parse(error.to_string()))
 }
 
+fn parse_album_song(item: &Value) -> Option<SongInfo> {
+    let mut song = parse_song(item)?;
+    // `/api/v3/album/song` 的 duration 单位是秒；歌单页的同名字段是毫秒，
+    // 因此这里单独修正，避免专辑曲目时长缩小 1000 倍。
+    if let Some(seconds) = value_u64(&item["duration"]) {
+        song.duration = Duration::from_secs(seconds);
+    }
+    Some(song)
+}
+
 fn parse_song(item: &Value) -> Option<SongInfo> {
     let id = value_string(&item["audio_id"]);
     let id = if id.is_empty() {
@@ -369,8 +413,19 @@ fn parse_song(item: &Value) -> Option<SongInfo> {
     if id.is_empty() {
         return None;
     }
-    let name = first_string(item, &["songname", "audio_name"]).unwrap_or_default();
-    let singer = first_string(item, &["singername", "author_name"]).unwrap_or_default();
+    let filename = first_string(item, &["filename"]).unwrap_or_default();
+    let name = first_string(item, &["songname", "audio_name"]).unwrap_or_else(|| {
+        filename
+            .split_once(" - ")
+            .map(|(_, title)| title.trim().to_string())
+            .unwrap_or_else(|| filename.clone())
+    });
+    let singer = first_string(item, &["singername", "author_name"]).unwrap_or_else(|| {
+        filename
+            .split_once(" - ")
+            .map(|(artist, _)| artist.trim().to_string())
+            .unwrap_or_default()
+    });
     let mut song = SongInfo::new(id, SourceId::Kg, name, singer);
     song.album_name = first_string(item, &["album_name"]).unwrap_or_default();
     song.album_id = value_string(&item["album_id"]);
@@ -399,6 +454,28 @@ fn parse_song(item: &Value) -> Option<SongInfo> {
         if let Some(hash) = item[hash_key].as_str().filter(|hash| !hash.is_empty()) {
             extra.insert(extra_key.to_string(), hash.to_string());
         }
+    }
+    // 专辑接口使用 `hash/320hash/sqhash` 与 `filesize/320filesize/sqfilesize`。
+    for (hash_key, extra_key) in [
+        ("hash", "FileHash"),
+        ("320hash", "HQFileHash"),
+        ("sqhash", "SQFileHash"),
+    ] {
+        if let Some(hash) = item[hash_key].as_str().filter(|hash| !hash.is_empty()) {
+            extra.insert(extra_key.to_string(), hash.to_string());
+        }
+    }
+    for (size_key, quality) in [
+        ("filesize", Quality::Low128),
+        ("320filesize", Quality::High320),
+        ("sqfilesize", Quality::Flac),
+    ] {
+        if value_u64(&item[size_key]).unwrap_or_default() > 0 {
+            qualities.insert(quality);
+        }
+    }
+    if let Some(album_audio_id) = value_u64(&item["album_audio_id"]) {
+        extra.insert("album_audio_id".to_string(), album_audio_id.to_string());
     }
     song.qualities = qualities;
     song.extra = extra;
