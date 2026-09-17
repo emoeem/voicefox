@@ -20,6 +20,9 @@ const LISTEN_SONG_API: &str = "http://app.pd.nf.migu.cn/MIGUM2.0/v1.0/content/su
 const MAGIC_USER_ID: &str = "15548614588710179085069";
 const LISTEN_SONG_UA: &str = "Mozilla/5.0 (iPhone; CPU iPhone OS 9_1 like Mac OS X) AppleWebKit/601.1.46 (KHTML, like Gecko) Version/9.0 Mobile/13B143 Safari/601.1";
 const LISTEN_SONG_REFERER: &str = "http://music.migu.cn/";
+const STRATEGY_URL: &str = "https://c.musicapp.migu.cn/strategy/listen-url/h5/v2.4";
+const MIGU_MAGIC: &[u8] = b"\xab\xcd\x01";
+const MIGU_KEY: &[u8] = b"Jk8qzuePiJ1qE3mDYhLQ3T73DtDoAhLP";
 
 /// Quality → mg formatType 映射
 fn quality_to_format(quality: Quality) -> &'static str {
@@ -170,6 +173,58 @@ fn explicit_preview_url(raw: &str) -> bool {
             "" | "0" | "false" | "no" | "off"
         )
     })
+}
+
+/// 解析咪咕 H5 strategy 接口的轻量加密响应。
+fn decrypt_strategy_response(raw: &[u8]) -> Result<serde_json::Value, FetchError> {
+    let plain = if raw.starts_with(MIGU_MAGIC) && raw.len() >= 4 {
+        let seed = raw[3];
+        raw[4..]
+            .iter()
+            .enumerate()
+            .map(|(index, byte)| byte.wrapping_add(seed).wrapping_sub(MIGU_KEY[index % MIGU_KEY.len()]))
+            .collect::<Vec<_>>()
+    } else {
+        raw.to_vec()
+    };
+    serde_json::from_slice(&plain).map_err(|error| FetchError::Parse(error.to_string()))
+}
+
+/// 新版 H5 策略接口。优先拿官方返回的完整直链，失败再回退旧 listenSong.do。
+async fn fetch_strategy_url(
+    resource_id: &str,
+    copyright_id: &str,
+    tone_flag: &str,
+    resource_type: &str,
+) -> Result<(String, Option<u64>), FetchError> {
+    let client = http::client();
+    let resp = client
+        .get(STRATEGY_URL)
+        .query(&[
+            ("contentId", resource_id),
+            ("copyrightId", copyright_id),
+            ("resourceType", resource_type),
+            ("netType", "01"),
+            ("toneFlag", tone_flag),
+            ("scene", ""),
+            ("lowerQualityContentId", resource_id),
+        ])
+        .header("Content-Type", "application/json;charset=UTF-8")
+        .header("birth", "h5page")
+        .header("signature", "1")
+        .header("User-Agent", LISTEN_SONG_UA)
+        .send_with_retry(crate::http::RETRY_ATTEMPTS)
+        .await
+        .map_err(|error| FetchError::Network(error.to_string()))?;
+    let bytes = resp.bytes().await.map_err(|error| FetchError::Network(error.to_string()))?;
+    let json = decrypt_strategy_response(&bytes)?;
+    let data = &json["data"];
+    let url = data["url"].as_str().map(str::trim).filter(|url| url.starts_with("http"));
+    let Some(url) = url else {
+        return Err(FetchError::NotFound);
+    };
+    let duration = data["song"]["duration"].as_u64().or_else(|| data["duration"].as_u64());
+    Ok((url.to_string(), duration))
 }
 
 /// 调 listenSong.do 拿 302 直链。
@@ -388,7 +443,22 @@ pub async fn get_song_url(song: &SongInfo, quality: Quality) -> Result<SongUrl, 
                     Quality::Flac | Quality::Flac24 => "E",
                     Quality::Low128 | Quality::High320 => "2",
                 });
-            let url = fetch_listen_url(resource_id, tone_flag, resource_type).await?;
+            let copyright_id = song.extra.get("copyrightId").map(String::as_str).unwrap_or("0");
+            let strategy = fetch_strategy_url(resource_id, copyright_id, tone_flag, resource_type).await;
+            let url = match strategy {
+                Ok((url, duration)) => {
+                    if let (Some(expected), Some(actual)) = (Some(song.duration.as_secs()), duration)
+                        && expected > 0 && actual > 0 && expected.abs_diff(actual) > 5
+                    {
+                        tracing::debug!("咪咕 strategy 返回时长异常: expected={expected}s actual={actual}s");
+                    }
+                    url
+                }
+                Err(error) => {
+                    tracing::debug!("咪咕 H5 strategy 不可用（{error}），回退 listenSong.do");
+                    fetch_listen_url(resource_id, tone_flag, resource_type).await?
+                }
+            };
             let served_size = probe_served_size(&url).await;
             if let Some(size) = served_size {
                 if let Some(actual) = quality_for_size(formats, size) {
