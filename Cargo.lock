@@ -4268,6 +4268,7 @@ name = "voicefox-app"
 version = "0.3.11"
 dependencies = [
  "anyhow",
+ "base64",
  "chrono",
  "clap",
  "crossterm",

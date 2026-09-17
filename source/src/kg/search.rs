@@ -3,8 +3,8 @@
 //! GET https://songsearch.kugou.com/song_search_v2
 //! 参数: keyword, page, pagesize, platform=WebFilter, filter=2
 
-use std::collections::{BTreeSet, HashMap, HashSet};
 use crate::http::SendWithRetry;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::time::Duration;
 
 use lx_core::model::song::SongInfo;
@@ -112,8 +112,7 @@ pub async fn search(keyword: &str, page: u32, limit: u32) -> Result<SearchResult
     );
 
     let client = http::client();
-    let resp = client
-        .get(&url)
+    let resp = super::with_cookie(client.get(&url))
         .send_with_retry(crate::http::RETRY_ATTEMPTS)
         .await
         .map_err(|e| SearchError::Network(e.to_string()))?;

@@ -76,6 +76,8 @@ enum DownloadInputTarget {
     Dir,
     /// 文件名模板
     Template,
+    /// WebDAV 地址（可带 `user:pass@`，保存时拆成账号密码）
+    WebdavUrl,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,7 +132,9 @@ impl SettingsCategory {
             ],
             Self::Sources => &[23, 24, 25, 26, 27, 28, 29, 30],
             Self::Integration => &[34, 35, 36, 37, 38, 44],
-            Self::Download => &[45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57],
+            Self::Download => &[
+                45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60,
+            ],
             Self::Data => &[40, 41, 42, 43],
         }
     }
@@ -174,6 +178,8 @@ pub struct SettingsPage {
     /// 下载目录 / 文件名模板输入模式。
     download_input: String,
     download_input_target: Option<DownloadInputTarget>,
+    /// 扫码登录选择器：支持扫码的音源列表里的选中项。
+    login_picker: Option<usize>,
     /// 内置音源开关当前指向的音源
     pub enabled_source_index: usize,
     /// 状态栏字段列表的选中索引
@@ -259,6 +265,7 @@ impl SettingsPage {
             playlist_import_mode: false,
             download_input: String::new(),
             download_input_target: None,
+            login_picker: None,
             enabled_source_index: 0,
             selected_status_item: 0,
             status_item_scroll: 0,
@@ -276,6 +283,9 @@ impl SettingsPage {
         ctx: &AppContext,
         resolver: &KeybindingResolver,
     ) -> AppAction {
+        if self.login_picker.is_some() {
+            return self.handle_login_picker(key, ctx);
+        }
         if self.proxy_input_mode {
             return self.handle_proxy_input(key, ctx);
         }
@@ -358,7 +368,13 @@ impl SettingsPage {
                 return action;
             }
 
-            let sources = ctx.config.read().unwrap_or_else(|e| e.into_inner()).source.js_sources.clone();
+            let sources = ctx
+                .config
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .source
+                .js_sources
+                .clone();
 
             if let Some(action) = bound_action {
                 match action {
@@ -442,7 +458,13 @@ impl SettingsPage {
                     self.update_config(ctx, |config| {
                         config.ui.show_cover = !config.ui.show_cover;
                     });
-                    if !ctx.config.read().unwrap_or_else(|e| e.into_inner()).ui.show_cover {
+                    if !ctx
+                        .config
+                        .read()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .ui
+                        .show_cover
+                    {
                         ctx.cover_service.clear();
                     }
                 }
@@ -538,7 +560,13 @@ impl SettingsPage {
                     self.adjust_lyric_offset(ctx, 100);
                 }
                 (KeyModifiers::NONE, KeyCode::Char('n')) => {
-                    self.proxy_input = ctx.config.read().unwrap_or_else(|e| e.into_inner()).network.proxy_url.clone();
+                    self.proxy_input = ctx
+                        .config
+                        .read()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .network
+                        .proxy_url
+                        .clone();
                     self.proxy_input_mode = true;
                     self.status_msg = None;
                 }
@@ -662,23 +690,49 @@ impl SettingsPage {
                 (KeyModifiers::SHIFT, KeyCode::Char('V' | 'v'))
                 | (KeyModifiers::NONE, KeyCode::Char('V')) => {
                     self.update_config(ctx, |config| {
-                        config.download.multipart_min_size_mb =
-                            next_step(&[1, 2, 5, 10, 20, 50], config.download.multipart_min_size_mb);
+                        config.download.multipart_min_size_mb = next_step(
+                            &[1, 2, 5, 10, 20, 50],
+                            config.download.multipart_min_size_mb,
+                        );
                     });
                 }
                 (KeyModifiers::SHIFT, KeyCode::Char('W' | 'w'))
                 | (KeyModifiers::NONE, KeyCode::Char('W')) => {
                     self.update_config(ctx, |config| {
                         config.download.concurrency =
-                            next_step(&[1, 2, 4, 8, 16], config.download.concurrency as u64) as usize;
+                            next_step(&[1, 2, 4, 8, 16], config.download.concurrency as u64)
+                                as usize;
                     });
                 }
                 (KeyModifiers::SHIFT, KeyCode::Char('A' | 'a'))
                 | (KeyModifiers::NONE, KeyCode::Char('A')) => {
                     self.update_config(ctx, |config| {
                         config.download.concurrent_songs =
-                            next_step(&[1, 2, 3, 4], config.download.concurrent_songs as u64) as usize;
+                            next_step(&[1, 2, 3, 4], config.download.concurrent_songs as u64)
+                                as usize;
                     });
+                }
+                // --- WebDAV 同步 ---
+                (KeyModifiers::SHIFT, KeyCode::Char('Z' | 'z'))
+                | (KeyModifiers::NONE, KeyCode::Char('Z')) => {
+                    self.update_config(ctx, |config| {
+                        config.download.webdav.enabled = !config.download.webdav.enabled;
+                    });
+                }
+                (KeyModifiers::SHIFT, KeyCode::Char('C' | 'c'))
+                | (KeyModifiers::NONE, KeyCode::Char('C')) => {
+                    self.download_input = ctx
+                        .config
+                        .read()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .download
+                        .webdav
+                        .display_url();
+                    self.download_input_target = Some(DownloadInputTarget::WebdavUrl);
+                    self.status_msg = Some(
+                        "输入 WebDAV 地址（可用 https://用户:密码@主机/路径），Enter 保存，Esc 取消"
+                            .to_string(),
+                    );
                 }
                 (KeyModifiers::SHIFT, KeyCode::Char('E' | 'e'))
                 | (KeyModifiers::NONE, KeyCode::Char('E')) => {
@@ -749,11 +803,8 @@ impl SettingsPage {
                     });
                 }
                 (KeyModifiers::NONE, KeyCode::Char('b')) => {
-                    if ctx.bili_source.is_logged_in() {
-                        return AppAction::BiliLogout;
-                    } else {
-                        return AppAction::BiliLogin;
-                    }
+                    // 支持扫码的音源不止一个，先打开选择器再决定登录/退出。
+                    self.login_picker = Some(0);
                 }
                 (KeyModifiers::NONE, KeyCode::Esc) => {
                     // Esc 取消删除类操作（音源 / 本地目录）的武装状态
@@ -774,7 +825,13 @@ impl SettingsPage {
                 self.status_msg = Some(ctx.cycle_playback_speed());
             }
             Action::SettingsEditAudioDevice => {
-                self.audio_device_input = ctx.config.read().unwrap_or_else(|e| e.into_inner()).player.audio_device.clone();
+                self.audio_device_input = ctx
+                    .config
+                    .read()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .player
+                    .audio_device
+                    .clone();
                 self.audio_device_input_mode = true;
                 self.status_msg = Some("输入 libmpv 音频设备名，Enter 保存".to_string());
             }
@@ -916,6 +973,46 @@ impl SettingsPage {
         AppAction::None
     }
 
+    /// 扫码登录选择器：`Enter` 登录，已登录时 `Enter`/`x` 退出，`Esc` 关闭。
+    fn handle_login_picker(&mut self, key: KeyEvent, ctx: &AppContext) -> AppAction {
+        let sources = ctx
+            .source_manager
+            .sources_supporting(|capabilities| capabilities.qr_login);
+        if sources.is_empty() {
+            self.login_picker = None;
+            return AppAction::None;
+        }
+        let selected = self.login_picker.unwrap_or(0).min(sources.len() - 1);
+        match (key.modifiers, key.code) {
+            (KeyModifiers::NONE, KeyCode::Esc) | (KeyModifiers::NONE, KeyCode::Char('q')) => {
+                self.login_picker = None;
+            }
+            (KeyModifiers::NONE, KeyCode::Char('j' | 'J'))
+            | (KeyModifiers::NONE, KeyCode::Down) => {
+                self.login_picker = Some((selected + 1).min(sources.len() - 1));
+            }
+            (KeyModifiers::NONE, KeyCode::Char('k' | 'K')) | (KeyModifiers::NONE, KeyCode::Up) => {
+                self.login_picker = Some(selected.saturating_sub(1));
+            }
+            (KeyModifiers::NONE, KeyCode::Enter) => {
+                let source = sources[selected];
+                self.login_picker = None;
+                return if ctx.source_manager.is_logged_in(source) {
+                    AppAction::QrLogout(source)
+                } else {
+                    AppAction::QrLogin(source)
+                };
+            }
+            (KeyModifiers::NONE, KeyCode::Char('x' | 'X')) => {
+                let source = sources[selected];
+                self.login_picker = None;
+                return AppAction::QrLogout(source);
+            }
+            _ => {}
+        }
+        AppAction::None
+    }
+
     /// 下载目录 / 文件名模板的文本输入。
     fn handle_download_input(&mut self, key: KeyEvent, ctx: &AppContext) -> AppAction {
         let Some(target) = self.download_input_target else {
@@ -946,6 +1043,18 @@ impl SettingsPage {
                             config.download.filename_template = value.clone();
                         });
                         self.status_msg = Some(format!("文件名模板: {value}"));
+                    }
+                    DownloadInputTarget::WebdavUrl => {
+                        let mut display = String::new();
+                        self.update_config(ctx, |config| {
+                            config.download.webdav.apply_url_input(&value);
+                            display = config.download.webdav.display_url();
+                        });
+                        self.status_msg = Some(if display.is_empty() {
+                            "WebDAV 地址已清空".to_string()
+                        } else {
+                            format!("WebDAV 地址: {display}")
+                        });
                     }
                 }
             }
@@ -1143,7 +1252,13 @@ impl SettingsPage {
         ctx: &AppContext,
         resolver: &KeybindingResolver,
     ) -> Option<AppAction> {
-        let paths = ctx.config.read().unwrap_or_else(|e| e.into_inner()).local_music.paths.clone();
+        let paths = ctx
+            .config
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .local_music
+            .paths
+            .clone();
 
         if let Some(action) = resolver.resolve_page("settings", &key) {
             match action {
@@ -1227,7 +1342,12 @@ impl SettingsPage {
                 Some(AppAction::None)
             }
             (KeyModifiers::NONE, KeyCode::Char('r')) => {
-                let max_depth = ctx.config.read().unwrap_or_else(|e| e.into_inner()).local_music.max_depth;
+                let max_depth = ctx
+                    .config
+                    .read()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .local_music
+                    .max_depth;
                 self.status_msg = Some("正在扫描本地音乐...".to_string());
                 Some(AppAction::ScanLocalMusic {
                     paths,
@@ -1401,6 +1521,65 @@ impl SettingsPage {
             Ok(()) => "设置已保存".to_string(),
             Err(error) => format!("保存设置失败: {}", error),
         });
+    }
+
+    /// 扫码登录选择器浮层。
+    fn render_login_picker(&mut self, area: Rect, buf: &mut Buffer, ctx: &AppContext) {
+        let sources = ctx
+            .source_manager
+            .sources_supporting(|capabilities| capabilities.qr_login);
+        if sources.is_empty() {
+            return;
+        }
+        let accent = crate::theme::accent(ctx);
+        let muted = crate::theme::muted(ctx);
+        let text = crate::theme::text(ctx);
+        let width = area.width.saturating_sub(6).clamp(24, 44);
+        let height = (sources.len() as u16 + 4).min(area.height.saturating_sub(2));
+        let popup = Rect::new(
+            area.x + area.width.saturating_sub(width) / 2,
+            area.y + area.height.saturating_sub(height) / 2,
+            width,
+            height,
+        );
+        Clear.render(popup, buf);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::new().fg(accent))
+            .title(" 扫码登录 · Enter 登录/退出 · x 退出 · Esc 关闭 ")
+            .style(Style::new().bg(crate::theme::mantle(ctx)));
+        let inner = block.inner(popup);
+        block.render(popup, buf);
+
+        let selected = self.login_picker.unwrap_or(0).min(sources.len() - 1);
+        let lines = sources
+            .iter()
+            .enumerate()
+            .map(|(index, source)| {
+                let logged_in = ctx.source_manager.is_logged_in(*source);
+                let marker = if index == selected { "▶ " } else { "  " };
+                Line::from(vec![
+                    Span::styled(
+                        marker,
+                        Style::new().fg(if index == selected { accent } else { muted }),
+                    ),
+                    Span::styled(source.display_name().to_string(), Style::new().fg(text)),
+                    Span::styled(
+                        if logged_in {
+                            "  已登录"
+                        } else {
+                            "  未登录"
+                        },
+                        Style::new().fg(if logged_in {
+                            crate::theme::green(ctx)
+                        } else {
+                            muted
+                        }),
+                    ),
+                ])
+            })
+            .collect::<Vec<_>>();
+        Paragraph::new(lines).render(inner, buf);
     }
 
     pub fn render(&mut self, area: Rect, buf: &mut Buffer, ctx: &AppContext) {
@@ -1722,20 +1901,28 @@ impl SettingsPage {
                 muted,
             ),
             {
-                let logged_in = ctx.bili_source.is_logged_in();
-                let account = if logged_in {
-                    ctx.bili_source
-                        .user()
-                        .map(|user| user.name)
-                        .unwrap_or_else(|| "已登录".to_string())
-                } else {
+                // 支持扫码的音源可能不止一个，这里汇总登录状态，
+                // 具体登录/退出在 `b` 打开的选择器里完成。
+                let sources = ctx
+                    .source_manager
+                    .sources_supporting(|capabilities| capabilities.qr_login);
+                let logged_in = sources
+                    .iter()
+                    .filter(|source| ctx.source_manager.is_logged_in(**source))
+                    .map(|source| source.display_name())
+                    .collect::<Vec<_>>();
+                let value = if sources.is_empty() {
+                    "无可登录音源".to_string()
+                } else if logged_in.is_empty() {
                     "未登录".to_string()
+                } else {
+                    logged_in.join("、")
                 };
                 setting_row(
-                    "哔哩哔哩",
+                    "扫码登录",
                     Span::styled(
-                        account,
-                        Style::new().fg(if logged_in { accent } else { muted }),
+                        value,
+                        Style::new().fg(if logged_in.is_empty() { muted } else { accent }),
                     ),
                     "b",
                     muted,
@@ -1767,13 +1954,7 @@ impl SettingsPage {
                 accent,
                 muted,
             ),
-            setting_line(
-                "多线程分片",
-                config.download.multipart,
-                "B",
-                accent,
-                muted,
-            ),
+            setting_line("多线程分片", config.download.multipart, "B", accent, muted),
             setting_value_line(
                 "分片阈值",
                 &format!("{} MB", config.download.multipart_min_size_mb),
@@ -1819,6 +2000,35 @@ impl SettingsPage {
             setting_line("写入标签", config.download.write_tags, "J", accent, muted),
             setting_line("嵌入封面", config.download.embed_cover, "G", accent, muted),
             setting_line("保存歌词", config.download.save_lyric, "I", accent, muted),
+            setting_line(
+                "WebDAV 同步",
+                config.download.webdav.enabled && !config.download.webdav.url.trim().is_empty(),
+                "Z",
+                accent,
+                muted,
+            ),
+            setting_value_line(
+                "WebDAV 地址",
+                &if config.download.webdav.url.trim().is_empty() {
+                    "未设置".to_string()
+                } else {
+                    shorten_source(&config.download.webdav.display_url(), 22)
+                },
+                "C",
+                accent,
+                muted,
+            ),
+            setting_value_line(
+                "播放自动缓存",
+                &if config.download.auto_cache_on_play {
+                    format!("播放 {} 秒后入库", config.download.auto_cache_after_secs)
+                } else {
+                    "关闭（config.toml）".to_string()
+                },
+                "",
+                accent,
+                muted,
+            ),
         ];
         let option_indices = self.category.option_indices();
         let options = options
@@ -2165,6 +2375,10 @@ impl SettingsPage {
                 .render(inner, buf);
         }
 
+        if self.login_picker.is_some() {
+            self.render_login_picker(area, buf, ctx);
+        }
+
         if self.input_mode {
             let width = area.width.saturating_sub(4).min(74);
             let input_area = Rect::new(
@@ -2282,12 +2496,24 @@ impl SettingsPage {
                         .min(StatusBarItem::ALL.len().saturating_sub(1));
                     self.focus = SettingsFocus::StatusBar;
                 } else if chunks[2].contains(position) {
-                    let len = ctx.config.read().unwrap_or_else(|e| e.into_inner()).local_music.paths.len();
+                    let len = ctx
+                        .config
+                        .read()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .local_music
+                        .paths
+                        .len();
                     self.selected_local_path =
                         (self.selected_local_path + 1).min(len.saturating_sub(1));
                     self.focus = SettingsFocus::LocalPaths;
                 } else if chunks[1].contains(position) {
-                    let len = ctx.config.read().unwrap_or_else(|e| e.into_inner()).source.js_sources.len();
+                    let len = ctx
+                        .config
+                        .read()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .source
+                        .js_sources
+                        .len();
                     self.selected_source = (self.selected_source + 1).min(len.saturating_sub(1));
                     self.focus = SettingsFocus::JsSources;
                 }
@@ -2370,7 +2596,13 @@ impl SettingsPage {
                     }
                     let rows = source_inner.height.saturating_sub(3) as usize;
                     if let Some(row) = list_row_at(source_inner, position, rows) {
-                        let len = ctx.config.read().unwrap_or_else(|e| e.into_inner()).source.js_sources.len();
+                        let len = ctx
+                            .config
+                            .read()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .source
+                            .js_sources
+                            .len();
                         let start = list_window_start(self.selected_source, len, rows);
                         let index = start + row;
                         if index < len {
@@ -2411,7 +2643,13 @@ impl SettingsPage {
                     }
                     let rows = local_inner.height.saturating_sub(3) as usize;
                     if let Some(row) = list_row_at(local_inner, position, rows) {
-                        let len = ctx.config.read().unwrap_or_else(|e| e.into_inner()).local_music.paths.len();
+                        let len = ctx
+                            .config
+                            .read()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .local_music
+                            .paths
+                            .len();
                         let start = list_window_start(self.selected_local_path, len, rows);
                         let index = start + row;
                         if index < len {
@@ -2751,13 +2989,13 @@ fn format_duration(value: std::time::Duration) -> String {
 /// 在更新配置项后更新这些常量!
 ///
 /// 鼠标点击时触发的按键，顺序必须与 render 中的选项列表一致
-const SETTING_OPTION_KEYS: [char; 58] = [
+const SETTING_OPTION_KEYS: [char; 61] = [
     't', 'g', 'w', 'c', 'e', 'Q', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',
     '\0', '\0', '\0', '\0', 'm', 'H', 'v', 'u', 'K', 'T', 'Y', ']', 'n', 'N', 'P', 'f', 'z', 'i',
     'o', 'x', 'X', 'R', 'p', 'D', '\0', '\0', '\0', 'b', 'S', 'F', 'M', 'B', 'V', 'W', 'A', 'E',
-    'U', 'L', 'J', 'G', 'I',
+    'U', 'L', 'J', 'G', 'I', 'Z', 'C', '\0',
 ];
-const SETTING_OPTION_ACTIONS: [Option<Action>; 58] = [
+const SETTING_OPTION_ACTIONS: [Option<Action>; 61] = [
     None,
     None,
     None,
@@ -2816,6 +3054,9 @@ const SETTING_OPTION_ACTIONS: [Option<Action>; 58] = [
     None,
     None,
     None,
+    None,
+    None,
+    None,
 ];
 const TWO_COLUMN_OPTIONS_MIN_WIDTH: u16 = 36;
 const THREE_COLUMN_OPTIONS_MIN_WIDTH: u16 = 72;
@@ -2826,8 +3067,8 @@ const ALL_MANAGEMENT_PANELS_MIN_WIDTH: u16 = 108;
 /// 列表导航键来自页面级绑定，由 `consumes_key` 查表解析，不列在这里。
 const SETTINGS_PAGE_CHAR_KEYS: &[char] = &[
     'a', 'd', 'h', 'r', 's', 'y', '[', 'm', 'Q', 'v', 'p', 'b', 'n', 'o', 'c', 'e', 'f', 'g', 'i',
-    't', 'u', 'w', 'x', 'z', 'D', 'H', 'K', 'N', 'O', 'P', 'R', 'T', 'X', 'Y', ']', 'S', 'F',
-    'M', 'B', 'V', 'W', 'A', 'E', 'U', 'L', 'J', 'G', 'I',
+    't', 'u', 'w', 'x', 'z', 'D', 'H', 'K', 'N', 'O', 'P', 'R', 'T', 'X', 'Y', ']', 'S', 'F', 'M',
+    'B', 'V', 'W', 'A', 'E', 'U', 'L', 'J', 'G', 'I', 'Z', 'C',
 ];
 
 fn render_setting_options<'a>(options: Vec<Line<'a>>, area: Rect, buf: &mut Buffer) {
@@ -2974,12 +3215,15 @@ mod tests {
     fn download_category_exposes_every_download_option() {
         let indices = SettingsCategory::Download.option_indices();
 
-        assert_eq!(indices.len(), 13);
-        let keys: Vec<char> = indices.iter().map(|index| SETTING_OPTION_KEYS[*index]).collect();
+        assert_eq!(indices.len(), 16);
+        let keys: Vec<char> = indices
+            .iter()
+            .map(|index| SETTING_OPTION_KEYS[*index])
+            .collect();
         assert_eq!(
             keys,
             vec![
-                'S', 'F', 'M', 'B', 'V', 'W', 'A', 'E', 'U', 'L', 'J', 'G', 'I'
+                'S', 'F', 'M', 'B', 'V', 'W', 'A', 'E', 'U', 'L', 'J', 'G', 'I', 'Z', 'C', '\0'
             ]
         );
     }
@@ -3024,6 +3268,10 @@ mod tests {
             // 新播放/数据动作由页面级 Action 处理，不能再把它们的旧数字
             // 占位键视为设置页快捷键，否则会遮挡侧边栏的 1-8 切换。
             if SETTING_OPTION_ACTIONS[index].is_some() {
+                continue;
+            }
+            // `\0` 表示这一行只展示状态、没有对应按键（例如「播放自动缓存」）。
+            if key == '\0' {
                 continue;
             }
             let event = KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE);

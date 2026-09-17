@@ -13,8 +13,9 @@ pub fn parse(content: &str) -> Vec<YrcLine> {
     let content = extract_lyric_content(content);
     let line_regex = LINE
         .get_or_init(|| Regex::new(r"^\[\s*(\d+)\s*,\s*\d+\s*\]").expect("valid QRC line regex"));
-    let word_regex =
-        WORD.get_or_init(|| Regex::new(r"\((-?\d+),(-?\d+)(?:,-?\d+)?\)").expect("valid QRC word regex"));
+    let word_regex = WORD.get_or_init(|| {
+        Regex::new(r"\((-?\d+),(-?\d+)(?:,-?\d+)?\)").expect("valid QRC word regex")
+    });
     let mut lines = Vec::new();
 
     for raw_line in content.lines() {

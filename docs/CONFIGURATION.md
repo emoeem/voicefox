@@ -35,7 +35,7 @@ remember_playback_state = true
 history_limit = 200
 
 [source]
-enabled = ["kw", "kg", "tx", "wy", "mg", "bili"]
+enabled = ["kw", "kg", "tx", "wy", "mg", "qianqian", "joox", "fivesing", "jamendo", "soda", "bili"]
 default = "kw"
 auto_toggle = true          # 播放失败时自动尝试其它音源的同曲匹配
 # JS 自定义音源（lx-music user API 协议），数组顺序即解析优先级：
@@ -94,6 +94,15 @@ skip_existing = true         # 已存在则跳过
 write_tags = true            # 写入标题/歌手/专辑
 embed_cover = true           # 嵌入封面
 save_lyric = true            # 保存 .lrc 并内嵌歌词
+auto_cache_on_play = false   # 播放时自动缓存到本地下载目录
+auto_cache_after_secs = 30   # 播放满 30 秒才开始缓存
+
+[download.webdav]            # 可选：下载完成后同步到 WebDAV
+enabled = false
+url = ""                     # 例如 https://dav.example.com/remote.php/dav/files/user/
+username = ""
+password = ""
+dir = "voicefox"             # 远端目录，留空表示根目录
 ```
 
 ### 请求音质与实际音质
@@ -129,7 +138,7 @@ save_lyric = true            # 保存 .lrc 并内嵌歌词
 
 | 字段 | 默认值 | 说明 |
 |------|--------|------|
-| `enabled` | 全部内置音源 | 参与搜索和换源的平台，值为 `kw` / `kg` / `tx` / `wy` / `mg` / `bili` |
+| `enabled` | 除 Apple Music 外的全部内置音源 | 参与搜索和换源的平台，值为 `kw` / `kg` / `tx` / `wy` / `mg` / `qianqian` / `joox` / `fivesing` / `jamendo` / `apple` / `bili`；Apple Music 只能播放 30 秒试听，默认关闭 |
 | `default` | `"kw"` | 默认音源 |
 | `auto_toggle` | `true` | 播放失败时自动尝试其它音源的同曲匹配 |
 | `js_sources` | `[]` | JS 音源脚本 URL 或本地路径，数组顺序即优先级 |
@@ -231,6 +240,32 @@ Range，大文件走多线程分片，落盘后校验字节数，网络类失败
 | `write_tags` | `true` | 写入标题、歌手、专辑标签 |
 | `embed_cover` | `true` | 把封面嵌入音频标签 |
 | `save_lyric` | `true` | 写出同名 `.lrc` 文件并内嵌歌词 |
+| `auto_cache_on_play` | `false` | 播放时自动把当前歌曲缓存到下载目录 |
+| `auto_cache_after_secs` | `30` | 播放满该秒数后才开始缓存，避免刚切歌就白下一次 |
+
+#### 播放自动缓存
+
+`auto_cache_on_play = true` 后，正在播放的歌曲在播满 `auto_cache_after_secs` 秒后会进入下载队列，落盘、写标签、保存歌词的流程与手动下载完全一致，因此也共用同一套去重索引——已经缓存过的歌曲不会重复下载，手动删掉文件后又会重新缓存。
+
+自动缓存是后台行为：不会弹出「开始下载」提示，只在完成时提示「已缓存到本地 → 路径」，失败时照常提示原因。下载面板里这类任务会标成 `[kw·缓存]`，与手动下载区分。
+
+这一项只在 `config.toml` 里配置，设置页「下载」分类底部会显示当前状态。
+
+#### `[download.webdav]` WebDAV 同步
+
+下载完成后把音频推送到 WebDAV（同步盘、NAS），逻辑对齐 go-music-dl 的 WebDAV 上传：远端目录按需逐级创建，文件名沿用本地下载目录的相对结构，失败只回报警告——文件已经落在本地，不会因为同步失败把整次下载判为失败。
+
+| 字段 | 默认值 | 说明 |
+|------|--------|------|
+| `enabled` | `false` | 打开后才会同步 |
+| `url` | `""` | 服务地址，必须以 `http://` 或 `https://` 开头 |
+| `username` | `""` | Basic Auth 用户名 |
+| `password` | `""` | Basic Auth 密码；配置文件权限为当前用户可见 |
+| `dir` | `"voicefox"` | 远端目录；留空表示直接放在服务地址对应的根目录下 |
+
+设置页的「下载」分类里按 `Z` 开关同步、按 `C` 编辑地址。地址输入框支持直接粘贴 `https://用户:密码@主机/路径`，保存时会把账号密码拆出来单独存放，界面上只显示去掉密码的地址。
+
+远端只使用本地下载目录里的**文件名与子目录结构**：模板里带 `{album}` 之类的层级时，远端也会建出对应目录；文件名中的 `..` 等相对路径段会被丢弃，不会写到远端目录之外。
 
 下载时的行为说明：
 
@@ -242,6 +277,10 @@ Range，大文件走多线程分片，落盘后校验字节数，网络类失败
 - **封面压缩**：封面超过 2MB 时先缩到 640px 的 JPEG 再嵌入，避免音频文件被大图撑大。
 - **文件名**：模板渲染后替换 `/ \ ? * : | < > "` 等非法字符，截断到 180 字节（按 UTF-8 边界），重名时追加 ` (2)`。
 - **进度**：`Ctrl+O` 打开下载面板查看进度、取消任务或清理记录。
+- **下载记录**：每次下载都会在 `~/.config/voicefox/data/downloads.json` 留一条记录，同时作为去重索引——换过文件名模板或重启过程序也不会重复下载同一首歌；手动删掉本地文件后这首歌会重新变为可下载。面板底部显示最近 5 条，按 `C` 清空。
+- **体积与码率**：解析到播放地址后，下载行会显示文件体积与按体积/时长估算的码率（例如 `12.3MB · 320kbps`），方便判断实际拿到的是什么规格。
+- **WebDAV**：`[download.webdav]` 打开后，每次下载成功都会同步一份到远端；同步失败会在通知里提示，本地文件不受影响。
+- **自动缓存**：`auto_cache_on_play` 打开后，播满 `auto_cache_after_secs` 秒的歌曲会自动走一遍下载流程；与手动下载共用去重索引与下载面板。
 - **入库**：下载目录若位于 `[local_music]` 的 `paths` 之内，新文件会被目录监听自动扫描入库（默认 `dir` 是 `~/Music/voicefox`，通常已在本地音乐目录内）。
 - **歌词**：只写入可识别的标准 LRC；某些音源返回的私有 JSON 格式会被跳过，逐字歌词会先转成 LRC。
 - **排查**：每条下载的最终路径都会写成 `download finished: 歌名 -> 路径` 记入 `~/.config/voicefox/voicefox.log`。

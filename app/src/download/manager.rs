@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use lx_core::events::{AppAction, Notification};
-use lx_core::model::config::Config;
+use lx_core::model::config::{Config, WebdavConfig};
 use lx_core::model::song::SongInfo;
 use lx_core::model::source::{Quality, SourceId};
 use lx_core::traits::source::SongUrl;
@@ -26,9 +26,11 @@ use crate::download::naming::{
     AUDIO_EXTENSIONS, detect_extension, extension_from_url, normalize_extension, render_filename,
     resolve_download_dir, sanitize_filename, unique_dest,
 };
+use crate::download::records::{DownloadRecord, DownloadRecords, DownloadStatus, relative_path};
 use crate::download::tags::{
     DownloadMetadata, embed_tags, shrink_cover, validate_audio, write_lyric_file,
 };
+use crate::download::webdav;
 
 /// 已结束任务在列表中的保留数量。
 const FINISHED_TASK_LIMIT: usize = 100;
@@ -37,6 +39,14 @@ const COVER_SIZE_LIMIT: u64 = 8 * 1024 * 1024;
 /// 单首歌的下载尝试次数：每次失败后从下一个解析器继续，等价于参考实现的
 /// 「换候选地址」循环。
 const DOWNLOAD_ATTEMPTS: usize = 3;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DownloadTrigger {
+    /// 用户主动下载（列表 `D`、`Ctrl+S`、右键菜单）。
+    Manual,
+    /// 播放时自动缓存：不在开始时打扰用户，完成/失败时才提示。
+    AutoCache,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DownloadState {
@@ -86,6 +96,12 @@ pub struct DownloadTask {
     pub started_at: Instant,
     pub finished_at: Option<Instant>,
     pub bytes: u64,
+    /// 音源声明的文件大小（字节）；未知时为 `None`。
+    pub expected_size: Option<u64>,
+    /// 歌曲时长（秒），用于把体积换算成码率。
+    pub duration_secs: u64,
+    /// 入队来源：自动缓存的任务在文案与通知上更安静。
+    pub trigger: DownloadTrigger,
 }
 
 /// 界面每帧读取的任务快照。
@@ -102,6 +118,11 @@ pub struct DownloadTaskView {
     pub progress: ProgressSnapshot,
     pub elapsed: Duration,
     pub bytes: u64,
+    pub expected_size: Option<u64>,
+    /// 按体积与时长估算的码率（kbps）。
+    pub bitrate_kbps: Option<u32>,
+    /// 入队来源：自动缓存的任务在面板上单独标注。
+    pub trigger: DownloadTrigger,
 }
 
 impl DownloadTaskView {
@@ -125,6 +146,12 @@ struct RuntimeSettings {
     write_tags: bool,
     embed_cover: bool,
     save_lyric: bool,
+    /// WebDAV 同步：下载完成后把文件推到远端。
+    webdav: WebdavConfig,
+    /// 播放时自动缓存到本地。
+    auto_cache_on_play: bool,
+    /// 播放满该时长后才开始缓存。
+    auto_cache_after_secs: Duration,
     auto_toggle: bool,
     concurrent_songs: usize,
     play_quality: Quality,
@@ -145,6 +172,9 @@ impl RuntimeSettings {
             write_tags: config.download.write_tags,
             embed_cover: config.download.embed_cover,
             save_lyric: config.download.save_lyric,
+            webdav: config.download.webdav.clone(),
+            auto_cache_on_play: config.download.auto_cache_on_play,
+            auto_cache_after_secs: Duration::from_secs(config.download.auto_cache_after_secs),
             auto_toggle: config.source.auto_toggle,
             concurrent_songs: config.download.concurrent_songs.clamp(1, 8),
             play_quality: config.player.quality,
@@ -169,11 +199,29 @@ pub struct DownloadManager {
     semaphore: RwLock<Arc<Semaphore>>,
     tasks: Mutex<Vec<DownloadTask>>,
     inflight: Mutex<HashSet<String>>,
+    /// 跨会话下载记录与去重索引。
+    records: DownloadRecords,
+    /// 本次会话已触发过自动缓存的歌曲键，避免轮询重复入队。
+    auto_cached: Mutex<HashSet<String>>,
     next_id: AtomicU64,
 }
 
 impl DownloadManager {
     pub fn new(config: &Config, handle: tokio::runtime::Handle) -> Self {
+        Self::build(config, handle, DownloadRecords::load_default())
+    }
+
+    /// 使用指定记录存储的构造函数，供测试隔离数据目录。
+    #[cfg(test)]
+    pub(crate) fn with_records(
+        config: &Config,
+        handle: tokio::runtime::Handle,
+        records: DownloadRecords,
+    ) -> Self {
+        Self::build(config, handle, records)
+    }
+
+    fn build(config: &Config, handle: tokio::runtime::Handle, records: DownloadRecords) -> Self {
         let settings = RuntimeSettings::from_config(config);
         let engine = Arc::new(build_engine(config, &settings));
         let semaphore = Arc::new(Semaphore::new(settings.concurrent_songs));
@@ -184,6 +232,8 @@ impl DownloadManager {
             semaphore: RwLock::new(semaphore),
             tasks: Mutex::new(Vec::new()),
             inflight: Mutex::new(HashSet::new()),
+            records,
+            auto_cached: Mutex::new(HashSet::new()),
             next_id: AtomicU64::new(1),
         }
     }
@@ -247,6 +297,11 @@ impl DownloadManager {
                     progress: task.progress.snapshot(),
                     elapsed,
                     bytes: task.bytes,
+                    expected_size: task.expected_size,
+                    bitrate_kbps: task
+                        .expected_size
+                        .and_then(|size| estimate_bitrate(size, task.duration_secs)),
+                    trigger: task.trigger,
                 }
             })
             .collect()
@@ -277,6 +332,68 @@ impl DownloadManager {
     pub fn clear_finished(&self) {
         let mut tasks = self.tasks.lock().unwrap_or_else(|error| error.into_inner());
         tasks.retain(|task| task.state.is_active());
+    }
+
+    /// 最近的下载记录（含历史会话），最新在前。
+    pub fn records_recent(&self, limit: usize) -> Vec<DownloadRecord> {
+        self.records.recent(limit)
+    }
+
+    /// 持久化的下载记录条数。
+    pub fn record_count(&self) -> usize {
+        self.records.len()
+    }
+
+    /// 清空下载记录与去重索引：清空后已下载过的歌曲可以重新下载。
+    pub fn clear_records(&self) -> Result<(), String> {
+        self.records.clear()
+    }
+
+    /// 把一次下载的终态写入持久化记录。
+    fn record_song(
+        &self,
+        song: &SongInfo,
+        status: DownloadStatus,
+        dest: Option<&std::path::Path>,
+        error: Option<String>,
+    ) {
+        let rel_path = dest.and_then(|path| relative_path(&self.download_dir(), path));
+        self.records
+            .record(DownloadRecord::new(song, status, rel_path, error));
+    }
+
+    /// 下载完成后同步到 WebDAV。
+    ///
+    /// 失败只发警告：文件已经在本地，同步属于附加动作，不应该让整次下载
+    /// 显示为失败（与参考实现把错误放进 warning 字段一致）。
+    async fn sync_to_webdav(
+        &self,
+        path: &std::path::Path,
+        settings: &RuntimeSettings,
+        notify: &mpsc::UnboundedSender<AppAction>,
+    ) {
+        if !webdav::is_configured(&settings.webdav) {
+            return;
+        }
+        let engine = Arc::clone(
+            &self
+                .engine
+                .read()
+                .unwrap_or_else(|error| error.into_inner()),
+        );
+        match webdav::upload_file(engine.client(), &settings.webdav, path).await {
+            Ok(()) => {
+                let _ = notify.send(AppAction::ShowNotification(Notification::info(
+                    "已同步到 WebDAV".to_string(),
+                )));
+            }
+            Err(error) => {
+                tracing::warn!("webdav upload failed for {}: {error}", path.display());
+                let _ = notify.send(AppAction::ShowNotification(Notification::warning(format!(
+                    "WebDAV 同步失败（本地文件已保存）: {error}"
+                ))));
+            }
+        }
     }
 
     /// 把一个任务标记为完成/失败，并在必要时裁剪列表长度。
@@ -318,6 +435,44 @@ impl DownloadManager {
         }
     }
 
+    /// 记录音源声明的体积：界面据此在下载前就显示体积与估算码率。
+    fn set_expected_size(&self, id: u64, size: Option<u64>) {
+        let Some(size) = size.filter(|size| *size > 0) else {
+            return;
+        };
+        let mut tasks = self.tasks.lock().unwrap_or_else(|error| error.into_inner());
+        if let Some(task) = tasks.iter_mut().find(|task| task.id == id) {
+            task.expected_size = Some(size);
+        }
+    }
+
+    /// 音源给的是本地文件时直接复制；不是本地路径则返回 `None`。
+    ///
+    /// 目前只有汽水音乐走这条路：加密音频由音源解密到缓存目录后，播放地址
+    /// 就是那个本地路径。返回值 `Some(Ok(bytes))` 表示复制成功。
+    async fn copy_local_source(
+        &self,
+        url: &str,
+        dest: &std::path::Path,
+    ) -> Option<Result<u64, String>> {
+        if url.contains("://") {
+            return None;
+        }
+        let source = std::path::Path::new(url);
+        if !source.is_file() {
+            return None;
+        }
+        if source == dest {
+            return Some(Ok(std::fs::metadata(dest)
+                .map(|meta| meta.len())
+                .unwrap_or_default()));
+        }
+        let result = tokio::fs::copy(source, dest)
+            .await
+            .map_err(|error| format!("复制本地音频失败: {error}"));
+        Some(result)
+    }
+
     /// 入队一首歌。重复入队会被合并（同一音源同一 id 只下载一次）。
     pub fn enqueue(
         self: &Arc<Self>,
@@ -325,10 +480,79 @@ impl DownloadManager {
         sources: Arc<SourceManager>,
         notify: mpsc::UnboundedSender<AppAction>,
     ) -> bool {
+        self.enqueue_with_trigger(song, sources, notify, DownloadTrigger::Manual)
+    }
+
+    /// 播放自动缓存：播放满配置时长后把当前歌曲存入本地。
+    ///
+    /// 已经下载过（去重索引命中）或本次会话已处理过的歌曲直接跳过，
+    /// 避免每秒轮询都重新入队。
+    pub fn maybe_auto_cache(
+        self: &Arc<Self>,
+        song: &SongInfo,
+        position: Duration,
+        sources: Arc<SourceManager>,
+        notify: mpsc::UnboundedSender<AppAction>,
+    ) {
+        {
+            let settings = self
+                .settings
+                .read()
+                .unwrap_or_else(|error| error.into_inner());
+            if !settings.auto_cache_on_play || position < settings.auto_cache_after_secs {
+                return;
+            }
+        }
+        if song.source == SourceId::Local {
+            return;
+        }
+        // 本地已经有这个文件时不必再走一遍解析流程。
+        if self
+            .records
+            .existing_download(song, &self.download_dir())
+            .is_some()
+        {
+            return;
+        }
+        let key = DownloadRecords::song_key(&song.singer, &song.name);
+        {
+            let mut scheduled = self
+                .auto_cached
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if !scheduled.insert(key.clone()) {
+                return;
+            }
+        }
+        let queued =
+            self.enqueue_with_trigger(song.clone(), sources, notify, DownloadTrigger::AutoCache);
+        if !queued {
+            // 入队被拒（例如用户正好手动下载了同一首）：撤销标记，
+            // 下一轮再判断，避免这一整次会话都不再缓存它。
+            let mut scheduled = self
+                .auto_cached
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            scheduled.remove(&key);
+        }
+    }
+
+    fn enqueue_with_trigger(
+        self: &Arc<Self>,
+        song: SongInfo,
+        sources: Arc<SourceManager>,
+        notify: mpsc::UnboundedSender<AppAction>,
+        trigger: DownloadTrigger,
+    ) -> bool {
+        // 自动缓存是后台行为：开始下载、已在队列中这类提示会变成每首歌一条
+        // 的噪音，只在完成/失败时汇报。
+        let quiet = trigger == DownloadTrigger::AutoCache;
         if song.source == SourceId::Local && song.file_path.is_some() {
-            let _ = notify.send(AppAction::ShowNotification(Notification::info(
-                "本地文件无需下载".to_string(),
-            )));
+            if !quiet {
+                let _ = notify.send(AppAction::ShowNotification(Notification::info(
+                    "本地文件无需下载".to_string(),
+                )));
+            }
             return false;
         }
 
@@ -339,9 +563,11 @@ impl DownloadManager {
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
             if !inflight.insert(dedup_key.clone()) {
-                let _ = notify.send(AppAction::ShowNotification(Notification::warning(
-                    "这首歌已经在下载队列中".to_string(),
-                )));
+                if !quiet {
+                    let _ = notify.send(AppAction::ShowNotification(Notification::warning(
+                        "这首歌已经在下载队列中".to_string(),
+                    )));
+                }
                 return false;
             }
         }
@@ -370,15 +596,20 @@ impl DownloadManager {
             started_at: Instant::now(),
             finished_at: None,
             bytes: 0,
+            expected_size: None,
+            duration_secs: song.duration.as_secs(),
+            trigger,
         };
         {
             let mut tasks = self.tasks.lock().unwrap_or_else(|error| error.into_inner());
             tasks.push(task);
         }
-        let _ = notify.send(AppAction::ShowNotification(Notification::info(format!(
-            "开始下载: {}",
-            song.name
-        ))));
+        if !quiet {
+            let _ = notify.send(AppAction::ShowNotification(Notification::info(format!(
+                "开始下载: {}",
+                song.name
+            ))));
+        }
 
         let manager = Arc::clone(self);
         let semaphore = Arc::clone(
@@ -391,7 +622,7 @@ impl DownloadManager {
             let _permit = semaphore.acquire_owned().await;
             manager
                 .run_task(
-                    id, song, dedup_key, quality, stem, settings, sources, notify,
+                    id, song, dedup_key, quality, stem, settings, sources, notify, trigger,
                 )
                 .await;
         });
@@ -409,6 +640,7 @@ impl DownloadManager {
         settings: RuntimeSettings,
         sources: Arc<SourceManager>,
         notify: mpsc::UnboundedSender<AppAction>,
+        trigger: DownloadTrigger,
     ) {
         let result = self
             .prepare_and_download(id, &song, quality, &stem, &settings, &sources)
@@ -421,6 +653,7 @@ impl DownloadManager {
         match result {
             Ok(DownloadOutcome::Done { dest, bytes }) => {
                 self.finish(id, DownloadState::Done, None, bytes, Some(dest.clone()));
+                self.record_song(&song, DownloadStatus::Done, Some(&dest), None);
                 tracing::info!(
                     "download finished: {} -> {} ({} bytes)",
                     song.name,
@@ -428,14 +661,20 @@ impl DownloadManager {
                     bytes
                 );
                 // 带上完整路径：用户最关心的就是「下到哪去了」。
-                let _ = notify.send(AppAction::ShowNotification(Notification::success(format!(
-                    "下载完成 → {}",
-                    dest.display()
-                ))));
+                let message = if trigger == DownloadTrigger::AutoCache {
+                    format!("已缓存到本地 → {}", dest.display())
+                } else {
+                    format!("下载完成 → {}", dest.display())
+                };
+                let _ = notify.send(AppAction::ShowNotification(Notification::success(message)));
+                // 同步放在完成提示之后：上传可能耗时，不应该拖慢「下载完成」的反馈。
+                self.sync_to_webdav(&dest, &settings, &notify).await;
             }
             Ok(DownloadOutcome::Skipped { dest }) => {
                 tracing::info!("download skipped, file already exists: {}", dest.display());
-                self.finish(id, DownloadState::Skipped, None, 0, Some(dest));
+                self.finish(id, DownloadState::Skipped, None, 0, Some(dest.clone()));
+                // 记录跳过结果：这样按文件名命中的旧文件也会补进去重索引。
+                self.record_song(&song, DownloadStatus::Skipped, Some(&dest), None);
             }
             Err(TaskError::Cancelled) => {
                 tracing::info!("download cancelled: {}", song.name);
@@ -444,6 +683,7 @@ impl DownloadManager {
             Err(TaskError::Failed(error)) => {
                 tracing::warn!("download failed: {}: {error}", song.name);
                 self.finish(id, DownloadState::Failed, Some(error.clone()), 0, None);
+                self.record_song(&song, DownloadStatus::Failed, None, Some(error.clone()));
                 let _ = notify.send(AppAction::ShowNotification(Notification::error(format!(
                     "下载失败 {}: {error}",
                     song.name
@@ -468,10 +708,16 @@ impl DownloadManager {
                 .unwrap_or_else(|error| error.into_inner()),
         );
 
-        if settings.skip_existing
-            && let Some(existing) = existing_download(&settings.dir, stem)
-        {
-            return Ok(DownloadOutcome::Skipped { dest: existing });
+        if settings.skip_existing {
+            // 先查跨会话去重索引（按歌手+歌名），再退回按当前模板渲染的文件名，
+            // 这样换过文件名模板或重启过程序都不会重复下载同一首歌。
+            let existing = self
+                .records
+                .existing_download(song, &settings.dir)
+                .or_else(|| existing_download(&settings.dir, stem));
+            if let Some(existing) = existing {
+                return Ok(DownloadOutcome::Skipped { dest: existing });
+            }
         }
 
         self.update_state(id, DownloadState::Resolving, None);
@@ -504,8 +750,33 @@ impl DownloadManager {
                 .unwrap_or_else(|| guess_extension(quality).to_string());
             let dest = unique_dest(&settings.dir, stem, &extension_hint);
             self.update_state(id, DownloadState::Downloading, Some(dest.clone()));
+            self.set_expected_size(id, url.size);
             // 下次重试用后面那个 JS 音源，避免反复拿到同一个失效链接。
             js_start_index = js_index.map_or(js_start_index, |index| index + 1);
+
+            // 音源可能直接给出本地文件（汽水的加密音频要先解密到缓存目录）：
+            // 这种情况复制文件即可，不需要也不应该再发一次 HTTP 请求。
+            if let Some(copied) = self.copy_local_source(&url.url, &dest).await {
+                match copied {
+                    Ok(bytes) => {
+                        let final_dest =
+                            maybe_fix_extension(&dest, stem, &settings.dir).unwrap_or(dest.clone());
+                        if let Err(reason) = validate_audio(&final_dest, song.duration) {
+                            tracing::warn!("rejecting copied audio: {reason}");
+                            let _ = std::fs::remove_file(&final_dest);
+                            last_error = Some(reason);
+                            continue;
+                        }
+                        downloaded = Some((resolved_song, url, final_dest, bytes));
+                        break;
+                    }
+                    Err(error) => {
+                        tracing::debug!("copy local source failed: {error}");
+                        last_error = Some(error);
+                        continue;
+                    }
+                }
+            }
 
             let request = DownloadRequest {
                 url: url.url.clone(),
@@ -716,6 +987,21 @@ fn guess_extension(quality: Quality) -> &'static str {
     }
 }
 
+/// 按体积与时长估算码率（kbps）。
+///
+/// 音源给的多是「文件字节数」，而用户关心的是「这是不是 320K / 无损」，
+/// 换算一次就能在列表里直接显示。时长未知或体积过小时返回 `None`。
+fn estimate_bitrate(size_bytes: u64, duration_secs: u64) -> Option<u32> {
+    if duration_secs == 0 || size_bytes == 0 {
+        return None;
+    }
+    let kbps = size_bytes
+        .saturating_mul(8)
+        .checked_div(duration_secs)?
+        .checked_div(1000)?;
+    (kbps > 0).then_some(kbps.min(u32::MAX as u64) as u32)
+}
+
 /// 按文件头魔数校正扩展名，和 MusicBot-Go 的 `normalizeExtractedAudioPath` 等价。
 fn maybe_fix_extension(
     dest: &std::path::Path,
@@ -833,6 +1119,61 @@ mod tests {
         assert!(matches!(rx.try_recv(), Ok(AppAction::ShowNotification(_))));
     }
 
+    /// 跨会话去重：即使文件名模板换了、程序重启过，同一首歌也不再重复下载。
+    #[tokio::test]
+    async fn previously_downloaded_song_is_skipped_without_resolving_url() {
+        let dir = temp_dir("dedup-skip");
+        let mut config = test_config();
+        config.download.dir = dir.display().to_string();
+        config.download.skip_existing = true;
+        // 模板与记录里的文件名不同：只有按「歌手 - 歌名」的去重索引才会命中。
+        config.download.filename_template = "{name}".to_string();
+
+        let song = SongInfo::new(
+            "1".to_string(),
+            SourceId::Kw,
+            "晴天".to_string(),
+            "周杰伦".to_string(),
+        );
+        let file = dir.join("周杰伦 - 晴天.flac");
+        std::fs::write(&file, b"audio").unwrap();
+
+        let records = DownloadRecords::at_path(dir.join("downloads.json"));
+        records.record(DownloadRecord::new(
+            &song,
+            DownloadStatus::Done,
+            Some("周杰伦 - 晴天.flac".to_string()),
+            None,
+        ));
+
+        let manager = Arc::new(DownloadManager::with_records(
+            &config,
+            tokio::runtime::Handle::current(),
+            records,
+        ));
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let sources = Arc::new(SourceManager::new(SourceId::Kw, &[]));
+        assert!(manager.enqueue(song, sources, tx));
+
+        let mut view = manager.snapshot();
+        for _ in 0..200 {
+            view = manager.snapshot();
+            if view.iter().any(|task| task.state == DownloadState::Skipped) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(view.len(), 1, "应当只产生一个任务");
+        assert_eq!(
+            view[0].state,
+            DownloadState::Skipped,
+            "命中记录后应当直接跳过，不会因为没有网络而失败"
+        );
+        assert_eq!(view[0].dest, file);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn guess_extension_follows_quality() {
         assert_eq!(guess_extension(Quality::Flac24), "flac");
@@ -855,6 +1196,9 @@ mod tests {
                 started_at: Instant::now(),
                 finished_at: None,
                 bytes: 0,
+                expected_size: None,
+                duration_secs: 0,
+                trigger: DownloadTrigger::Manual,
             }
         }
 
@@ -897,9 +1241,133 @@ mod tests {
             },
             elapsed: Duration::from_secs(1),
             bytes: 20,
+            expected_size: Some(20),
+            bitrate_kbps: None,
+            trigger: DownloadTrigger::Manual,
         };
         assert_eq!(view.display_name(), "晴天 - 周杰伦");
         assert_eq!(view.progress.ratio(), Some(0.5));
+    }
+
+    #[test]
+    fn bitrate_estimate_uses_size_and_duration() {
+        // 4 MB / 100 秒 ≈ 335 kbps。
+        assert_eq!(estimate_bitrate(4 * 1024 * 1024, 100), Some(335));
+        // 时长未知或体积为 0 时不做估算，避免显示误导性的数字。
+        assert_eq!(estimate_bitrate(4 * 1024 * 1024, 0), None);
+        assert_eq!(estimate_bitrate(0, 100), None);
+        // 极小的文件不应算出 0 kbps。
+        assert_eq!(estimate_bitrate(1, 3600), None);
+    }
+
+    /// 播放自动缓存：达到阈值才入队，并且同一首歌每会话只入队一次。
+    #[tokio::test]
+    async fn auto_cache_respects_threshold_and_enqueues_once() {
+        let dir = temp_dir("auto-cache");
+        let mut config = test_config();
+        config.download.dir = dir.display().to_string();
+        config.download.auto_cache_on_play = true;
+        config.download.auto_cache_after_secs = 10;
+
+        let records = DownloadRecords::at_path(dir.join("downloads.json"));
+        let manager = Arc::new(DownloadManager::with_records(
+            &config,
+            tokio::runtime::Handle::current(),
+            records,
+        ));
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let sources = Arc::new(SourceManager::new(SourceId::Kw, &[]));
+        let song = SongInfo::new(
+            "1".to_string(),
+            SourceId::Kw,
+            "晴天".to_string(),
+            "周杰伦".to_string(),
+        );
+
+        manager.maybe_auto_cache(
+            &song,
+            Duration::from_secs(5),
+            Arc::clone(&sources),
+            tx.clone(),
+        );
+        assert!(manager.snapshot().is_empty(), "未达阈值不应入队");
+
+        manager.maybe_auto_cache(
+            &song,
+            Duration::from_secs(12),
+            Arc::clone(&sources),
+            tx.clone(),
+        );
+        assert_eq!(manager.snapshot().len(), 1);
+
+        manager.maybe_auto_cache(&song, Duration::from_secs(30), sources, tx);
+        assert_eq!(manager.snapshot().len(), 1, "同一首歌不应重复入队");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn auto_cache_skips_songs_that_are_already_downloaded() {
+        let dir = temp_dir("auto-cache-hit");
+        let mut config = test_config();
+        config.download.dir = dir.display().to_string();
+        config.download.auto_cache_on_play = true;
+        config.download.auto_cache_after_secs = 0;
+        // 即便用户关掉了「跳过已下载」，自动缓存也不该重复下同一首歌。
+        config.download.skip_existing = false;
+
+        let song = SongInfo::new(
+            "1".to_string(),
+            SourceId::Kw,
+            "晴天".to_string(),
+            "周杰伦".to_string(),
+        );
+        std::fs::write(dir.join("周杰伦 - 晴天.flac"), b"audio").unwrap();
+        let records = DownloadRecords::at_path(dir.join("downloads.json"));
+        records.record(DownloadRecord::new(
+            &song,
+            DownloadStatus::Done,
+            Some("周杰伦 - 晴天.flac".to_string()),
+            None,
+        ));
+
+        let manager = Arc::new(DownloadManager::with_records(
+            &config,
+            tokio::runtime::Handle::current(),
+            records,
+        ));
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let sources = Arc::new(SourceManager::new(SourceId::Kw, &[]));
+        manager.maybe_auto_cache(&song, Duration::from_secs(60), sources, tx);
+
+        assert!(manager.snapshot().is_empty(), "已缓存的歌曲不应再次入队");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn auto_cache_is_off_by_default() {
+        let dir = temp_dir("auto-cache-off");
+        let mut config = test_config();
+        config.download.dir = dir.display().to_string();
+
+        let records = DownloadRecords::at_path(dir.join("downloads.json"));
+        let manager = Arc::new(DownloadManager::with_records(
+            &config,
+            tokio::runtime::Handle::current(),
+            records,
+        ));
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let sources = Arc::new(SourceManager::new(SourceId::Kw, &[]));
+        let song = SongInfo::new(
+            "1".to_string(),
+            SourceId::Kw,
+            "晴天".to_string(),
+            "周杰伦".to_string(),
+        );
+
+        manager.maybe_auto_cache(&song, Duration::from_secs(600), sources, tx);
+        assert!(manager.snapshot().is_empty());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// 假音源：把播放地址指向本地测试服务端，其余能力返回固定数据。

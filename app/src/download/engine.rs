@@ -222,6 +222,11 @@ pub struct DownloadEngine {
 }
 
 impl DownloadEngine {
+    /// 与下载共用代理/超时配置的 HTTP 客户端，供 WebDAV 上传等附加步骤复用。
+    pub(crate) fn client(&self) -> &reqwest::Client {
+        &self.client
+    }
+
     pub fn new(proxy_url: &str, timeout_secs: u64, options: DownloadOptions) -> Self {
         let timeout = Duration::from_secs(timeout_secs.clamp(1, 600));
         let mut builder = reqwest::Client::builder()

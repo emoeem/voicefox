@@ -1,7 +1,7 @@
 //! mg 歌词获取（MRC 逐字歌词 + LRC + TRC）
 
-use std::sync::OnceLock;
 use crate::http::SendWithRetry;
+use std::sync::OnceLock;
 
 use lx_core::model::lyric::LyricData;
 use lx_core::model::song::SongInfo;
@@ -114,8 +114,8 @@ fn has_lrc_url(song: &SongInfo) -> bool {
 fn parse_mrc(content: &str) -> Option<(String, String)> {
     static LINE: OnceLock<regex::Regex> = OnceLock::new();
     static WORDS: OnceLock<regex::Regex> = OnceLock::new();
-    let line = LINE
-        .get_or_init(|| regex::Regex::new(r"^\s*\[(\d+),\d+\]").expect("valid MRC line regex"));
+    let line =
+        LINE.get_or_init(|| regex::Regex::new(r"^\s*\[(\d+),\d+\]").expect("valid MRC line regex"));
     let words = WORDS
         .get_or_init(|| regex::Regex::new(r"\((-?\d+),(-?\d+)\)").expect("valid MRC word regex"));
     let mut lrc_lines = Vec::new();

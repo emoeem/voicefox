@@ -72,20 +72,19 @@ impl HelpPage {
             | (KeyModifiers::NONE, KeyCode::Down) => {
                 self.scroll = self.scroll.saturating_add(1);
             }
-            (KeyModifiers::NONE, KeyCode::Char('k' | 'K'))
-            | (KeyModifiers::NONE, KeyCode::Up) => {
+            (KeyModifiers::NONE, KeyCode::Char('k' | 'K')) | (KeyModifiers::NONE, KeyCode::Up) => {
                 self.scroll = self.scroll.saturating_sub(1);
             }
             (KeyModifiers::CONTROL, KeyCode::Char('d'))
             | (KeyModifiers::NONE, KeyCode::PageDown) => {
                 self.scroll = self.scroll.saturating_add(15);
             }
-            (KeyModifiers::CONTROL, KeyCode::Char('u'))
-            | (KeyModifiers::NONE, KeyCode::PageUp) => {
+            (KeyModifiers::CONTROL, KeyCode::Char('u')) | (KeyModifiers::NONE, KeyCode::PageUp) => {
                 self.scroll = self.scroll.saturating_sub(15);
             }
-            (KeyModifiers::NONE, KeyCode::Char('g'))
-            | (KeyModifiers::NONE, KeyCode::Home) => self.scroll = 0,
+            (KeyModifiers::NONE, KeyCode::Char('g')) | (KeyModifiers::NONE, KeyCode::Home) => {
+                self.scroll = 0
+            }
             (KeyModifiers::NONE, KeyCode::Char('G'))
             | (KeyModifiers::NONE, KeyCode::End)
             | (KeyModifiers::SHIFT, KeyCode::Char('G')) => self.scroll = usize::MAX,
@@ -133,11 +132,7 @@ impl HelpPage {
             all_lines.extend(section_lines(section, ctx));
             all_lines.push(Line::from(""));
         }
-        let lines: Vec<Line> = all_lines
-            .into_iter()
-            .skip(start)
-            .take(visible)
-            .collect();
+        let lines: Vec<Line> = all_lines.into_iter().skip(start).take(visible).collect();
 
         Clear.render(overlay, buf);
         let block = Block::default()
@@ -206,10 +201,12 @@ mod tests {
         let help = HelpPage::from_config(&config);
         assert_eq!(help.sections.len(), 1 + PAGE_ORDER.len());
         // 全局区包含退出动作
-        assert!(help.sections[0]
-            .entries
-            .iter()
-            .any(|(_, label)| *label == "退出应用"));
+        assert!(
+            help.sections[0]
+                .entries
+                .iter()
+                .any(|(_, label)| *label == "退出应用")
+        );
     }
 
     #[test]
@@ -225,14 +222,14 @@ mod tests {
     #[test]
     fn custom_bindings_are_reflected() {
         let mut config = KeybindingConfig::default();
-        config
-            .global
-            .insert(Action::GlobalQuit, "Q".to_string());
+        config.global.insert(Action::GlobalQuit, "Q".to_string());
         let help = HelpPage::from_config(&config);
-        assert!(help.sections[0]
-            .entries
-            .iter()
-            .any(|(key, label)| key == "Q" && *label == "退出应用"));
+        assert!(
+            help.sections[0]
+                .entries
+                .iter()
+                .any(|(key, label)| key == "Q" && *label == "退出应用")
+        );
     }
 
     #[test]

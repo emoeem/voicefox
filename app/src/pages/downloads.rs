@@ -9,7 +9,11 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
 use unicode_width::UnicodeWidthStr;
 
 use crate::context::AppContext;
-use crate::download::{DownloadState, DownloadTaskView};
+use crate::download::records::{DownloadRecord, DownloadStatus};
+use crate::download::{DownloadState, DownloadTaskView, DownloadTrigger};
+
+/// 面板底部展示的历史记录条数。
+const HISTORY_LIMIT: usize = 5;
 
 /// 面板按键处理结果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,6 +119,20 @@ impl DownloadsPanel {
                 self.selected = 0;
                 ctx.notify(lx_core::events::Notification::info("已清理完成的下载记录"));
             }
+            (KeyModifiers::SHIFT, KeyCode::Char('C' | 'c'))
+            | (KeyModifiers::NONE, KeyCode::Char('C')) => match ctx.downloads.clear_records() {
+                Ok(()) => {
+                    self.selected = 0;
+                    ctx.notify(lx_core::events::Notification::info(
+                        "已清空下载历史，之后可以重新下载这些歌曲",
+                    ));
+                }
+                Err(error) => {
+                    ctx.notify(lx_core::events::Notification::error(format!(
+                        "清空下载历史失败: {error}"
+                    )));
+                }
+            },
             _ => return PanelOutcome::Ignore,
         }
         PanelOutcome::Consumed
@@ -142,9 +160,11 @@ impl DownloadsPanel {
         }
         let width = area.width.saturating_sub(2).clamp(20, 96);
         let active = ctx.downloads.active_count();
+        let history = ctx.downloads.records_recent(HISTORY_LIMIT);
         let rows_needed = if tasks.is_empty() { 1 } else { tasks.len() * 2 };
-        // 上下边框 + 一行目录提示。
-        let height = (rows_needed as u16 + 5)
+        // 上下边框 + 一行目录提示 + 历史区（含标题行）。
+        let history_rows = history_rows(history.len());
+        let height = (rows_needed as u16 + history_rows as u16 + 5)
             .min(area.height.saturating_sub(2))
             .max(5);
         let panel = Rect::new(
@@ -159,12 +179,16 @@ impl DownloadsPanel {
         Clear.render(panel, buf);
 
         let title = if tasks.is_empty() {
-            " 下载 (Ctrl+o 关闭) ".to_string()
+            format!(
+                " 下载 · 历史 {} 条 (Ctrl+o 关闭) ",
+                ctx.downloads.record_count()
+            )
         } else {
             format!(
-                " 下载 · {} 条 · {} 进行中 (Ctrl+o 关闭) ",
+                " 下载 · {} 条 · {} 进行中 · 历史 {} 条 (Ctrl+o 关闭) ",
                 tasks.len(),
-                active
+                active,
+                ctx.downloads.record_count(),
             )
         };
         let block = Block::default()
@@ -175,14 +199,25 @@ impl DownloadsPanel {
         let inner = block.inner(panel);
         block.render(panel, buf);
 
-        // 最后一行固定显示下载目录，回答「下到哪去了」。
+        // 最后一行固定显示下载目录，回答「下到哪去了」；历史区贴在它上面。
+        let footer_height = u16::from(inner.height > 0);
+        let history_area = Rect {
+            y: inner.y
+                + inner
+                    .height
+                    .saturating_sub(footer_height + history_rows as u16),
+            height: (history_rows as u16).min(inner.height.saturating_sub(footer_height)),
+            ..inner
+        };
         let list_area = Rect {
-            height: inner.height.saturating_sub(1),
+            height: inner
+                .height
+                .saturating_sub(footer_height + history_rows as u16),
             ..inner
         };
         let footer_area = Rect {
             y: inner.y + inner.height.saturating_sub(1),
-            height: u16::from(inner.height > 0),
+            height: footer_height,
             ..inner
         };
 
@@ -193,20 +228,19 @@ impl DownloadsPanel {
             )))
             .wrap(ratatui::widgets::Wrap { trim: false })
             .render(list_area, buf);
-            self.render_footer(footer_area, buf, ctx);
-            return;
+        } else {
+            let rows = (list_area.height as usize) / 2;
+            self.clamp_scroll(tasks.len(), rows.max(1));
+            let width = inner.width as usize;
+            let mut lines: Vec<Line> = Vec::new();
+            for (index, task) in tasks.iter().enumerate().skip(self.scroll).take(rows.max(1)) {
+                let selected = index == self.selected;
+                lines.push(task_title_line(task, selected, width, ctx));
+                lines.push(task_progress_line(task, selected, width, ctx));
+            }
+            Paragraph::new(lines).render(list_area, buf);
         }
-
-        let rows = (list_area.height as usize) / 2;
-        self.clamp_scroll(tasks.len(), rows.max(1));
-        let width = inner.width as usize;
-        let mut lines: Vec<Line> = Vec::new();
-        for (index, task) in tasks.iter().enumerate().skip(self.scroll).take(rows.max(1)) {
-            let selected = index == self.selected;
-            lines.push(task_title_line(task, selected, width, ctx));
-            lines.push(task_progress_line(task, selected, width, ctx));
-        }
-        Paragraph::new(lines).render(list_area, buf);
+        render_history(history_area, buf, ctx, &history);
         self.render_footer(footer_area, buf, ctx);
     }
 
@@ -228,6 +262,66 @@ pub fn download_dir_footer(dir: &std::path::Path) -> String {
     format!("下载目录 {}/", dir.display())
 }
 
+/// 历史区占用的行数：每条记录一行，加一行标题；没有记录时不占空间。
+fn history_rows(count: usize) -> usize {
+    if count == 0 { 0 } else { count + 1 }
+}
+
+/// 渲染持久化的下载历史。
+///
+/// 历史只在面板里展示，不参与选中：它记录的是过去的结果，点选/取消
+/// 都没有意义，`C` 一次性清空即可。
+fn render_history(area: Rect, buf: &mut Buffer, ctx: &AppContext, history: &[DownloadRecord]) {
+    if area.height == 0 || area.width == 0 || history.is_empty() {
+        return;
+    }
+    let width = area.width as usize;
+    let mut lines = Vec::with_capacity(history.len() + 1);
+    lines.push(Line::from(Span::styled(
+        truncate_to_width("历史（C 清空，清空后可重新下载）", width),
+        Style::new().fg(crate::theme::overlay1(ctx)),
+    )));
+    for record in history {
+        let marker = match record.status {
+            DownloadStatus::Done => "✓",
+            DownloadStatus::Skipped => "·",
+            DownloadStatus::Failed => "✗",
+        };
+        let text = format!(
+            "  {marker} {} · {} · {} · {}",
+            record.singer,
+            record.name,
+            record.status.label(),
+            relative_time(record.finished_at),
+        );
+        let style = if record.status == DownloadStatus::Failed {
+            Style::new().fg(crate::theme::red(ctx))
+        } else {
+            Style::new().fg(crate::theme::muted(ctx))
+        };
+        lines.push(Line::from(Span::styled(
+            truncate_to_width(&text, width),
+            style,
+        )));
+    }
+    Paragraph::new(lines).render(area, buf);
+}
+
+/// 把 Unix 秒格式化成「刚刚 / 12 分钟前 / 3 小时前 / 2 天前」。
+fn relative_time(finished_at: i64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or_default();
+    let elapsed = now.saturating_sub(finished_at).max(0);
+    match elapsed {
+        0..=59 => "刚刚".to_string(),
+        60..=3599 => format!("{} 分钟前", elapsed / 60),
+        3600..=86_399 => format!("{} 小时前", elapsed / 3600),
+        _ => format!("{} 天前", elapsed / 86_400),
+    }
+}
+
 fn task_title_line(
     task: &DownloadTaskView,
     selected: bool,
@@ -236,7 +330,14 @@ fn task_title_line(
 ) -> Line<'static> {
     let state_color = state_color(task, ctx);
     let marker = if selected { "▶ " } else { "  " };
-    let prefix = format!("{marker}{} [{}] ", task.state.label(), task.source.as_str());
+    // 自动缓存的任务与手动下载区分开：用户没按过下载键，看到任务时
+    // 需要知道它是播放时自动加进来的。
+    let origin = if task.trigger == DownloadTrigger::AutoCache {
+        format!("{}·缓存", task.source.as_str())
+    } else {
+        task.source.as_str().to_string()
+    };
+    let prefix = format!("{marker}{} [{origin}] ", task.state.label());
     let prefix_width = UnicodeWidthStr::width(prefix.as_str());
     let name = truncate_to_width(&task.display_name(), width.saturating_sub(prefix_width + 8));
     let mut style = Style::new().fg(state_color);
@@ -295,6 +396,7 @@ fn task_progress_line(
 
 /// 一行进度明细：百分比或已下载体积、耗时、音质。
 fn format_progress_detail(task: &DownloadTaskView) -> String {
+    let spec = size_spec(task);
     let size = match task.progress.ratio() {
         Some(ratio) if task.state == DownloadState::Downloading => {
             format!("{:>3.0}%", ratio * 100.0)
@@ -308,15 +410,37 @@ fn format_progress_detail(task: &DownloadTaskView) -> String {
         format!("{elapsed}s")
     };
     match task.state {
-        DownloadState::Done => format!("{size} · {} · 已保存 {}", elapsed, task.dest.display()),
+        DownloadState::Done => match spec {
+            Some(spec) => format!("{spec} · {elapsed} · 已保存 {}", task.dest.display()),
+            None => format!("{size} · {elapsed} · 已保存 {}", task.dest.display()),
+        },
         DownloadState::Skipped => format!("已存在: {}", task.dest.display()),
         DownloadState::Queued => "等待空闲下载位".to_string(),
         DownloadState::Resolving => "正在解析播放地址（失败会自动换源）".to_string(),
-        DownloadState::Tagging => format!("{size} · 写入标签与歌词"),
+        DownloadState::Tagging => match spec {
+            Some(spec) => format!("{spec} · 写入标签与歌词"),
+            None => format!("{size} · 写入标签与歌词"),
+        },
         DownloadState::Cancelled => "已取消".to_string(),
         DownloadState::Failed => "失败".to_string(),
-        DownloadState::Downloading => format!("{size} · {} · {}", elapsed, task.quality.label()),
+        DownloadState::Downloading => match spec {
+            Some(spec) => format!("{spec} · {size} · {elapsed}"),
+            None => format!("{size} · {elapsed} · {}", task.quality.label()),
+        },
     }
+}
+
+/// 「体积 · 规格」说明：体积取音源声明值或引擎探测到的总量，规格优先用
+/// 实测/估算码率，拿不到码率时退回请求档位（128K / FLAC 等）。
+fn size_spec(task: &DownloadTaskView) -> Option<String> {
+    let total = (task.progress.total > 0)
+        .then_some(task.progress.total)
+        .or(task.expected_size);
+    let quality = task
+        .bitrate_kbps
+        .map(|bitrate| format!("{bitrate}kbps"))
+        .unwrap_or_else(|| task.quality.label().to_string());
+    total.map(|size| format!("{} · {quality}", human_size(size)))
 }
 
 fn state_color(task: &DownloadTaskView, ctx: &AppContext) -> ratatui::style::Color {
@@ -386,6 +510,9 @@ mod tests {
             },
             elapsed: std::time::Duration::from_secs(3),
             bytes: 0,
+            expected_size: None,
+            bitrate_kbps: None,
+            trigger: DownloadTrigger::Manual,
         }
     }
 
@@ -430,6 +557,36 @@ mod tests {
     }
 
     #[test]
+    fn known_size_and_bitrate_replace_the_quality_label() {
+        // 已下载 5 MB / 总量 10 MB → 50%。
+        let mut downloading = task(DownloadState::Downloading, 5 * 1024 * 1024, 0);
+        // 引擎探测到的总量优先于音源声明值。
+        downloading.progress.total = 10 * 1024 * 1024;
+        downloading.expected_size = Some(9 * 1024 * 1024);
+        downloading.bitrate_kbps = Some(320);
+        let detail = format_progress_detail(&downloading);
+
+        assert!(detail.contains("10.0MB"), "{detail}");
+        assert!(detail.contains("320kbps"), "{detail}");
+        assert!(detail.contains("50%"), "{detail}");
+    }
+
+    #[test]
+    fn size_spec_falls_back_to_the_engine_total() {
+        // 音源没声明体积，但引擎探测到了总量。
+        let mut done = task(DownloadState::Done, 0, 0);
+        done.bytes = 2 * 1024 * 1024;
+        done.expected_size = None;
+        done.progress.total = 2 * 1024 * 1024;
+
+        // 没有码率估算时退回请求档位，用户仍能看出下的是哪种规格。
+        assert_eq!(size_spec(&done).as_deref(), Some("2.0MB · FLAC"));
+        // 两者都没有时不显示体积说明。
+        let unknown = task(DownloadState::Queued, 0, 0);
+        assert_eq!(size_spec(&unknown), None);
+    }
+
+    #[test]
     fn failed_tasks_surface_the_reason() {
         let mut failed = task(DownloadState::Failed, 0, 0);
         failed.error = Some("网络错误: 连接超时".to_string());
@@ -437,5 +594,27 @@ mod tests {
         // 失败行由渲染函数直接使用 error 文本，这里校验数据本身可读。
         assert_eq!(format_progress_detail(&failed), "失败");
         assert_eq!(failed.error.as_deref(), Some("网络错误: 连接超时"));
+    }
+
+    #[test]
+    fn history_rows_account_for_the_title_only_when_present() {
+        assert_eq!(history_rows(0), 0);
+        assert_eq!(history_rows(1), 2);
+        assert_eq!(history_rows(HISTORY_LIMIT), HISTORY_LIMIT + 1);
+    }
+
+    #[test]
+    fn relative_time_buckets_by_age() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        assert_eq!(relative_time(now), "刚刚");
+        assert_eq!(relative_time(now - 120), "2 分钟前");
+        assert_eq!(relative_time(now - 7_200), "2 小时前");
+        assert_eq!(relative_time(now - 172_800), "2 天前");
+        // 时钟回拨时不应出现负数。
+        assert_eq!(relative_time(now + 600), "刚刚");
     }
 }

@@ -280,8 +280,8 @@ fn read_cue_tracks(path: &Path) -> Result<Vec<LocalSong>, String> {
 /// 读取 CUE 文本。部分整轨 CUE 使用 GBK 编码，UTF-8 解析失败时降级用
 /// GB18030 重试，避免"stream did not contain valid UTF-8"导致整张专辑无法入库。
 fn read_cue_text(path: &Path) -> Result<String, String> {
-    let bytes =
-        std::fs::read(path).map_err(|error| format!("读取 CUE 失败: {}: {error}", path.display()))?;
+    let bytes = std::fs::read(path)
+        .map_err(|error| format!("读取 CUE 失败: {}: {error}", path.display()))?;
     match String::from_utf8(bytes) {
         Ok(content) => Ok(content),
         Err(error) => {

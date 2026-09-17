@@ -16,6 +16,66 @@ const VERSION_1_DEFAULT_SOURCES: &[SourceId] = &[
     SourceId::Mg,
 ];
 
+/// 接入千千音乐之前的默认音源组合（版本 2 迁移后追加了 B 站）。
+const VERSION_10_DEFAULT_SOURCES: &[SourceId] = &[
+    SourceId::Kw,
+    SourceId::Kg,
+    SourceId::Tx,
+    SourceId::Wy,
+    SourceId::Mg,
+    SourceId::Bili,
+];
+
+/// 接入汽水音乐之前的默认音源组合（版本 15 未新增默认音源）。
+const VERSION_15_DEFAULT_SOURCES: &[SourceId] = &[
+    SourceId::Kw,
+    SourceId::Kg,
+    SourceId::Tx,
+    SourceId::Wy,
+    SourceId::Mg,
+    SourceId::Bili,
+    SourceId::Qianqian,
+    SourceId::Joox,
+    SourceId::Fivesing,
+    SourceId::Jamendo,
+];
+
+/// 接入 Jamendo 之前的默认音源组合（版本 13 迁移后追加了 5sing）。
+const VERSION_13_DEFAULT_SOURCES: &[SourceId] = &[
+    SourceId::Kw,
+    SourceId::Kg,
+    SourceId::Tx,
+    SourceId::Wy,
+    SourceId::Mg,
+    SourceId::Bili,
+    SourceId::Qianqian,
+    SourceId::Joox,
+    SourceId::Fivesing,
+];
+
+/// 接入 5sing 之前的默认音源组合（版本 12 迁移后追加了 JOOX）。
+const VERSION_12_DEFAULT_SOURCES: &[SourceId] = &[
+    SourceId::Kw,
+    SourceId::Kg,
+    SourceId::Tx,
+    SourceId::Wy,
+    SourceId::Mg,
+    SourceId::Bili,
+    SourceId::Qianqian,
+    SourceId::Joox,
+];
+
+/// 接入 JOOX 之前的默认音源组合（版本 11 迁移后追加了千千音乐）。
+const VERSION_11_DEFAULT_SOURCES: &[SourceId] = &[
+    SourceId::Kw,
+    SourceId::Kg,
+    SourceId::Tx,
+    SourceId::Wy,
+    SourceId::Mg,
+    SourceId::Bili,
+    SourceId::Qianqian,
+];
+
 /// 加载配置：优先读用户配置文件，否则用默认值
 pub fn load(custom_path: &str) -> anyhow::Result<(Config, PathBuf)> {
     let config_path = resolve_config_path(custom_path);
@@ -117,6 +177,53 @@ fn migrate_legacy_config(config: &mut Config) -> bool {
     if config.version < 10 {
         // 新增 [download] 下载配置，字段均有 serde 默认值，旧配置提升版本即可。
         config.version = 10;
+        changed = true;
+    }
+    if config.version < 11 {
+        // 千千音乐接入后成为内置音源：只有仍在使用「上一版默认音源组合」
+        // 的用户才自动补上，用户自己挑选过的列表保持不动。
+        if same_sources(&config.source.enabled, VERSION_10_DEFAULT_SOURCES) {
+            config.source.enabled.push(SourceId::Qianqian);
+        }
+        config.version = 11;
+        changed = true;
+    }
+    if config.version < 12 {
+        // JOOX 同理：只补自己没动过音源列表的用户。
+        if same_sources(&config.source.enabled, VERSION_11_DEFAULT_SOURCES) {
+            config.source.enabled.push(SourceId::Joox);
+        }
+        config.version = 12;
+        changed = true;
+    }
+    if config.version < 13 {
+        // 5sing 同理。
+        if same_sources(&config.source.enabled, VERSION_12_DEFAULT_SOURCES) {
+            config.source.enabled.push(SourceId::Fivesing);
+        }
+        config.version = 13;
+        changed = true;
+    }
+    if config.version < 14 {
+        // Jamendo 同理。
+        if same_sources(&config.source.enabled, VERSION_13_DEFAULT_SOURCES) {
+            config.source.enabled.push(SourceId::Jamendo);
+        }
+        config.version = 14;
+        changed = true;
+    }
+    if config.version < 15 {
+        // 新增 Apple Music 音源，但它只能播放 30 秒试听，默认不启用：
+        // 用户需要在设置页显式打开，避免搜索结果里出现放不完整的歌。
+        config.version = 15;
+        changed = true;
+    }
+    if config.version < 16 {
+        // 汽水音乐：同样只补没动过音源列表的用户。
+        if same_sources(&config.source.enabled, VERSION_15_DEFAULT_SOURCES) {
+            config.source.enabled.push(SourceId::Soda);
+        }
+        config.version = 16;
         changed = true;
     }
     if config.version > CURRENT_CONFIG_VERSION {
@@ -259,7 +366,7 @@ mod tests {
 
         assert!(migrate_legacy_config(&mut config));
         assert_eq!(config.version, CURRENT_CONFIG_VERSION);
-        assert_eq!(config.source.enabled, SourceId::all_online());
+        assert_eq!(config.source.enabled, SourceId::default_enabled());
 
         config.source.enabled = vec![SourceId::Kw];
         assert!(!migrate_legacy_config(&mut config));
@@ -397,7 +504,7 @@ mod tests {
         assert_eq!(config.player.history_limit, 100);
         assert_eq!(config.network.timeout, 15);
         assert_eq!(config.version, CURRENT_CONFIG_VERSION);
-        assert_eq!(config.source.enabled, SourceId::all_online());
+        assert_eq!(config.source.enabled, SourceId::default_enabled());
         let _ = std::fs::remove_file(path);
     }
 }

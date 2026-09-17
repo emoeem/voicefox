@@ -347,7 +347,13 @@ impl LeaderboardPage {
     ) -> AppAction {
         let page = page_chunks(area, self.boards.len());
         let position = Position::new(event.column, event.row);
-        let scroll_amount = ctx.config.read().unwrap_or_else(|e| e.into_inner()).ui.scroll_amount.max(1);
+        let scroll_amount = ctx
+            .config
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .ui
+            .scroll_amount
+            .max(1);
         match event.kind {
             MouseEventKind::ScrollUp => {
                 self.selected = self.selected.saturating_sub(scroll_amount);
@@ -624,7 +630,13 @@ impl LeaderboardPage {
         }
         if self.selected > 0 {
             self.selected -= 1;
-        } else if ctx.config.read().unwrap_or_else(|e| e.into_inner()).ui.wrap_navigation {
+        } else if ctx
+            .config
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .ui
+            .wrap_navigation
+        {
             self.selected = len - 1;
         }
     }
@@ -636,7 +648,13 @@ impl LeaderboardPage {
         }
         if self.selected + 1 < len {
             self.selected += 1;
-        } else if ctx.config.read().unwrap_or_else(|e| e.into_inner()).ui.wrap_navigation {
+        } else if ctx
+            .config
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .ui
+            .wrap_navigation
+        {
             self.selected = 0;
         }
     }
@@ -810,27 +828,11 @@ fn ensure_visible(selected: usize, visible: usize, total: usize, offset: &mut us
 }
 
 fn source_name(source: SourceId) -> &'static str {
-    match source {
-        SourceId::Kw => "酷我",
-        SourceId::Kg => "酷狗",
-        SourceId::Tx => "QQ",
-        SourceId::Wy => "网易云",
-        SourceId::Mg => "咪咕",
-        SourceId::Bili => "哔哩哔哩",
-        SourceId::Local => "本地",
-    }
+    source.display_name()
 }
 
 fn source_label(source: SourceId) -> &'static str {
-    match source {
-        SourceId::Kw => "酷我 kw",
-        SourceId::Kg => "酷狗 kg",
-        SourceId::Tx => "QQ tx",
-        SourceId::Wy => "网易 wy",
-        SourceId::Mg => "咪咕 mg",
-        SourceId::Bili => "哔哩哔哩 bili",
-        SourceId::Local => "本地 local",
-    }
+    source.display_label()
 }
 
 fn truncate_chars(value: &str, max: usize) -> String {

@@ -17,8 +17,9 @@ pub fn parse(content: &str) -> Vec<LyricLine> {
     let re = TIMESTAMP.get_or_init(|| {
         Regex::new(r"\[(\d{1,3}):(\d{2})(?:[.:,](\d{1,3}))?\]").expect("valid LRC timestamp regex")
     });
-    let offset_re = OFFSET
-        .get_or_init(|| Regex::new(r"(?i)\[offset:\s*([+-]?\d+)\s*\]").expect("valid LRC offset regex"));
+    let offset_re = OFFSET.get_or_init(|| {
+        Regex::new(r"(?i)\[offset:\s*([+-]?\d+)\s*\]").expect("valid LRC offset regex")
+    });
     // 增强型 LRC 的行内字标签（如 <00:12.34>）不是正文，解析时剥离
     let word_tag_re = WORD_TAG.get_or_init(|| {
         Regex::new(r"<\d{1,3}:\d{1,2}(?:[.:,]\d{1,3})?>").expect("valid LRC word tag regex")

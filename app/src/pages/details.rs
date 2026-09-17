@@ -142,11 +142,8 @@ impl DetailsPage {
                 self.songs.push(song);
             }
         }
-        let mut album_keys: std::collections::HashSet<String> = self
-            .albums
-            .iter()
-            .map(|album| album.id.clone())
-            .collect();
+        let mut album_keys: std::collections::HashSet<String> =
+            self.albums.iter().map(|album| album.id.clone()).collect();
         for album in albums {
             if album_keys.insert(album.id.clone()) {
                 self.albums.push(album);
@@ -180,7 +177,10 @@ impl DetailsPage {
         ctx: &AppContext,
         resolver: &KeybindingResolver,
     ) -> AppAction {
-        if matches!((key.modifiers, key.code), (KeyModifiers::NONE, KeyCode::Esc)) {
+        if matches!(
+            (key.modifiers, key.code),
+            (KeyModifiers::NONE, KeyCode::Esc)
+        ) {
             return AppAction::GoBack;
         }
         if matches!(
@@ -215,24 +215,18 @@ impl DetailsPage {
 
         match (key.modifiers, key.code) {
             (KeyModifiers::NONE, KeyCode::Char('p')) => self.play_all(),
-            (KeyModifiers::NONE, KeyCode::Char('a')) => {
-                self.add_selected(InsertPosition::End)
-            }
+            (KeyModifiers::NONE, KeyCode::Char('a')) => self.add_selected(InsertPosition::End),
             (KeyModifiers::NONE, KeyCode::Char('A'))
-            | (KeyModifiers::SHIFT, KeyCode::Char('A')) => {
-                self.add_selected(InsertPosition::Next)
-            }
+            | (KeyModifiers::SHIFT, KeyCode::Char('A')) => self.add_selected(InsertPosition::Next),
             (KeyModifiers::NONE, KeyCode::Char('f')) => self.toggle_favorite(ctx),
-            (KeyModifiers::NONE, KeyCode::Char('h'))
-            | (KeyModifiers::NONE, KeyCode::Left)
+            (KeyModifiers::NONE, KeyCode::Char('h')) | (KeyModifiers::NONE, KeyCode::Left)
                 if matches!(self.target, DetailsTarget::Artist(_))
                     && self.focus == DetailsFocus::Songs =>
             {
                 self.focus = DetailsFocus::Albums;
                 AppAction::None
             }
-            (KeyModifiers::NONE, KeyCode::Char('l'))
-            | (KeyModifiers::NONE, KeyCode::Right)
+            (KeyModifiers::NONE, KeyCode::Char('l')) | (KeyModifiers::NONE, KeyCode::Right)
                 if matches!(self.target, DetailsTarget::Artist(_))
                     && self.focus == DetailsFocus::Albums =>
             {
@@ -280,20 +274,32 @@ impl DetailsPage {
         let chunks = self.content_chunks(area);
         match event.kind {
             MouseEventKind::ScrollUp => {
-                if chunks.songs.contains(Position::new(event.column, event.row)) {
+                if chunks
+                    .songs
+                    .contains(Position::new(event.column, event.row))
+                {
                     self.selected_song = self.selected_song.saturating_sub(1);
                     self.ensure_song_visible(chunks.songs);
-                } else if chunks.albums.contains(Position::new(event.column, event.row)) {
+                } else if chunks
+                    .albums
+                    .contains(Position::new(event.column, event.row))
+                {
                     self.selected_album = self.selected_album.saturating_sub(1);
                     self.ensure_album_visible(chunks.albums);
                 }
             }
             MouseEventKind::ScrollDown => {
-                if chunks.songs.contains(Position::new(event.column, event.row)) {
+                if chunks
+                    .songs
+                    .contains(Position::new(event.column, event.row))
+                {
                     self.selected_song =
                         (self.selected_song + 1).min(self.songs.len().saturating_sub(1));
                     self.ensure_song_visible(chunks.songs);
-                } else if chunks.albums.contains(Position::new(event.column, event.row)) {
+                } else if chunks
+                    .albums
+                    .contains(Position::new(event.column, event.row))
+                {
                     self.selected_album =
                         (self.selected_album + 1).min(self.albums.len().saturating_sub(1));
                     self.ensure_album_visible(chunks.albums);
@@ -410,7 +416,9 @@ impl DetailsPage {
                 song: Box::new(song),
                 position,
             })
-            .unwrap_or_else(|| AppAction::ShowNotification(Notification::info("暂无可加入队列的歌曲")))
+            .unwrap_or_else(|| {
+                AppAction::ShowNotification(Notification::info("暂无可加入队列的歌曲"))
+            })
     }
 
     fn download_selected(&self) -> AppAction {
@@ -468,7 +476,13 @@ impl DetailsPage {
     }
 
     fn wrap_selection(&mut self, ctx: &AppContext, down: bool) {
-        if !ctx.config.read().unwrap_or_else(|e| e.into_inner()).ui.wrap_navigation {
+        if !ctx
+            .config
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .ui
+            .wrap_navigation
+        {
             return;
         }
         match self.focus {
@@ -557,8 +571,8 @@ impl DetailsPage {
             return;
         }
         self.ensure_album_visible(inner);
-        for index in self.album_scroll
-            ..(self.album_scroll + inner.height as usize).min(self.albums.len())
+        for index in
+            self.album_scroll..(self.album_scroll + inner.height as usize).min(self.albums.len())
         {
             let album = &self.albums[index];
             let text = truncate(&format!("{} · {}", album.name, album.artist), inner.width);
@@ -612,10 +626,11 @@ impl DetailsPage {
             inner.height.saturating_sub(1),
         );
         self.ensure_song_visible(list_area);
-        for index in self.song_scroll
-            ..(self.song_scroll + list_area.height as usize).min(self.songs.len())
+        for index in
+            self.song_scroll..(self.song_scroll + list_area.height as usize).min(self.songs.len())
         {
-            let text = super::components::song_table::row(&self.songs[index], index, list_area.width);
+            let text =
+                super::components::song_table::row(&self.songs[index], index, list_area.width);
             let style = if self.focus == DetailsFocus::Songs && index == self.selected_song {
                 Style::new()
                     .bg(crate::theme::accent(ctx))

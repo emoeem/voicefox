@@ -130,7 +130,8 @@ impl CoverService {
                 *self.image.write().unwrap_or_else(|e| e.into_inner()) = result.clone();
                 *self.state.write().unwrap_or_else(|e| e.into_inner()) = CoverState::Ready;
             } else {
-                *self.state.write().unwrap_or_else(|e| e.into_inner()) = CoverState::Unavailable(last_error.clone());
+                *self.state.write().unwrap_or_else(|e| e.into_inner()) =
+                    CoverState::Unavailable(last_error.clone());
             }
         }
 

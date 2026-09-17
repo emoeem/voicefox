@@ -5,6 +5,7 @@
 mod crypto;
 pub mod leaderboard;
 pub mod lyric;
+pub mod parse;
 pub mod playlist;
 pub mod search;
 pub(crate) mod session;
@@ -17,7 +18,9 @@ use lx_core::model::lyric::LyricData;
 use lx_core::model::playlist::Playlist;
 use lx_core::model::song::SongInfo;
 use lx_core::model::source::{Quality, SourceId};
-use lx_core::traits::source::{FetchError, MusicSource, SearchError, SearchResult, SongUrl};
+use lx_core::traits::source::{
+    FetchError, MusicSource, SearchError, SearchResult, SongUrl, SourceCapabilities,
+};
 
 pub struct KwSource;
 
@@ -41,6 +44,19 @@ impl MusicSource for KwSource {
 
     fn name(&self) -> &str {
         "酷我音乐"
+    }
+
+    fn capabilities(&self) -> SourceCapabilities {
+        SourceCapabilities {
+            playlists: true,
+            playlist_search: true,
+            playlist_categories: true,
+            album: true,
+            artist: true,
+            leaderboard: true,
+            link_parse: true,
+            ..Default::default()
+        }
     }
 
     async fn search(
@@ -75,8 +91,33 @@ impl MusicSource for KwSource {
         ]
     }
 
-    async fn get_playlists(&self, _tag_id: &str, page: u32) -> Result<Vec<Playlist>, FetchError> {
-        playlist::get_list(page).await
+    async fn get_playlist_categories(
+        &self,
+    ) -> Result<Vec<lx_core::model::playlist::PlaylistCategory>, FetchError> {
+        playlist::get_categories().await
+    }
+
+    // `tag_id` 是酷我的分类 ID，空值表示热门推荐。
+    async fn get_playlists(&self, tag_id: &str, page: u32) -> Result<Vec<Playlist>, FetchError> {
+        if tag_id.trim().is_empty() {
+            return playlist::get_list(page).await;
+        }
+        playlist::get_category_list(tag_id, page).await
+    }
+
+    async fn search_playlists(
+        &self,
+        keyword: &str,
+        page: u32,
+    ) -> Result<Vec<Playlist>, SearchError> {
+        playlist::search_playlists(keyword, page).await
+    }
+
+    async fn parse_link(
+        &self,
+        link: &str,
+    ) -> Result<lx_core::traits::source::ParsedLink, FetchError> {
+        parse::parse(link).await
     }
 
     async fn get_playlist_detail(&self, id: &str, page: u32) -> Result<Vec<SongInfo>, FetchError> {

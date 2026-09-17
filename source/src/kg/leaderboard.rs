@@ -13,8 +13,8 @@ use crate::http;
 use crate::http::SendWithRetry;
 
 pub async fn get_boards() -> Result<Vec<LeaderboardInfo>, SearchError> {
-    let json: Value = http::client()
-        .get("http://mobilecdnbj.kugou.com/api/v5/rank/list?version=9108&plat=0&showtype=2&parentid=0&apiver=6&area_code=1&withsong=1")
+    let json: Value = super::with_cookie(http::client()
+        .get("http://mobilecdnbj.kugou.com/api/v5/rank/list?version=9108&plat=0&showtype=2&parentid=0&apiver=6&area_code=1&withsong=1"))
         .send_with_retry(crate::http::RETRY_ATTEMPTS)
         .await
         .map_err(|error| SearchError::Network(error.to_string()))?
@@ -64,8 +64,7 @@ pub async fn get_list(rank_id: &str, page: u32, limit: u32) -> Result<SearchResu
     let url = format!(
         "http://mobilecdnbj.kugou.com/api/v3/rank/song?version=9108&ranktype=1&plat=0&pagesize={limit}&area_code=1&page={page}&rankid={rank_id}&with_res_tag=0&show_portrait_mv=1"
     );
-    let json: Value = http::client()
-        .get(url)
+    let json: Value = super::with_cookie(http::client().get(url))
         .send_with_retry(crate::http::RETRY_ATTEMPTS)
         .await
         .map_err(|error| SearchError::Network(error.to_string()))?

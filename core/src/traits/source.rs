@@ -2,8 +2,9 @@ use async_trait::async_trait;
 use std::time::Duration;
 
 use crate::model::leaderboard::LeaderboardInfo;
+use crate::model::login::{QrLoginResult, QrLoginSession};
 use crate::model::lyric::LyricData;
-use crate::model::playlist::{Album, Artist, Playlist, Tag};
+use crate::model::playlist::{Album, Artist, Playlist, PlaylistCategory};
 use crate::model::song::SongInfo;
 use crate::model::source::{Quality, SourceId};
 
@@ -13,6 +14,54 @@ pub struct SearchResult {
     pub items: Vec<SongInfo>,
     pub total: u32,
     pub has_more: bool,
+}
+
+/// 链接直解的解析结果。
+///
+/// 对齐 music-lib 的 `Parse` / `ParsePlaylist` / `ParseAlbum`：一个链接可能
+/// 指向单曲、歌单或专辑，界面按变体决定是替换当前列表还是进入详情页。
+#[derive(Debug, Clone)]
+pub enum ParsedLink {
+    Song(Box<SongInfo>),
+    Playlist {
+        playlist: Box<Playlist>,
+        songs: Vec<SongInfo>,
+    },
+    Album {
+        playlist: Box<Playlist>,
+        songs: Vec<SongInfo>,
+    },
+}
+
+/// 音源能力声明。
+///
+/// 接口本身用默认实现表示「不支持」，但界面需要提前知道该不该展示入口
+/// （例如没有歌单分类的音源不该出现分类标签栏），因此每个音源显式声明
+/// 自己支持哪些能力。字段对齐 music-lib 的 provider 接口拆分。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SourceCapabilities {
+    /// 热门 / 推荐歌单。
+    pub playlists: bool,
+    /// 按关键词搜索歌单。
+    pub playlist_search: bool,
+    /// 歌单分类目录（语种 / 风格 / 场景）。
+    pub playlist_categories: bool,
+    /// 专辑搜索与曲目。
+    pub album: bool,
+    /// 歌手页（歌手歌曲 / 专辑）。
+    pub artist: bool,
+    /// 排行榜。
+    pub leaderboard: bool,
+    /// 链接直解（单曲 / 歌单 / 专辑链接）。
+    pub link_parse: bool,
+    /// 支持配置登录 cookie。
+    pub login: bool,
+    /// 支持扫码登录。
+    pub qr_login: bool,
+    /// 读取账号下的个人歌单（需要登录）。
+    pub user_playlists: bool,
+    /// 区分 VIP 曲目 / VIP 账号。
+    pub vip_account: bool,
 }
 
 /// 播放 URL 结果
@@ -56,6 +105,11 @@ pub trait MusicSource: Send + Sync {
     /// 音源显示名称
     fn name(&self) -> &str;
 
+    /// 本音源支持的能力，供界面决定入口显隐。
+    fn capabilities(&self) -> SourceCapabilities {
+        SourceCapabilities::default()
+    }
+
     /// 搜索歌曲
     async fn search(
         &self,
@@ -74,7 +128,12 @@ pub trait MusicSource: Send + Sync {
     fn supported_qualities(&self) -> Vec<Quality>;
 
     // --- 可选实现 ---
-    async fn get_playlist_tags(&self) -> Result<Vec<Tag>, FetchError> {
+    /// 解析平台链接（单曲 / 歌单 / 专辑）。不支持链接直解的音源返回错误。
+    async fn parse_link(&self, _link: &str) -> Result<ParsedLink, FetchError> {
+        Err(FetchError::Other("该音源不支持链接直解".to_string()))
+    }
+    /// 歌单分类目录。未实现的音源返回空列表。
+    async fn get_playlist_categories(&self) -> Result<Vec<PlaylistCategory>, FetchError> {
         Ok(vec![])
     }
     async fn get_playlists(&self, _tag_id: &str, _page: u32) -> Result<Vec<Playlist>, FetchError> {
@@ -195,6 +254,34 @@ pub trait MusicSource: Send + Sync {
         _limit: u32,
     ) -> Result<SearchResult, SearchError> {
         Err(SearchError::Other("该音源不支持排行榜".to_string()))
+    }
+    /// 账号下的个人歌单（需要登录）。未实现的音源返回空列表。
+    async fn get_user_playlists(
+        &self,
+        _page: u32,
+        _limit: u32,
+    ) -> Result<Vec<Playlist>, FetchError> {
+        Ok(vec![])
+    }
+    /// 创建扫码登录会话。未实现的音源返回错误。
+    async fn create_qr_login(&self) -> Result<QrLoginSession, FetchError> {
+        Err(FetchError::Other("该音源不支持扫码登录".to_string()))
+    }
+    /// 轮询扫码状态；登录成功后实现方负责把 cookie 写入本地会话存储。
+    async fn check_qr_login(&self, _key: &str) -> Result<QrLoginResult, FetchError> {
+        Err(FetchError::Other("该音源不支持扫码登录".to_string()))
+    }
+    /// 是否为 VIP 账号。未实现或未登录时返回 `false`。
+    async fn is_vip_account(&self) -> Result<bool, FetchError> {
+        Ok(false)
+    }
+    /// 退出登录并清除本地 cookie。
+    fn logout(&self) -> Result<(), FetchError> {
+        Ok(())
+    }
+    /// 是否已登录（存在可用的会话 cookie）。
+    fn is_logged_in(&self) -> bool {
+        false
     }
 }
 

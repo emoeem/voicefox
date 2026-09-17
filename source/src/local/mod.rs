@@ -151,9 +151,21 @@ impl LocalSource {
         // Clone the previous snapshot before metadata I/O. Unchanged files can then reuse
         // their parsed tags and embedded-cover path instead of being parsed again.
         let previous_songs = self.songs.read().unwrap_or_else(|e| e.into_inner()).clone();
-        let previous_fingerprints = self.fingerprints.read().unwrap_or_else(|e| e.into_inner()).clone();
-        let previous_missing = self.missing.read().unwrap_or_else(|e| e.into_inner()).clone();
-        let previous_signatures = self.last_scan_signatures.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let previous_fingerprints = self
+            .fingerprints
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let previous_missing = self
+            .missing
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let previous_signatures = self
+            .last_scan_signatures
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         let mut all_songs: HashMap<PathBuf, Vec<LocalSong>> = previous_songs.as_ref().clone();
         let mut all_fingerprints = previous_fingerprints.as_ref().clone();
         let mut failures = Vec::new();
@@ -286,13 +298,24 @@ impl LocalSource {
         *self.fingerprints.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(all_fingerprints);
         *self.failures.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(failures);
         missing.retain(|item| !present.contains(&item.path));
-        *self.missing.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(deduplicate_missing(missing));
-        *self.last_scan_signatures.write().unwrap_or_else(|e| e.into_inner()) = signatures;
-        *self.loaded_paths.write().unwrap_or_else(|e| e.into_inner()) = paths.iter().map(|path| expand_path(path)).collect();
+        *self.missing.write().unwrap_or_else(|e| e.into_inner()) =
+            Arc::new(deduplicate_missing(missing));
+        *self
+            .last_scan_signatures
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = signatures;
+        *self.loaded_paths.write().unwrap_or_else(|e| e.into_inner()) =
+            paths.iter().map(|path| expand_path(path)).collect();
         self.library_generation.fetch_add(1, Ordering::Release);
 
         if errors.is_empty() {
-            let total: usize = self.songs.read().unwrap_or_else(|e| e.into_inner()).values().map(|v| v.len()).sum();
+            let total: usize = self
+                .songs
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .values()
+                .map(|v| v.len())
+                .sum();
             tracing::info!("本地音乐扫描完成，共 {} 首", total);
         }
 
@@ -310,7 +333,12 @@ impl LocalSource {
     }
 
     pub fn song_count(&self) -> usize {
-        self.songs.read().unwrap_or_else(|e| e.into_inner()).values().map(Vec::len).sum()
+        self.songs
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .map(Vec::len)
+            .sum()
     }
 
     /// 从当前扫描结果中移除一个文件，避免异步复扫完成前仍显示已删除歌曲。
@@ -339,13 +367,17 @@ impl LocalSource {
                 .canonicalize()
                 .or_else(|_| canonical.canonicalize())
                 .unwrap_or_else(|_| canonical.clone());
-            let mut signatures = self.last_scan_signatures.write().unwrap_or_else(|e| e.into_inner());
+            let mut signatures = self
+                .last_scan_signatures
+                .write()
+                .unwrap_or_else(|e| e.into_inner());
             if let Some(root_key) = signatures.keys().find(|key| root.starts_with(key)).cloned() {
                 signatures.remove(&root_key);
             } else {
                 signatures.remove(&root);
             }
-            let mut fingerprints_guard = self.fingerprints.write().unwrap_or_else(|e| e.into_inner());
+            let mut fingerprints_guard =
+                self.fingerprints.write().unwrap_or_else(|e| e.into_inner());
             let fingerprints = Arc::make_mut(&mut fingerprints_guard);
             fingerprints.remove(path);
             fingerprints.remove(&canonical);
@@ -361,7 +393,12 @@ impl LocalSource {
 
     /// 根据路径查找歌曲
     pub fn find_by_path(&self, path: &PathBuf) -> Option<SongInfo> {
-        for songs in self.songs.read().unwrap_or_else(|e| e.into_inner()).values() {
+        for songs in self
+            .songs
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+        {
             if let Some(s) = songs.iter().find(|s| &s.file_path == path) {
                 return Some(s.song.clone());
             }
@@ -387,7 +424,10 @@ impl LocalSource {
 
     /// 获取已加载的目录
     pub fn loaded_paths(&self) -> Vec<PathBuf> {
-        self.loaded_paths.read().unwrap_or_else(|e| e.into_inner()).clone()
+        self.loaded_paths
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// 增量刷新当前已加载目录，不改变目录配置。
@@ -422,7 +462,10 @@ impl LocalSource {
 
     /// 最近一次扫描中无法解析的文件数量（供界面渲染，避免整表克隆）。
     pub fn failure_count(&self) -> usize {
-        self.failures.read().unwrap_or_else(|e| e.into_inner()).len()
+        self.failures
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .len()
     }
 
     /// 最近一次扫描中从文件系统消失的歌曲数量（供界面渲染，避免整表克隆）。
@@ -552,7 +595,10 @@ impl LocalSource {
 
     /// 停止目录监听器。
     pub fn stop_watcher(&self) {
-        self.watcher.lock().unwrap_or_else(|e| e.into_inner()).take();
+        self.watcher
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
     }
 }
 
@@ -843,7 +889,13 @@ mod tests {
 
         assert!(source.remove_by_path(&path));
         assert!(source.all_songs().is_empty());
-        assert!(source.songs.read().unwrap_or_else(|e| e.into_inner()).is_empty());
+        assert!(
+            source
+                .songs
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_empty()
+        );
         assert!(!source.remove_by_path(&path));
     }
 
@@ -936,14 +988,17 @@ mod tests {
         )]);
         let previous_fingerprints = HashMap::from([(audio.clone(), fingerprint)]);
 
-        let report = scanner::scan_directory_incremental(&dir, 0, &previous, &previous_fingerprints);
+        let report =
+            scanner::scan_directory_incremental(&dir, 0, &previous, &previous_fingerprints);
 
         assert_eq!(report.reused, 2);
         assert_eq!(report.songs.len(), 2);
-        assert!(report
-            .songs
-            .iter()
-            .any(|local| local.song.id == "album.flac#01"));
+        assert!(
+            report
+                .songs
+                .iter()
+                .any(|local| local.song.id == "album.flac#01")
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }

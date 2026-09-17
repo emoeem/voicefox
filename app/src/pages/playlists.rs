@@ -6,7 +6,7 @@ use std::path::Path;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use lx_core::events::{AppAction, InsertPosition, Notification};
 use lx_core::keybinding::{Action, KeybindingResolver};
-use lx_core::model::playlist::Playlist;
+use lx_core::model::playlist::{Playlist, PlaylistCategory};
 use lx_core::model::song::SongInfo;
 use lx_core::model::source::SourceId;
 use ratatui::buffer::Buffer;
@@ -48,6 +48,8 @@ enum CustomDeleteTarget {
 pub enum PlaylistLoadRequest {
     List {
         source: SourceId,
+        /// 歌单分类；空字符串表示「全部/热门」。
+        category: String,
         page: u32,
         append: bool,
     },
@@ -61,6 +63,23 @@ pub enum PlaylistLoadRequest {
         source: SourceId,
         playlist_id: String,
     },
+    /// 歌单分类目录（懒加载，只请求一次）。
+    Categories { source: SourceId },
+    /// 登录账号下的个人歌单。
+    User {
+        source: SourceId,
+        page: u32,
+        append: bool,
+    },
+}
+
+/// 分类选择浮层的状态。
+#[derive(Debug, Clone)]
+struct CategoryPicker {
+    source: SourceId,
+    items: Vec<PlaylistCategory>,
+    selected: usize,
+    scroll: usize,
 }
 
 #[derive(Clone)]
@@ -96,6 +115,14 @@ pub struct PlaylistsPage {
     name_input: Option<PlaylistNameInput>,
     name_input_value: String,
     pending_delete: Option<CustomDeleteTarget>,
+    /// 各音源的歌单分类（懒加载）与当前选中的分类。
+    categories: HashMap<SourceId, Vec<PlaylistCategory>>,
+    active_category: HashMap<SourceId, String>,
+    /// 是否已排入一次分类目录请求（避免失败后每秒重试）。
+    category_loading: bool,
+    category_picker: Option<CategoryPicker>,
+    /// 音源作用域下是否展示「我的歌单」（需要登录）。
+    my_playlists: bool,
 }
 
 impl PlaylistsPage {
@@ -128,6 +155,11 @@ impl PlaylistsPage {
             name_input: None,
             name_input_value: String::new(),
             pending_delete: None,
+            categories: HashMap::new(),
+            active_category: HashMap::new(),
+            category_loading: false,
+            category_picker: None,
+            my_playlists: false,
         }
     }
 
@@ -260,6 +292,12 @@ impl PlaylistsPage {
     }
 
     pub fn next_load_request(&self) -> Option<PlaylistLoadRequest> {
+        // 分类目录只在用户第一次打开选择器时请求一次。
+        if self.category_loading
+            && let Some(source) = self.current_source()
+        {
+            return Some(PlaylistLoadRequest::Categories { source });
+        }
         if let Some(playlist) = self.current_playlist() {
             if self.is_custom_scope() {
                 return None;
@@ -273,6 +311,29 @@ impl PlaylistsPage {
             return None;
         }
         let source = self.current_source()?;
+        // 「我的歌单」优先：开关打开时列表来自账号，而不是热门/分类。
+        if self.my_playlists && self.search_keyword.is_none() {
+            if !self.list_loading && !self.list_loaded {
+                return Some(PlaylistLoadRequest::User {
+                    source,
+                    page: 1,
+                    append: false,
+                });
+            }
+            if !self.list_loading
+                && self.list_loaded
+                && self.list_has_more
+                && !self.playlists.is_empty()
+                && self.selected + 1 >= self.playlists.len()
+            {
+                return Some(PlaylistLoadRequest::User {
+                    source,
+                    page: self.list_page.saturating_add(1).max(1),
+                    append: true,
+                });
+            }
+            return None;
+        }
         if let Some(keyword) = self.search_keyword.as_deref()
             && !self.list_loading
             && !self.list_loaded
@@ -285,8 +346,10 @@ impl PlaylistsPage {
             });
         }
         if !self.list_loading && !self.list_loaded {
+            let category = self.current_category();
             return Some(PlaylistLoadRequest::List {
                 source,
+                category,
                 page: 1,
                 append: false,
             });
@@ -306,8 +369,10 @@ impl PlaylistsPage {
                     append: true,
                 }
             } else {
+                let category = self.current_category();
                 PlaylistLoadRequest::List {
                     source,
+                    category,
                     page,
                     append: true,
                 }
@@ -335,7 +400,157 @@ impl PlaylistsPage {
                 self.songs_loading = true;
                 self.songs_loaded = false;
             }
+            PlaylistLoadRequest::Categories { .. } => {
+                // 请求已经交给后台：标记清掉，避免主循环每个 tick 重复发起；
+                // 请求失败时目录仍为空，用户再按一次 `c` 即可重试。
+                self.category_loading = false;
+            }
+            PlaylistLoadRequest::User { append, .. } => {
+                self.list_loading = true;
+                if !append {
+                    self.list_loaded = false;
+                }
+            }
         }
+    }
+
+    /// 当前音源选中的歌单分类；空字符串表示「全部/热门」。
+    pub fn current_category(&self) -> String {
+        self.current_source()
+            .and_then(|source| self.active_category.get(&source).cloned())
+            .unwrap_or_default()
+    }
+
+    /// 分类选择器要展示的标题（没有分类入口时返回 `None`）。
+    pub fn category_label(&self) -> Option<String> {
+        let source = self.current_source()?;
+        if !self.categories.contains_key(&source) {
+            return None;
+        }
+        let active = self.active_category.get(&source).map(String::as_str);
+        Some(match active {
+            Some(name) if !name.is_empty() && name != "全部" => format!("分类 {name}"),
+            _ => "分类 全部".to_string(),
+        })
+    }
+
+    /// 分类目录请求返回：成功则打开选择器，失败只记错误信息。
+    pub fn apply_categories(
+        &mut self,
+        source: SourceId,
+        result: Result<Vec<PlaylistCategory>, String>,
+    ) {
+        self.category_loading = false;
+        match result {
+            Ok(categories) if !categories.is_empty() => {
+                self.categories.insert(source, categories.clone());
+                let selected = self
+                    .active_category
+                    .get(&source)
+                    .and_then(|active| categories.iter().position(|item| &item.id == active))
+                    .unwrap_or(0);
+                self.category_picker = Some(CategoryPicker {
+                    source,
+                    items: categories,
+                    selected,
+                    scroll: 0,
+                });
+            }
+            Ok(_) => {
+                self.error_message = Some("该音源暂时没有可用的歌单分类".to_string());
+            }
+            Err(error) => {
+                self.error_message = Some(error);
+            }
+        }
+    }
+
+    /// 打开分类选择器；分类目录还没加载时先发起请求。
+    fn open_category_picker(&mut self) {
+        let Some(source) = self.current_source() else {
+            return;
+        };
+        if let Some(items) = self.categories.get(&source).cloned() {
+            let selected = self
+                .active_category
+                .get(&source)
+                .and_then(|active| items.iter().position(|item| &item.id == active))
+                .unwrap_or(0);
+            self.category_picker = Some(CategoryPicker {
+                source,
+                items,
+                selected,
+                scroll: 0,
+            });
+        } else {
+            self.category_loading = true;
+            self.error_message = None;
+        }
+    }
+
+    /// 分类选择器按键；返回 `true` 表示按键已被浮层消费。
+    fn handle_category_picker(&mut self, key: &KeyEvent, ctx: &AppContext) -> bool {
+        if self.category_picker.is_none() {
+            return false;
+        }
+        let len = self
+            .category_picker
+            .as_ref()
+            .map_or(0, |picker| picker.items.len());
+        match (key.modifiers, key.code) {
+            (KeyModifiers::NONE, KeyCode::Esc) | (KeyModifiers::NONE, KeyCode::Char('q')) => {
+                self.category_picker = None;
+            }
+            (KeyModifiers::NONE, KeyCode::Char('j' | 'J'))
+            | (KeyModifiers::NONE, KeyCode::Down) => {
+                self.set_category_selection_by(|selected| {
+                    (selected + 1).min(len.saturating_sub(1))
+                });
+            }
+            (KeyModifiers::NONE, KeyCode::Char('k' | 'K')) | (KeyModifiers::NONE, KeyCode::Up) => {
+                self.set_category_selection_by(|selected| selected.saturating_sub(1));
+            }
+            (KeyModifiers::NONE, KeyCode::Char('g')) | (KeyModifiers::NONE, KeyCode::Home) => {
+                self.set_category_selection_by(|_| 0);
+            }
+            (KeyModifiers::NONE, KeyCode::Char('G'))
+            | (KeyModifiers::SHIFT, KeyCode::Char('G'))
+            | (KeyModifiers::NONE, KeyCode::End) => {
+                self.set_category_selection_by(|_| len.saturating_sub(1));
+            }
+            (KeyModifiers::NONE, KeyCode::Enter) => {
+                if let Some(name) = self.apply_category_selection() {
+                    ctx.notify(Notification::info(format!("已切换到分类「{name}」")));
+                }
+            }
+            _ => {}
+        }
+        true
+    }
+
+    fn set_category_selection_by(&mut self, update: impl FnOnce(usize) -> usize) {
+        if let Some(picker) = self.category_picker.as_mut() {
+            picker.selected = update(picker.selected);
+        }
+    }
+
+    /// 应用选择器里选中的分类：记录分类并重置列表状态，下一轮
+    /// `next_load_request` 会带上新分类重新加载。返回分类名供提示使用。
+    fn apply_category_selection(&mut self) -> Option<String> {
+        let picker = self.category_picker.take()?;
+        let item = picker.items.get(picker.selected)?;
+        self.active_category.insert(picker.source, item.id.clone());
+        // 与 `refresh_current` 的音源分支保持一致：清缓存、回到第一页。
+        self.list_cache.remove(&picker.source);
+        self.playlists.clear();
+        self.list_loaded = false;
+        self.list_loading = false;
+        self.list_page = 0;
+        self.list_has_more = false;
+        self.selected = 0;
+        self.playlist_scroll_offset = 0;
+        self.error_message = None;
+        Some(item.name.clone())
     }
 
     pub fn update_playlists(
@@ -347,7 +562,8 @@ impl PlaylistsPage {
     ) {
         let received_items = !playlists.is_empty();
         let mut items = if append {
-            if self.search_keyword.is_some() {
+            // 搜索结果与「我的歌单」不落在热门缓存里，分页时直接用当前列表。
+            if self.search_keyword.is_some() || self.my_playlists {
                 self.playlists.clone()
             } else {
                 self.list_cache
@@ -369,7 +585,7 @@ impl PlaylistsPage {
         }
         let added_items = items.len() > previous_len;
         let has_more = received_items && (!append || added_items);
-        if self.search_keyword.is_none() {
+        if self.search_keyword.is_none() && !self.my_playlists {
             self.list_cache.insert(
                 source,
                 PlaylistListCache {
@@ -468,6 +684,18 @@ impl PlaylistsPage {
                     "该音源不支持歌单搜索，已切换为热门歌单（{message}）"
                 ));
             }
+            PlaylistLoadRequest::User { source, append, .. }
+                if self.current_source() == Some(*source) && self.selected_playlist.is_none() =>
+            {
+                self.list_loading = false;
+                // 拉不到个人歌单（多为未登录或登录失效）：回到热门歌单，
+                // 并把错误原因提示给用户。
+                self.my_playlists = false;
+                self.list_loaded = false;
+                self.list_has_more = false;
+                self.error_message = Some(format!("获取我的歌单失败：{message}"));
+                reset_selection = true;
+            }
             PlaylistLoadRequest::Songs {
                 source,
                 playlist_id,
@@ -495,6 +723,10 @@ impl PlaylistsPage {
         ctx: &AppContext,
         resolver: &KeybindingResolver,
     ) -> AppAction {
+        if self.category_picker.is_some() {
+            self.handle_category_picker(key, ctx);
+            return AppAction::None;
+        }
         if self.name_input.is_some() {
             return self.handle_name_input(key, ctx);
         }
@@ -703,6 +935,39 @@ impl PlaylistsPage {
             {
                 self.clear_playlist_search();
             }
+            // 音源页的 `c`：打开歌单分类选择器（自建歌单页的 `c` 是新建）。
+            (KeyModifiers::NONE, KeyCode::Char('c'))
+                if self.current_source().is_some()
+                    && self.selected_playlist.is_none()
+                    && self.search_keyword.is_none() =>
+            {
+                self.open_category_picker();
+            }
+            // 音源页的 `m`：在热门歌单与「我的歌单」之间切换。
+            (KeyModifiers::NONE, KeyCode::Char('m'))
+                if self.current_source().is_some()
+                    && self.selected_playlist.is_none()
+                    && self.search_keyword.is_none() =>
+            {
+                let source = self.current_source().unwrap_or(SourceId::Local);
+                if !self.my_playlists && !ctx.source_manager.is_logged_in(source) {
+                    ctx.notify(Notification::info(format!(
+                        "请先在设置页扫码登录{}",
+                        source.display_name()
+                    )));
+                } else {
+                    self.my_playlists = !self.my_playlists;
+                    self.list_cache.remove(&source);
+                    self.playlists.clear();
+                    self.list_loaded = false;
+                    self.list_loading = false;
+                    self.list_page = 0;
+                    self.list_has_more = false;
+                    self.selected = 0;
+                    self.playlist_scroll_offset = 0;
+                    self.error_message = None;
+                }
+            }
             _ => {}
         }
         AppAction::None
@@ -840,7 +1105,13 @@ impl PlaylistsPage {
         }
         let page = page_chunks(area, self.playlists.len());
         let position = Position::new(event.column, event.row);
-        let scroll_amount = ctx.config.read().unwrap_or_else(|e| e.into_inner()).ui.scroll_amount.max(1);
+        let scroll_amount = ctx
+            .config
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .ui
+            .scroll_amount
+            .max(1);
         match event.kind {
             MouseEventKind::ScrollUp => {
                 let scroll_area = if self.selected_playlist.is_some() {
@@ -954,6 +1225,91 @@ impl PlaylistsPage {
         self.render_playlists(page.playlists, buf, ctx);
         self.render_songs(page.songs, buf, ctx);
         self.render_dialog(area, buf, ctx);
+        self.render_category_picker(area, buf, ctx);
+    }
+
+    /// 歌单分类选择浮层：`j/k` 移动、`Enter` 应用、`Esc` 关闭。
+    fn render_category_picker(&mut self, area: Rect, buf: &mut Buffer, ctx: &AppContext) {
+        let Some((source, selected)) = self
+            .category_picker
+            .as_ref()
+            .map(|picker| (picker.source, picker.selected))
+        else {
+            return;
+        };
+        let items = self.categories.get(&source).cloned().unwrap_or_default();
+        if items.is_empty() {
+            return;
+        }
+        let width = area.width.saturating_sub(4).clamp(24, 48);
+        let rows = items
+            .len()
+            .min(area.height.saturating_sub(6) as usize)
+            .max(3);
+        let height = rows as u16 + 4;
+        let popup = Rect::new(
+            area.x + area.width.saturating_sub(width) / 2,
+            area.y + area.height.saturating_sub(height) / 2,
+            width,
+            height,
+        );
+        Clear.render(popup, buf);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::new().fg(crate::theme::accent(ctx)))
+            .title(" 歌单分类 · Enter 应用 · Esc 取消 ")
+            .style(Style::new().bg(crate::theme::mantle(ctx)));
+        let inner = block.inner(popup);
+        block.render(popup, buf);
+
+        // 让选中项始终可见。
+        let visible = inner.height as usize;
+        let mut scroll = self.category_picker.as_ref().map_or(0, |p| p.scroll);
+        if selected < scroll {
+            scroll = selected;
+        } else if visible > 0 && selected >= scroll + visible {
+            scroll = selected + 1 - visible;
+        }
+        let scroll = scroll.min(items.len().saturating_sub(visible.max(1)));
+        if let Some(picker) = self.category_picker.as_mut() {
+            picker.scroll = scroll;
+        }
+
+        let active = self
+            .active_category
+            .get(&source)
+            .map(String::as_str)
+            .unwrap_or_default();
+        let lines = items
+            .iter()
+            .enumerate()
+            .skip(scroll)
+            .take(visible)
+            .map(|(index, category)| {
+                let marker = if index == selected { "▶ " } else { "  " };
+                let checked = if category.id == active {
+                    "● "
+                } else {
+                    "○ "
+                };
+                let mut line = Line::from(vec![
+                    Span::raw(marker),
+                    Span::styled(checked, Style::new().fg(crate::theme::accent(ctx))),
+                    Span::raw(category.name.clone()),
+                ]);
+                if let Some(group) = category.group.as_deref()
+                    && !group.is_empty()
+                    && group != category.name
+                {
+                    line.push_span(Span::styled(
+                        format!("  {group}"),
+                        Style::new().fg(crate::theme::muted(ctx)),
+                    ));
+                }
+                line
+            })
+            .collect::<Vec<_>>();
+        Paragraph::new(lines).render(inner, buf);
     }
 
     fn render_scopes(&self, area: Rect, buf: &mut Buffer, ctx: &AppContext) {
@@ -991,9 +1347,22 @@ impl PlaylistsPage {
             };
             if let Some(keyword) = &self.search_keyword {
                 format!("歌单搜索：{} ({}){}", keyword, self.playlists.len(), suffix)
+            } else if self.my_playlists {
+                format!("我的歌单 ({}){} [m 切回热门]", self.playlists.len(), suffix)
             } else {
+                // 支持分类的音源在标题里显示当前分类与入口提示。
+                let category_hint = self
+                    .current_source()
+                    .filter(|source| ctx.source_manager.capabilities(*source).playlist_categories)
+                    .map(|_| {
+                        let label = self
+                            .category_label()
+                            .unwrap_or_else(|| "分类 全部".to_string());
+                        format!(" · {label} [c]")
+                    })
+                    .unwrap_or_default();
                 format!(
-                    "热门歌单 ({}，第 {} 页){}",
+                    "热门歌单 ({}，第 {} 页){}{category_hint}",
                     self.playlists.len(),
                     self.list_page.max(1),
                     suffix
@@ -1453,7 +1822,13 @@ impl PlaylistsPage {
         }
         if self.selected > 0 {
             self.selected -= 1;
-        } else if ctx.config.read().unwrap_or_else(|e| e.into_inner()).ui.wrap_navigation {
+        } else if ctx
+            .config
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .ui
+            .wrap_navigation
+        {
             self.selected = len - 1;
         }
     }
@@ -1467,7 +1842,13 @@ impl PlaylistsPage {
             self.selected += 1;
         } else if self.selected_playlist.is_none() && self.list_has_more {
             // 保持末项选中，主循环会在下一轮请求下一页。
-        } else if ctx.config.read().unwrap_or_else(|e| e.into_inner()).ui.wrap_navigation {
+        } else if ctx
+            .config
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .ui
+            .wrap_navigation
+        {
             self.selected = 0;
         }
     }
@@ -1565,28 +1946,14 @@ fn render_muted(text: &str, area: Rect, buf: &mut Buffer, ctx: &AppContext) {
 }
 
 fn source_name(source: SourceId) -> &'static str {
-    match source {
-        SourceId::Kw => "酷我",
-        SourceId::Kg => "酷狗",
-        SourceId::Tx => "QQ",
-        SourceId::Wy => "网易云",
-        SourceId::Mg => "咪咕",
-        SourceId::Bili => "哔哩哔哩",
-        SourceId::Local => "本地",
-    }
+    source.display_name()
 }
 
 fn scope_label(scope: PlaylistScope, full: bool) -> &'static str {
     match (scope, full) {
         (PlaylistScope::Custom, _) => "自建",
         (PlaylistScope::Favorites, _) => "已收藏",
-        (PlaylistScope::Source(SourceId::Kw), true) => "酷我 kw",
-        (PlaylistScope::Source(SourceId::Kg), true) => "酷狗 kg",
-        (PlaylistScope::Source(SourceId::Tx), true) => "QQ tx",
-        (PlaylistScope::Source(SourceId::Wy), true) => "网易 wy",
-        (PlaylistScope::Source(SourceId::Mg), true) => "咪咕 mg",
-        (PlaylistScope::Source(SourceId::Bili), true) => "哔哩哔哩 bili",
-        (PlaylistScope::Source(SourceId::Local), true) => "本地 local",
+        (PlaylistScope::Source(source), true) => source.display_label(),
         (PlaylistScope::Source(source), false) => source.as_str(),
     }
 }
@@ -1600,6 +1967,9 @@ fn custom_playlist_metadata(playlist: &CustomPlaylistSummary) -> Playlist {
         song_count: playlist.song_count,
         description: Some("voicefox-custom-playlist".to_string()),
         play_count: None,
+        creator: None,
+        link: None,
+        extra: Default::default(),
     }
 }
 
@@ -1615,6 +1985,7 @@ mod tests {
     };
     use lx_core::events::AppAction;
     use lx_core::model::playlist::Playlist;
+    use lx_core::model::playlist::PlaylistCategory;
     use lx_core::model::song::SongInfo;
     use lx_core::model::source::SourceId;
 
@@ -1626,6 +1997,123 @@ mod tests {
             .unwrap();
     }
 
+    fn category(id: &str, source: SourceId) -> PlaylistCategory {
+        PlaylistCategory::new(id, id, source)
+    }
+
+    #[test]
+    fn categories_are_requested_once_and_open_the_picker() {
+        let mut page = PlaylistsPage::new(vec![SourceId::Wy]);
+        select_source_scope(&mut page, SourceId::Wy);
+        page.list_loaded = true;
+
+        // 分类目录在用户按下分类键之前不会请求。
+        assert_eq!(page.next_load_request(), None);
+        page.open_category_picker();
+        assert_eq!(
+            page.next_load_request(),
+            Some(PlaylistLoadRequest::Categories {
+                source: SourceId::Wy
+            })
+        );
+        // 请求交给后台后标记清掉，主循环不会每个 tick 重复发起。
+        page.begin_loading(&PlaylistLoadRequest::Categories {
+            source: SourceId::Wy,
+        });
+        assert_eq!(page.next_load_request(), None);
+        assert!(page.category_picker.is_none());
+    }
+
+    #[test]
+    fn picking_a_category_reloads_the_list_with_it() {
+        let mut page = PlaylistsPage::new(vec![SourceId::Wy]);
+        select_source_scope(&mut page, SourceId::Wy);
+        page.list_loaded = true;
+        page.apply_categories(
+            SourceId::Wy,
+            Ok(vec![
+                category("全部", SourceId::Wy),
+                category("华语", SourceId::Wy),
+            ]),
+        );
+        assert!(page.category_picker.is_some());
+
+        // 选中「华语」后列表按该分类重新加载。
+        if let Some(picker) = page.category_picker.as_mut() {
+            picker.selected = 1;
+        }
+        assert_eq!(
+            page.apply_category_selection().as_deref(),
+            Some("华语"),
+            "选中的分类应当被应用"
+        );
+        assert!(page.category_picker.is_none());
+        assert_eq!(page.current_category(), "华语");
+        assert_eq!(page.category_label().as_deref(), Some("分类 华语"));
+        assert_eq!(
+            page.next_load_request(),
+            Some(PlaylistLoadRequest::List {
+                source: SourceId::Wy,
+                category: "华语".to_string(),
+                page: 1,
+                append: false,
+            })
+        );
+    }
+
+    #[test]
+    fn category_label_is_absent_until_categories_load() {
+        let mut page = PlaylistsPage::new(vec![SourceId::Kw]);
+        select_source_scope(&mut page, SourceId::Kw);
+        assert_eq!(page.category_label(), None);
+        assert_eq!(page.current_category(), "");
+    }
+
+    #[test]
+    fn my_playlists_mode_requests_the_account_list() {
+        let mut page = PlaylistsPage::new(vec![SourceId::Wy]);
+        select_source_scope(&mut page, SourceId::Wy);
+        page.list_loaded = true;
+        assert_eq!(page.next_load_request(), None);
+
+        // 打开「我的歌单」后，列表请求走账号接口而不是热门/分类。
+        page.my_playlists = true;
+        page.list_loaded = false;
+        assert_eq!(
+            page.next_load_request(),
+            Some(PlaylistLoadRequest::User {
+                source: SourceId::Wy,
+                page: 1,
+                append: false,
+            })
+        );
+    }
+
+    #[test]
+    fn my_playlists_failure_falls_back_to_hot_playlists() {
+        let mut page = PlaylistsPage::new(vec![SourceId::Wy]);
+        select_source_scope(&mut page, SourceId::Wy);
+        page.my_playlists = true;
+        page.list_loaded = false;
+
+        let request = PlaylistLoadRequest::User {
+            source: SourceId::Wy,
+            page: 1,
+            append: false,
+        };
+        page.update_error(&request, "请先在设置页登录网易云".to_string());
+
+        assert!(!page.my_playlists, "失败后应回到热门歌单");
+        assert!(!page.list_loaded);
+        assert!(
+            page.error_message
+                .as_deref()
+                .is_some_and(|message| message.contains("我的歌单")),
+            "{:?}",
+            page.error_message
+        );
+    }
+
     fn playlist(id: &str, source: SourceId) -> Playlist {
         Playlist {
             id: id.to_string(),
@@ -1635,6 +2123,9 @@ mod tests {
             song_count: 0,
             description: None,
             play_count: None,
+            creator: None,
+            link: None,
+            extra: Default::default(),
         }
     }
 
@@ -1647,6 +2138,7 @@ mod tests {
             page.next_load_request(),
             Some(PlaylistLoadRequest::List {
                 source: SourceId::Kw,
+                category: String::new(),
                 page: 1,
                 append: false,
             })
@@ -1658,6 +2150,7 @@ mod tests {
             page.next_load_request(),
             Some(PlaylistLoadRequest::List {
                 source: SourceId::Kg,
+                category: String::new(),
                 page: 1,
                 append: false,
             })
@@ -1675,6 +2168,7 @@ mod tests {
             page.next_load_request(),
             Some(PlaylistLoadRequest::List {
                 source: SourceId::Kw,
+                category: String::new(),
                 page: 2,
                 append: true,
             })
@@ -1729,6 +2223,9 @@ mod tests {
             song_count: 2,
             description: None,
             play_count: None,
+            creator: None,
+            link: None,
+            extra: Default::default(),
         }];
         page.selected_playlist = Some(0);
         let mut first = SongInfo::new(
@@ -1768,6 +2265,9 @@ mod tests {
             song_count: 0,
             description: None,
             play_count: None,
+            creator: None,
+            link: None,
+            extra: Default::default(),
         }];
         page.selected_playlist = Some(0);
         let mut song = SongInfo::new(

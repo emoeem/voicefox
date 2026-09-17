@@ -2,8 +2,8 @@
 //!
 //! GET https://c.y.qq.com/soso/fcgi-bin/client_search_cp
 
-use std::collections::{BTreeSet, HashMap};
 use crate::http::SendWithRetry;
+use std::collections::{BTreeSet, HashMap};
 use std::time::Duration;
 
 use lx_core::model::song::SongInfo;
@@ -32,8 +32,7 @@ pub async fn search(keyword: &str, page: u32, limit: u32) -> Result<SearchResult
     );
 
     let client = http::client();
-    let resp = client
-        .get(&url)
+    let resp = super::with_cookie(client.get(&url))
         .header("Referer", "https://y.qq.com/")
         .header("User-Agent", "Mozilla/5.0")
         .send_with_retry(crate::http::RETRY_ATTEMPTS)

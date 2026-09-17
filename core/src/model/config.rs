@@ -4,7 +4,7 @@ use super::source::{Quality, SourceId};
 use crate::keybinding::KeybindingConfig;
 use crate::traits::player::EqualizerBand;
 
-pub const CURRENT_CONFIG_VERSION: u32 = 10;
+pub const CURRENT_CONFIG_VERSION: u32 = 16;
 
 /// 可显示在底部状态栏中的内容。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -135,7 +135,7 @@ pub struct SourceConfig {
 impl Default for SourceConfig {
     fn default() -> Self {
         Self {
-            enabled: SourceId::all_online().to_vec(),
+            enabled: SourceId::default_enabled().to_vec(),
             default: SourceId::Kw,
             auto_toggle: true,
             js_sources: vec![],
@@ -372,6 +372,9 @@ impl Default for LocalMusicConfig {
 ///
 /// 下载逻辑参考 MusicBot-Go 的 `bot/download`：探测源是否支持 Range，
 /// 大文件走多线程分片，落盘后校验字节数，网络类失败按指数退避重试。
+///
+/// `webdav` 子配置参考 go-music-dl 的 `core/webdav.go`：下载成功后把
+/// 文件同步到远端，失败只作为警告，本地文件仍然保留。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DownloadConfig {
@@ -402,6 +405,81 @@ pub struct DownloadConfig {
     pub embed_cover: bool,
     /// 保存歌词：同时写出 `.lrc` 文件并内嵌到音频标签。
     pub save_lyric: bool,
+    /// WebDAV 同步设置。
+    pub webdav: WebdavConfig,
+    /// 播放时自动缓存：把正在播放的歌曲存到本地下载目录。
+    pub auto_cache_on_play: bool,
+    /// 播放满该秒数后才开始缓存，避免刚切歌就白下一次。
+    pub auto_cache_after_secs: u64,
+}
+
+/// WebDAV 同步配置。
+///
+/// 地址、账号、远端目录都可以留空；`enabled` 为真且 `url` 非空时才会上传。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WebdavConfig {
+    pub enabled: bool,
+    /// 服务地址，例如 `https://dav.example.com/remote.php/dav/files/user/`。
+    pub url: String,
+    pub username: String,
+    pub password: String,
+    /// 远端目录，留空表示直接放在服务地址对应的根目录下。
+    pub dir: String,
+}
+
+impl Default for WebdavConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            url: String::new(),
+            username: String::new(),
+            password: String::new(),
+            dir: "voicefox".to_string(),
+        }
+    }
+}
+
+impl WebdavConfig {
+    /// 从「可能带账号信息的地址」写入配置。
+    ///
+    /// 设置页只提供一个输入框，用户可以直接粘贴
+    /// `https://user:pass@host/dav/`；这里把账号密码拆出来单独保存，
+    /// 后续上传时再交给 Basic Auth，避免把密码留在 URL 里被日志打印。
+    pub fn apply_url_input(&mut self, value: &str) {
+        let value = value.trim();
+        let Some((scheme, rest)) = value.split_once("://") else {
+            self.url = value.to_string();
+            return;
+        };
+        let authority_end = rest.find('/').unwrap_or(rest.len());
+        let (authority, path) = rest.split_at(authority_end);
+        match authority.rsplit_once('@') {
+            Some((credentials, host)) => {
+                let (user, password) = credentials.split_once(':').unwrap_or((credentials, ""));
+                self.username = user.trim().to_string();
+                self.password = password.trim().to_string();
+                self.url = format!("{scheme}://{host}{path}");
+            }
+            None => {
+                self.url = value.to_string();
+            }
+        }
+    }
+
+    /// 展示用地址：即便配置里残留了 `user:pass@`，也不会把密码显示出来。
+    pub fn display_url(&self) -> String {
+        let url = self.url.trim();
+        let Some((scheme, rest)) = url.split_once("://") else {
+            return url.to_string();
+        };
+        let authority_end = rest.find('/').unwrap_or(rest.len());
+        let (authority, path) = rest.split_at(authority_end);
+        match authority.rsplit_once('@') {
+            Some((_, host)) => format!("{scheme}://{host}{path}"),
+            None => url.to_string(),
+        }
+    }
 }
 
 impl Default for DownloadConfig {
@@ -420,6 +498,9 @@ impl Default for DownloadConfig {
             write_tags: true,
             embed_cover: true,
             save_lyric: true,
+            webdav: WebdavConfig::default(),
+            auto_cache_on_play: false,
+            auto_cache_after_secs: 30,
         }
     }
 }
@@ -481,7 +562,50 @@ fn legacy_config_version() -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{DownloadConfig, LocalMusicConfig, StatusBarItem, UiConfig};
+    use super::{DownloadConfig, LocalMusicConfig, StatusBarItem, UiConfig, WebdavConfig};
+
+    #[test]
+    fn webdav_defaults_are_disabled_and_parse_from_partial_toml() {
+        let config: WebdavConfig =
+            serde_json::from_value(serde_json::json!({ "url": "https://dav.example.com/dav" }))
+                .unwrap();
+        assert!(!config.enabled);
+        assert_eq!(config.url, "https://dav.example.com/dav");
+        assert!(config.username.is_empty());
+        assert_eq!(config.dir, "voicefox");
+        // 老配置文件里没有 webdav 段时用默认值。
+        let download: DownloadConfig =
+            serde_json::from_value(serde_json::json!({ "dir": "/music" })).unwrap();
+        assert_eq!(download.webdav, WebdavConfig::default());
+    }
+
+    #[test]
+    fn webdav_url_input_splits_embedded_credentials() {
+        let mut config = WebdavConfig::default();
+        config.apply_url_input("https://user:p%40ss@dav.example.com/remote.php/dav/");
+        assert_eq!(config.url, "https://dav.example.com/remote.php/dav/");
+        assert_eq!(config.username, "user");
+        assert_eq!(config.password, "p%40ss");
+        // 展示时不会再出现密码。
+        assert_eq!(
+            config.display_url(),
+            "https://dav.example.com/remote.php/dav/"
+        );
+
+        // 不带账号的地址只改地址，已有账号保持不变。
+        config.apply_url_input("https://dav.example.com/other");
+        assert_eq!(config.url, "https://dav.example.com/other");
+        assert_eq!(config.username, "user");
+    }
+
+    #[test]
+    fn webdav_display_url_hides_legacy_credentials() {
+        let config = WebdavConfig {
+            url: "https://user:secret@dav.example.com/dav".to_string(),
+            ..WebdavConfig::default()
+        };
+        assert_eq!(config.display_url(), "https://dav.example.com/dav");
+    }
 
     #[test]
     fn missing_download_section_uses_defaults() {

@@ -3,8 +3,8 @@
 //! Step 1: GET http://lyrics.kugou.com/search → 获取 id + accesskey
 //! Step 2: GET http://lyrics.kugou.com/download → base64 解码 → KRC/LRC 文本
 
-use std::sync::OnceLock;
 use crate::http::SendWithRetry;
+use std::sync::OnceLock;
 
 use lx_core::model::lyric::LyricData;
 use lx_core::model::song::SongInfo;
@@ -35,8 +35,7 @@ async fn search_lyric(
         encoded_keyword, hash, duration_secs
     );
 
-    let resp = client
-        .get(&url)
+    let resp = super::with_cookie(client.get(&url))
         .header("KG-RC", "1")
         .header("KG-THash", "expand_search_manager.cpp:852736169:451")
         .header("User-Agent", "KuGou2012-9020-ExpandSearchManager")
@@ -82,8 +81,7 @@ async fn download_lyric(
         id, accesskey, format
     );
 
-    let resp = client
-        .get(&url)
+    let resp = super::with_cookie(client.get(&url))
         .send_with_retry(crate::http::RETRY_ATTEMPTS)
         .await
         .map_err(|e| FetchError::Network(e.to_string()))?
@@ -139,9 +137,8 @@ fn parse_krc(content: &str) -> LyricData {
     static WORDS: OnceLock<regex::Regex> = OnceLock::new();
     let content = content.replace('\r', "");
     let (content, rlyric_lines, tlyric_lines) = extract_language_metadata(&content);
-    let line = LINE.get_or_init(|| {
-        regex::Regex::new(r"^\[(\d+),\d+\]").expect("valid KRC line regex")
-    });
+    let line =
+        LINE.get_or_init(|| regex::Regex::new(r"^\[(\d+),\d+\]").expect("valid KRC line regex"));
     let words = WORDS.get_or_init(|| {
         regex::Regex::new(r"<(-?\d+),(-?\d+)(?:,-?\d+)?>").expect("valid KRC word regex")
     });

@@ -14,12 +14,15 @@ pub fn parse(content: &str) -> Vec<YrcLine> {
     static TIMESTAMP_LINE: OnceLock<Regex> = OnceLock::new();
     static YRC_WORD: OnceLock<Regex> = OnceLock::new();
     static LX_WORD: OnceLock<Regex> = OnceLock::new();
-    let numeric_line = NUMERIC_LINE
-        .get_or_init(|| Regex::new(r"^\[\s*(\d+)\s*,\s*\d+\s*\]").expect("valid YRC numeric line regex"));
-    let timestamp_line = TIMESTAMP_LINE
-        .get_or_init(|| Regex::new(r"^\[(\d+):(\d{1,2})[.:](\d{1,3})\]").expect("valid YRC timestamp line regex"));
-    let yrc_word = YRC_WORD
-        .get_or_init(|| Regex::new(r"\((-?\d+),(-?\d+)(?:,-?\d+)?\)").expect("valid YRC word regex"));
+    let numeric_line = NUMERIC_LINE.get_or_init(|| {
+        Regex::new(r"^\[\s*(\d+)\s*,\s*\d+\s*\]").expect("valid YRC numeric line regex")
+    });
+    let timestamp_line = TIMESTAMP_LINE.get_or_init(|| {
+        Regex::new(r"^\[(\d+):(\d{1,2})[.:](\d{1,3})\]").expect("valid YRC timestamp line regex")
+    });
+    let yrc_word = YRC_WORD.get_or_init(|| {
+        Regex::new(r"\((-?\d+),(-?\d+)(?:,-?\d+)?\)").expect("valid YRC word regex")
+    });
     let lx_word = LX_WORD
         .get_or_init(|| Regex::new(r"<(-?\d+),(-?\d+)(?:,-?\d+)?>").expect("valid LX word regex"));
     let mut lines = Vec::new();

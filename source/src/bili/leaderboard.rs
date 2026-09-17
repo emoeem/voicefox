@@ -66,7 +66,10 @@ async fn get_music_hot(
     let code = json["code"].as_i64().unwrap_or(-1);
     tracing::debug!("bili music-hot response: code={code}");
     if code != 0 {
-        return Err(SearchError::Api(super::api_error(&json, "哔哩哔哩热歌榜失败")));
+        return Err(SearchError::Api(super::api_error(
+            &json,
+            "哔哩哔哩热歌榜失败",
+        )));
     }
     let all = json["data"]["list"]
         .as_array()

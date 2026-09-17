@@ -86,8 +86,7 @@ async fn fetch_official_url(
         });
         let encrypted = crypto::eapi(PLAYER_URL_API, &data);
 
-        let resp = match client
-            .post(PLAYER_URL_ENDPOINT)
+        let resp = match super::with_cookie(client.post(PLAYER_URL_ENDPOINT))
             .header(
                 "User-Agent",
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",

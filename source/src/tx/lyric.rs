@@ -3,8 +3,8 @@
 //! POST https://u.y.qq.com/cgi-bin/musicu.fcg
 //! 返回 base64 编码的歌词，需要解码
 
-use lx_core::model::lyric::LyricData;
 use crate::http::SendWithRetry;
+use lx_core::model::lyric::LyricData;
 use lx_core::model::song::SongInfo;
 use lx_core::traits::source::FetchError;
 use serde_json::Value;
@@ -63,8 +63,7 @@ pub async fn get_lyric(song: &SongInfo) -> Result<LyricData, FetchError> {
 
     let url = format!("https://u.y.qq.com/cgi-bin/musicu.fcg?sign={}", sign);
 
-    let resp = client
-        .post(&url)
+    let resp = super::with_cookie(client.post(&url))
         .header("User-Agent", "QQMusic 14090508(android 12)")
         .header("Content-Type", "application/json")
         .body(body_str)

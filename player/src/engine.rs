@@ -268,8 +268,7 @@ impl MpvEngine {
             .and_then(|()| {
                 // loadfile 下发即记录代次：事件线程用该值归因 StartFile，
                 // 避免读取处理时刻的 engine generation。
-                self.load_generation
-                    .store(generation, Ordering::SeqCst);
+                self.load_generation.store(generation, Ordering::SeqCst);
                 self.mpv.command("loadfile", &[url, "replace"])
             });
 
@@ -809,7 +808,8 @@ impl Player for MpvEngine {
             // mpv 还没 FileLoaded）：只记录待定 seek，进度条先行展示目标
             // 位置，加载完成后由事件循环应用。
             let generation = self.generation.load(Ordering::SeqCst);
-            *self.pending_seek.lock().unwrap_or_else(|e| e.into_inner()) = Some((generation, position));
+            *self.pending_seek.lock().unwrap_or_else(|e| e.into_inner()) =
+                Some((generation, position));
             let _ = self.position_tx.send(position);
             let _ = self.audible_position_tx.send(position);
             return;
@@ -846,7 +846,10 @@ impl Player for MpvEngine {
     }
 
     fn take_event_receiver(&self) -> Option<mpsc::UnboundedReceiver<PlayerEvent>> {
-        self.event_rx.lock().unwrap_or_else(|e| e.into_inner()).take()
+        self.event_rx
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
     }
 
     fn volume(&self) -> u32 {
@@ -890,7 +893,10 @@ impl Player for MpvEngine {
     }
 
     fn audio_output_device(&self) -> String {
-        self.audio_device.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.audio_device
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     fn set_audio_output_device(&self, device: &str) {
@@ -1035,7 +1041,10 @@ impl Player for MpvEngine {
     }
 
     fn equalizer_bands(&self) -> Vec<EqualizerBand> {
-        self.equalizer_bands.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.equalizer_bands
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     fn set_equalizer_bands(&self, bands: &[EqualizerBand]) {
@@ -1055,7 +1064,10 @@ impl Player for MpvEngine {
             warn!("libmpv set_equalizer_bands failed: {error}");
             return;
         }
-        *self.equalizer_bands.lock().unwrap_or_else(|e| e.into_inner()) = bands.to_vec();
+        *self
+            .equalizer_bands
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = bands.to_vec();
     }
 
     fn fade_in(&self, duration: Duration) {
@@ -1078,7 +1090,11 @@ impl Drop for MpvEngine {
         self.shutdown.store(true, Ordering::SeqCst);
         self.cancel_fade_internal();
         let _ = self.mpv.command("stop", &[]);
-        if let Some(event_thread) = self.event_thread.lock().unwrap_or_else(|e| e.into_inner()).take()
+        if let Some(event_thread) = self
+            .event_thread
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
             && event_thread.join().is_err()
         {
             warn!("libmpv event thread panicked");

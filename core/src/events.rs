@@ -115,9 +115,12 @@ pub enum AppAction {
     /// 从设置页发起的外部歌单导入。文件解析与写盘都在后台任务中完成，
     /// 避免在 TUI 主循环里同步解析大歌单并反复写盘。
     ImportExternalPlaylist(String),
-    BiliLogin,
-    BiliLogout,
-    BiliLoginSuccess,
+    /// 打开指定音源的扫码登录页。
+    QrLogin(SourceId),
+    /// 退出指定音源的登录。
+    QrLogout(SourceId),
+    /// 扫码登录成功（页面内部使用）。
+    QrLoginSuccess(SourceId),
     /// 打开歌手详情页（从歌曲右键菜单进入）。
     ShowArtistDetails(Box<SongInfo>),
     /// 打开专辑详情页（从歌曲右键菜单或歌手页专辑列表进入）。

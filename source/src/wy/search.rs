@@ -3,8 +3,8 @@
 //! POST https://interface.music.163.com/eapi/batch
 //! 使用 eapi 加密，form-urlencoded body
 
-use std::collections::BTreeSet;
 use crate::http::SendWithRetry;
+use std::collections::BTreeSet;
 use std::time::Duration;
 
 use lx_core::model::song::SongInfo;
@@ -46,8 +46,7 @@ pub async fn search(keyword: &str, page: u32, limit: u32) -> Result<SearchResult
     let encrypted = crypto::eapi(url, &data);
 
     let client = http::client();
-    let resp = client
-        .post("https://interface.music.163.com/eapi/batch")
+    let resp = super::with_cookie(client.post("https://interface.music.163.com/eapi/batch"))
         .header(
             "User-Agent",
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",

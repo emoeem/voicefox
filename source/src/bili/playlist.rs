@@ -54,6 +54,9 @@ pub async fn get_playlists(
                 cover_url: normalize_url(f["cover"].as_str()),
                 song_count: f["media_count"].as_u64().unwrap_or(0) as u32,
                 play_count: None,
+                creator: None,
+                link: None,
+                extra: Default::default(),
             })
         })
         .collect();

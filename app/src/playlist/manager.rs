@@ -67,7 +67,10 @@ impl PlaylistManager {
             .store(index.min(songs.len().saturating_sub(1)), Ordering::Release);
         *list = songs;
         if reset_failures {
-            *self.consecutive_failures.lock().unwrap_or_else(|e| e.into_inner()) = 0;
+            *self
+                .consecutive_failures
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = 0;
         }
     }
 
@@ -84,7 +87,11 @@ impl PlaylistManager {
     /// 全量快照：深拷贝整张队列。仅供低频路径（右键菜单、测试）使用。
     pub fn snapshot(&self) -> (Vec<SongInfo>, usize) {
         (
-            self.current_list.read().unwrap_or_else(|e| e.into_inner()).as_ref().clone(),
+            self.current_list
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+                .clone(),
             self.current_index(),
         )
     }
@@ -99,7 +106,10 @@ impl PlaylistManager {
 
     #[cfg(target_os = "linux")]
     pub fn len(&self) -> usize {
-        self.current_list.read().unwrap_or_else(|e| e.into_inner()).len()
+        self.current_list
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .len()
     }
 
     /// 将单首歌曲插入当前播放列表，返回插入后的索引。
@@ -164,7 +174,10 @@ impl PlaylistManager {
     pub fn clear(&self) {
         *self.current_list.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(vec![]);
         self.current_index.store(0, Ordering::Release);
-        *self.consecutive_failures.lock().unwrap_or_else(|e| e.into_inner()) = 0;
+        *self
+            .consecutive_failures
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = 0;
     }
 
     /// 非零拷贝版 `next_entry`，保留给测试与外部使用；生产切歌走
@@ -224,7 +237,10 @@ impl PlaylistManager {
             return None;
         }
 
-        let mut failures = self.consecutive_failures.lock().unwrap_or_else(|e| e.into_inner());
+        let mut failures = self
+            .consecutive_failures
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         *failures = failures.saturating_add(1);
         if *failures >= list.len() {
             return None;
@@ -239,7 +255,10 @@ impl PlaylistManager {
 
     /// mpv 已确认开始播放，新的连续失败计数从零开始。
     pub fn mark_playback_started(&self) {
-        *self.consecutive_failures.lock().unwrap_or_else(|e| e.into_inner()) = 0;
+        *self
+            .consecutive_failures
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = 0;
     }
 
     #[allow(dead_code)]

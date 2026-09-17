@@ -38,8 +38,14 @@ impl LyricService {
     pub fn prepare(&self) -> u64 {
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
         *self.lines.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(Vec::new());
-        self.yrc_lines.write().unwrap_or_else(|e| e.into_inner()).clear();
-        self.trans_lines.write().unwrap_or_else(|e| e.into_inner()).clear();
+        self.yrc_lines
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        self.trans_lines
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
         *self.state.write().unwrap_or_else(|e| e.into_inner()) = LyricState::default();
         generation
     }
@@ -126,7 +132,11 @@ impl LyricService {
             .saturating_sub(1);
 
         let trans = self.trans_lines.read().unwrap_or_else(|e| e.into_inner());
-        let translation = if *self.show_translation.read().unwrap_or_else(|e| e.into_inner()) {
+        let translation = if *self
+            .show_translation
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+        {
             trans
                 .iter()
                 .find(|(i, _)| *i == current)
@@ -249,7 +259,10 @@ impl LyricService {
     }
 
     pub fn set_translation_enabled(&self, enabled: bool) {
-        *self.show_translation.write().unwrap_or_else(|e| e.into_inner()) = enabled;
+        *self
+            .show_translation
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = enabled;
     }
 
     pub fn set_yrc_enabled(&self, enabled: bool) {

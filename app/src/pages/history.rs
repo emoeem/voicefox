@@ -201,7 +201,13 @@ pub fn handle_input(
                 if len != 0 {
                     if state.selected > 0 {
                         state.selected -= 1;
-                    } else if ctx.config.read().unwrap_or_else(|e| e.into_inner()).ui.wrap_navigation {
+                    } else if ctx
+                        .config
+                        .read()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .ui
+                        .wrap_navigation
+                    {
                         state.selected = len.saturating_sub(1);
                     }
                 }
@@ -211,7 +217,13 @@ pub fn handle_input(
                 if len != 0 {
                     if state.selected + 1 < len {
                         state.selected += 1;
-                    } else if ctx.config.read().unwrap_or_else(|e| e.into_inner()).ui.wrap_navigation {
+                    } else if ctx
+                        .config
+                        .read()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .ui
+                        .wrap_navigation
+                    {
                         state.selected = 0;
                     }
                 }
@@ -287,7 +299,13 @@ pub fn handle_input(
             if len != 0 {
                 if state.selected > 0 {
                     state.selected -= 1;
-                } else if ctx.config.read().unwrap_or_else(|e| e.into_inner()).ui.wrap_navigation {
+                } else if ctx
+                    .config
+                    .read()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .ui
+                    .wrap_navigation
+                {
                     state.selected = len.saturating_sub(1);
                 }
             }
@@ -296,7 +314,13 @@ pub fn handle_input(
             if len != 0 {
                 if state.selected + 1 < len {
                     state.selected += 1;
-                } else if ctx.config.read().unwrap_or_else(|e| e.into_inner()).ui.wrap_navigation {
+                } else if ctx
+                    .config
+                    .read()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .ui
+                    .wrap_navigation
+                {
                     state.selected = 0;
                 }
             }
@@ -390,7 +414,13 @@ pub fn handle_mouse(
 ) -> AppAction {
     let (sorted, indices) = history_view(ctx, state, filter_query, cache);
     let len = indices.len();
-    let scroll_amount = ctx.config.read().unwrap_or_else(|e| e.into_inner()).ui.scroll_amount.max(1);
+    let scroll_amount = ctx
+        .config
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .ui
+        .scroll_amount
+        .max(1);
     let mut activate_index = None;
     match event.kind {
         MouseEventKind::ScrollUp => {

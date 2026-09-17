@@ -21,7 +21,7 @@ remember_playback_state = true
 history_limit = 200
 
 [source]
-enabled = ["kw", "kg", "tx", "wy", "mg", "bili"]
+enabled = ["kw", "kg", "tx", "wy", "mg", "qianqian", "joox", "fivesing", "jamendo", "soda", "bili"]
 default = "kw"
 auto_toggle = true          # 播放失败时自动尝试其它音源的同曲匹配
 # JS 音源脚本 URL 或本地路径（lx-music user API 协议）
@@ -101,6 +101,20 @@ write_tags = true
 embed_cover = true
 # 保存歌词：同时写出同名 .lrc 并内嵌到音频标签
 save_lyric = true
+# 播放自动缓存：把正在播放的歌曲存到本地下载目录（默认关闭）
+auto_cache_on_play = false
+# 播放满该秒数后才开始缓存，避免刚切歌就白下一次
+auto_cache_after_secs = 30
+
+# WebDAV 同步（可选）：下载完成后把音频推送到远端，失败只警告不影响本地文件
+[download.webdav]
+enabled = false
+# 服务地址；也可以在设置页按 C 直接粘贴带账号的地址
+url = ""
+username = ""
+password = ""
+# 远端目录，留空表示直接放在服务地址对应的根目录下
+dir = "voicefox"
 
 # [theme] 主题（可选，默认 Catppuccin Mocha；省略该节即使用默认配色）
 # use_dark = true

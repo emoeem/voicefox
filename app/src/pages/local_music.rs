@@ -75,7 +75,13 @@ pub fn handle_mouse(
 ) -> AppAction {
     let all_songs = sorted_local_songs(ctx, state, cache);
     let view = LocalSongView::build(all_songs, filter_query);
-    let scroll_amount = ctx.config.read().unwrap_or_else(|e| e.into_inner()).ui.scroll_amount.max(1);
+    let scroll_amount = ctx
+        .config
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .ui
+        .scroll_amount
+        .max(1);
     match event.kind {
         MouseEventKind::ScrollUp => {
             state.selected = state.selected.saturating_sub(scroll_amount);
@@ -170,16 +176,28 @@ mod tests {
     fn maps_visible_rows_to_scrolled_song_indices() {
         let area = Rect::new(10, 5, 80, 12);
 
-        assert_eq!(song_index_at(area, Position::new(12, 7), 4, 20, false), Some(4));
-        assert_eq!(song_index_at(area, Position::new(12, 10), 4, 20, false), Some(7));
+        assert_eq!(
+            song_index_at(area, Position::new(12, 7), 4, 20, false),
+            Some(4)
+        );
+        assert_eq!(
+            song_index_at(area, Position::new(12, 10), 4, 20, false),
+            Some(7)
+        );
     }
 
     #[test]
     fn ignores_header_border_and_unused_bottom_row() {
         let area = Rect::new(10, 5, 80, 12);
 
-        assert_eq!(song_index_at(area, Position::new(12, 6), 0, 20, false), None);
-        assert_eq!(song_index_at(area, Position::new(12, 15), 0, 20, false), None);
+        assert_eq!(
+            song_index_at(area, Position::new(12, 6), 0, 20, false),
+            None
+        );
+        assert_eq!(
+            song_index_at(area, Position::new(12, 15), 0, 20, false),
+            None
+        );
         assert_eq!(song_index_at(area, Position::new(9, 7), 0, 20, false), None);
     }
 
@@ -189,7 +207,13 @@ mod tests {
 
         // 过滤条可见时数据行整体下移一行：原第 0 行位置现在点不中表头之上
         assert_eq!(song_index_at(area, Position::new(12, 7), 0, 20, true), None);
-        assert_eq!(song_index_at(area, Position::new(12, 8), 0, 20, true), Some(0));
-        assert_eq!(song_index_at(area, Position::new(12, 7), 0, 20, false), Some(0));
+        assert_eq!(
+            song_index_at(area, Position::new(12, 8), 0, 20, true),
+            Some(0)
+        );
+        assert_eq!(
+            song_index_at(area, Position::new(12, 7), 0, 20, false),
+            Some(0)
+        );
     }
 }

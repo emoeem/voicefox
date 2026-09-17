@@ -185,7 +185,10 @@ impl AppContext {
             (config.notification.in_app, config.notification.enable)
         };
         if in_app && notification.in_app {
-            let mut notifications = self.notifications.write().unwrap_or_else(|e| e.into_inner());
+            let mut notifications = self
+                .notifications
+                .write()
+                .unwrap_or_else(|e| e.into_inner());
             notifications.push_back(notification.clone());
             while notifications.len() > 8 {
                 notifications.pop_front();
@@ -197,7 +200,11 @@ impl AppContext {
     }
 
     pub fn dismiss_notification(&self) -> bool {
-        self.notifications.write().unwrap_or_else(|e| e.into_inner()).pop_back().is_some()
+        self.notifications
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .pop_back()
+            .is_some()
     }
 
     pub fn notification_timeout(&self) -> Duration {
@@ -212,7 +219,13 @@ impl AppContext {
     }
 
     pub fn persist_playback_session(&self) -> Result<(), String> {
-        if !self.config.read().unwrap_or_else(|e| e.into_inner()).player.remember_playback_state {
+        if !self
+            .config
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .player
+            .remember_playback_state
+        {
             return self.storage.clear_playback_session();
         }
         let (playlist, current_index) = self.playlist.snapshot_arc();
@@ -249,7 +262,11 @@ impl AppContext {
             device.trim()
         };
         self.player.set_audio_output_device(device);
-        self.config.write().unwrap_or_else(|e| e.into_inner()).player.audio_device = device.to_string();
+        self.config
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .player
+            .audio_device = device.to_string();
         self.persist_control_update(format!("音频设备: {device}"))
     }
 
@@ -331,13 +348,25 @@ impl AppContext {
     }
 
     pub fn fade_in_now(&self) -> String {
-        let duration = self.config.read().unwrap_or_else(|e| e.into_inner()).player.fade_in_ms.max(250);
+        let duration = self
+            .config
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .player
+            .fade_in_ms
+            .max(250);
         self.player.fade_in(Duration::from_millis(duration));
         format!("已开始淡入（{}）", fade_duration_label(duration))
     }
 
     pub fn fade_out_now(&self) -> String {
-        let duration = self.config.read().unwrap_or_else(|e| e.into_inner()).player.fade_out_ms.max(250);
+        let duration = self
+            .config
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .player
+            .fade_out_ms
+            .max(250);
         self.player.fade_out(Duration::from_millis(duration));
         format!("已开始淡出（{}）", fade_duration_label(duration))
     }
@@ -347,13 +376,19 @@ impl AppContext {
         if start >= *self.duration.borrow() {
             return "无法设置 A 点：当前没有可循环的播放位置".to_string();
         }
-        *self.pending_ab_loop_start.lock().unwrap_or_else(|e| e.into_inner()) = Some(start);
+        *self
+            .pending_ab_loop_start
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(start);
         format!("A 点: {}", format_duration(start))
     }
 
     pub fn set_ab_loop_end_now(&self) -> String {
         let end = *self.position.borrow();
-        let mut pending = self.pending_ab_loop_start.lock().unwrap_or_else(|e| e.into_inner());
+        let mut pending = self
+            .pending_ab_loop_start
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let Some(start) = *pending else {
             return "请先设置 A 点".to_string();
         };
@@ -370,7 +405,10 @@ impl AppContext {
     }
 
     pub fn clear_ab_loop(&self) -> String {
-        *self.pending_ab_loop_start.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        *self
+            .pending_ab_loop_start
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = None;
         self.player.clear_ab_loop();
         "已清除 A-B 循环".to_string()
     }

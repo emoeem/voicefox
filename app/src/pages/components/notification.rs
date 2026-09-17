@@ -11,7 +11,13 @@ use unicode_width::UnicodeWidthStr;
 use crate::context::AppContext;
 
 pub fn area(screen: Rect, ctx: &AppContext) -> Option<Rect> {
-    if !ctx.config.read().unwrap_or_else(|e| e.into_inner()).notification.in_app {
+    if !ctx
+        .config
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .notification
+        .in_app
+    {
         return None;
     }
     let notifs = ctx.notifications.read().unwrap_or_else(|e| e.into_inner());
@@ -70,7 +76,12 @@ pub fn action_url_at(
     row: u16,
     ctx: &AppContext,
 ) -> Option<String> {
-    let notification = ctx.notifications.read().unwrap_or_else(|e| e.into_inner()).back().cloned()?;
+    let notification = ctx
+        .notifications
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .back()
+        .cloned()?;
     let url = notification.action_url?;
     let label = notification.action_label?;
     let inner = Block::default()
@@ -92,7 +103,12 @@ pub fn render(screen: Rect, buf: &mut Buffer, ctx: &AppContext) {
         return;
     };
     let lifetime = ctx.notification_timeout();
-    let notification = ctx.notifications.read().unwrap_or_else(|e| e.into_inner()).back().cloned();
+    let notification = ctx
+        .notifications
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .back()
+        .cloned();
     let Some(notification) = notification else {
         return;
     };

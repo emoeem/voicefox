@@ -9,16 +9,25 @@ use std::time::Instant;
 use lx_core::model::leaderboard::LeaderboardInfo;
 use lx_core::model::lyric::LyricData;
 use lx_core::model::playlist::Playlist;
+use lx_core::model::playlist::PlaylistCategory;
 use lx_core::model::playlist::{Album, Artist};
 use lx_core::model::song::SongInfo;
 use lx_core::model::source::{Quality, SourceHealth, SourceId};
-use lx_core::traits::source::{FetchError, MusicSource, SearchError, SearchResult, SongUrl};
+use lx_core::traits::source::{
+    FetchError, MusicSource, ParsedLink, SearchError, SearchResult, SongUrl, SourceCapabilities,
+};
 
+use crate::apple::AppleSource;
 use crate::bili::BiliSource;
+use crate::fivesing::FivesingSource;
+use crate::jamendo::JamendoSource;
+use crate::joox::JooxSource;
 use crate::kg::KgSource;
 use crate::kw::KwSource;
 use crate::local::LocalSource;
 use crate::mg::MgSource;
+use crate::qianqian::QianqianSource;
+use crate::soda::SodaSource;
 use crate::tx::TxSource;
 use crate::wy::WySource;
 
@@ -46,8 +55,7 @@ pub struct SourceManager {
     /// 歌词"确认无词"负缓存（上次确认时间），避免纯音乐/无词歌曲
     /// 每次播放都触发 JS 音源 + 全源聚合补全的长耗时请求。
     /// 键为 (来源，JS 平台标记，歌曲 id)。
-    lyric_negative_cache:
-        std::sync::Mutex<HashMap<(SourceId, Option<String>, String), Instant>>,
+    lyric_negative_cache: std::sync::Mutex<HashMap<(SourceId, Option<String>, String), Instant>>,
 }
 
 /// 判断是否为真本地文件歌曲：JS 音源的搜索结果同样标记为 `SourceId::Local`，
@@ -94,6 +102,12 @@ impl SourceManager {
         manager.register(Arc::new(MgSource::new()));
         manager.register(Arc::new(TxSource::new()));
         manager.register(Arc::new(WySource::new()));
+        manager.register(Arc::new(QianqianSource::new()));
+        manager.register(Arc::new(JooxSource::new()));
+        manager.register(Arc::new(FivesingSource::new()));
+        manager.register(Arc::new(JamendoSource::new()));
+        manager.register(Arc::new(AppleSource::new()));
+        manager.register(Arc::new(SodaSource::new()));
         manager.register(bili_source);
         // 注册本地音源
         manager.register(local_source);
@@ -116,7 +130,11 @@ impl SourceManager {
     }
 
     pub fn is_js_source_request_current(&self, generation: u64) -> bool {
-        self.js_sources.read().unwrap_or_else(|e| e.into_inner()).generation == generation
+        self.js_sources
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .generation
+            == generation
     }
 
     pub fn set_js_source_if_current(&self, generation: u64, source: Arc<dyn MusicSource>) -> bool {
@@ -187,7 +205,11 @@ impl SourceManager {
     }
 
     pub fn js_source_count(&self) -> usize {
-        self.js_sources.read().unwrap_or_else(|e| e.into_inner()).sources.len()
+        self.js_sources
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .sources
+            .len()
     }
 
     fn js_sources(&self) -> Vec<Arc<dyn MusicSource>> {
@@ -253,6 +275,49 @@ impl SourceManager {
             .collect()
     }
 
+    /// 查询音源声明的能力；未注册的音源按「全部不支持」处理。
+    pub fn capabilities(&self, source: SourceId) -> SourceCapabilities {
+        self.sources
+            .get(&source)
+            .map(|source| source.capabilities())
+            .unwrap_or_default()
+    }
+
+    /// 解析一个分享链接，返回(音源, 解析结果)。
+    ///
+    /// 域名识别失败或音源尚未实现链接直解时返回可展示的错误信息，
+    /// 由界面提示用户改用关键词搜索。
+    pub async fn parse_link(&self, link: &str) -> Result<(SourceId, ParsedLink), String> {
+        let source_id = SourceId::detect_from_link(link)
+            .ok_or_else(|| "无法识别该链接的音源，请改用关键词搜索".to_string())?;
+        let source = self
+            .sources
+            .get(&source_id)
+            .ok_or_else(|| format!("{} 音源尚未接入", source_id.display_name()))?;
+        if !source.capabilities().link_parse {
+            return Err(format!(
+                "{} 暂不支持链接直解，请改用关键词搜索",
+                source_id.display_name()
+            ));
+        }
+        let parsed = source
+            .parse_link(link)
+            .await
+            .map_err(|error| format!("{} 链接解析失败: {error}", source_id.display_name()))?;
+        Ok((source_id, parsed))
+    }
+
+    /// 当前启用且满足能力条件的音源，界面据此决定入口显隐。
+    pub fn sources_supporting(
+        &self,
+        supported: impl Fn(&SourceCapabilities) -> bool,
+    ) -> Vec<SourceId> {
+        self.enabled_sources()
+            .into_iter()
+            .filter(|source| supported(&self.capabilities(*source)))
+            .collect()
+    }
+
     /// 对当前启用的内置及 JS 音源执行轻量搜索检测。
     pub async fn health_check(&self) -> Vec<SourceHealth> {
         let enabled = self.enabled_sources();
@@ -308,7 +373,12 @@ impl SourceManager {
         limit: u32,
     ) -> Result<SearchResult, SearchError> {
         let default = *self.default.read().unwrap_or_else(|e| e.into_inner());
-        if !self.enabled.read().unwrap_or_else(|e| e.into_inner()).contains(&default) {
+        if !self
+            .enabled
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(&default)
+        {
             return Err(SearchError::Other(format!(
                 "默认音源 {} 未启用",
                 default.as_str()
@@ -325,7 +395,12 @@ impl SourceManager {
         source: Option<SourceId>,
     ) -> Result<SearchResult, SearchError> {
         if crate::bili::looks_like_video_reference(keyword) {
-            if !self.enabled.read().unwrap_or_else(|e| e.into_inner()).contains(&SourceId::Bili) {
+            if !self
+                .enabled
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains(&SourceId::Bili)
+            {
                 return Err(SearchError::Other("哔哩哔哩音源未启用".to_string()));
             }
             return self
@@ -339,7 +414,13 @@ impl SourceManager {
         let Some(source) = source else {
             return self.search_all(keyword, page, limit).await;
         };
-        if source != SourceId::Local && !self.enabled.read().unwrap_or_else(|e| e.into_inner()).contains(&source) {
+        if source != SourceId::Local
+            && !self
+                .enabled
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains(&source)
+        {
             return Err(SearchError::Other(format!(
                 "音源 {} 未启用",
                 source.as_str()
@@ -361,7 +442,11 @@ impl SourceManager {
     ) -> Result<SearchResult, SearchError> {
         let per_source_limit = (limit / 2).max(10);
         let mut tasks = tokio::task::JoinSet::new();
-        let enabled = self.enabled.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let enabled = self
+            .enabled
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         for source_id in SourceId::all_online() {
             if !enabled.contains(source_id) {
                 continue;
@@ -510,14 +595,71 @@ impl SourceManager {
             .collect()
     }
 
+    /// 指定分类下的歌单；`category` 为空表示「全部/热门」。
     pub async fn playlists(
         &self,
         source: SourceId,
+        category: &str,
         page: u32,
     ) -> Result<Vec<Playlist>, FetchError> {
         self.online_source_fetch(source)?
-            .get_playlists("hot", page)
+            .get_playlists(category, page)
             .await
+    }
+
+    /// 歌单分类目录；不支持分类的音源返回空列表。
+    pub async fn playlist_categories(
+        &self,
+        source: SourceId,
+    ) -> Result<Vec<PlaylistCategory>, FetchError> {
+        self.online_source_fetch(source)?
+            .get_playlist_categories()
+            .await
+    }
+
+    /// 账号下的个人歌单（需要登录）。
+    pub async fn user_playlists(
+        &self,
+        source: SourceId,
+        page: u32,
+        limit: u32,
+    ) -> Result<Vec<Playlist>, FetchError> {
+        self.online_source_fetch(source)?
+            .get_user_playlists(page, limit)
+            .await
+    }
+
+    /// 生成扫码登录会话。
+    pub async fn create_qr_login(
+        &self,
+        source: SourceId,
+    ) -> Result<lx_core::model::login::QrLoginSession, FetchError> {
+        self.online_source_fetch(source)?.create_qr_login().await
+    }
+
+    /// 轮询扫码状态。
+    pub async fn check_qr_login(
+        &self,
+        source: SourceId,
+        key: &str,
+    ) -> Result<lx_core::model::login::QrLoginResult, FetchError> {
+        self.online_source_fetch(source)?.check_qr_login(key).await
+    }
+
+    /// 音源是否已登录。
+    pub fn is_logged_in(&self, source: SourceId) -> bool {
+        self.sources
+            .get(&source)
+            .is_some_and(|source| source.is_logged_in())
+    }
+
+    /// 退出登录并清除本地 cookie。
+    pub fn logout(&self, source: SourceId) -> Result<(), String> {
+        self.sources
+            .get(&source)
+            .ok_or_else(|| format!("{} 音源尚未接入", source.display_name()))?
+            .logout()
+            .map_err(|error| error.to_string())
     }
 
     pub async fn search_playlists(
@@ -580,7 +722,13 @@ impl SourceManager {
     }
 
     fn online_source(&self, source: SourceId) -> Result<Arc<dyn MusicSource>, SearchError> {
-        if source == SourceId::Local || !self.enabled.read().unwrap_or_else(|e| e.into_inner()).contains(&source) {
+        if source == SourceId::Local
+            || !self
+                .enabled
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains(&source)
+        {
             return Err(SearchError::Other(format!(
                 "音源 {} 未启用",
                 source.as_str()
@@ -593,7 +741,13 @@ impl SourceManager {
     }
 
     fn online_source_fetch(&self, source: SourceId) -> Result<Arc<dyn MusicSource>, FetchError> {
-        if source == SourceId::Local || !self.enabled.read().unwrap_or_else(|e| e.into_inner()).contains(&source) {
+        if source == SourceId::Local
+            || !self
+                .enabled
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains(&source)
+        {
             return Err(FetchError::Other(format!(
                 "音源 {} 未启用",
                 source.as_str()
@@ -636,9 +790,7 @@ impl SourceManager {
         .await
         {
             Ok(result) => result,
-            Err(_) => Err(FetchError::Network(
-                "解析播放地址超时".to_string(),
-            )),
+            Err(_) => Err(FetchError::Network("解析播放地址超时".to_string())),
         }
     }
 
@@ -689,8 +841,8 @@ impl SourceManager {
             } else {
                 FetchError::Other(format!("JS 音源失败: {}", js_errors.join("; ")))
             };
-            let fallback = builtin_source_for_js(song)
-                .and_then(|id| self.sources.get(&id).map(Arc::clone));
+            let fallback =
+                builtin_source_for_js(song).and_then(|id| self.sources.get(&id).map(Arc::clone));
             return match fallback {
                 None => Err(fallback_error),
                 Some(source) => source
@@ -739,8 +891,11 @@ impl SourceManager {
 
     /// 优先使用已导入的 lx-music JS 音源获取歌词，空结果时回退到内置搜索源。
     pub async fn get_lyric(&self, song: &SongInfo) -> Result<LyricData, FetchError> {
-        match tokio::time::timeout(std::time::Duration::from_secs(20), self.get_lyric_inner(song))
-            .await
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            self.get_lyric_inner(song),
+        )
+        .await
         {
             Ok(result) => result,
             Err(_) => Err(FetchError::Network("获取歌词超时".to_string())),
@@ -779,7 +934,11 @@ impl SourceManager {
         const NEGATIVE_CACHE_LIMIT: usize = 1024;
         // JS 音源的搜索结果都标记为 Local，不同平台的数字 id 可能相同，
         // 缓存键必须带上 extra["source"] 平台标记才能互相区分。
-        let cache_key = (song.source, song.extra.get("source").cloned(), song.id.clone());
+        let cache_key = (
+            song.source,
+            song.extra.get("source").cloned(),
+            song.id.clone(),
+        );
         {
             let mut cache = self
                 .lyric_negative_cache
@@ -799,19 +958,17 @@ impl SourceManager {
 
         let mut last_error: Option<FetchError> = None;
         let mut attempts = |result: Result<LyricData, FetchError>,
-                            found: &mut Option<LyricData>| {
-            match result {
-                Ok(data) if lyric_has_content(&data) => {
-                    *found = Some(data);
-                }
-                Ok(_) => {}
-                Err(
-                    e @ (FetchError::Network(_) | FetchError::TooManyRequests | FetchError::Parse(_)),
-                ) => {
-                    last_error = Some(e);
-                }
-                Err(_) => {}
+                            found: &mut Option<LyricData>| match result {
+            Ok(data) if lyric_has_content(&data) => {
+                *found = Some(data);
             }
+            Ok(_) => {}
+            Err(
+                e @ (FetchError::Network(_) | FetchError::TooManyRequests | FetchError::Parse(_)),
+            ) => {
+                last_error = Some(e);
+            }
+            Err(_) => {}
         };
 
         let mut found: Option<LyricData> = None;
@@ -875,7 +1032,11 @@ impl SourceManager {
 
         // 1. 并行搜索所有其他源
         let mut tasks = tokio::task::JoinSet::new();
-        let enabled = self.enabled.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let enabled = self
+            .enabled
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         for id in SourceId::all_online() {
             if *id == exclude || !enabled.contains(id) {
                 continue;
@@ -1026,9 +1187,72 @@ mod tests {
     use lx_core::model::lyric::LyricData;
     use lx_core::model::song::SongInfo;
     use lx_core::model::source::{Quality, SourceId};
-    use lx_core::traits::source::{FetchError, MusicSource, SearchError, SearchResult, SongUrl};
+    use lx_core::traits::source::{
+        FetchError, MusicSource, SearchError, SearchResult, SongUrl, SourceCapabilities,
+    };
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
+
+    #[test]
+    fn builtin_sources_declare_their_capabilities() {
+        let manager = SourceManager::new(SourceId::Kw, SourceId::all_online());
+
+        let kw = manager.capabilities(SourceId::Kw);
+        assert!(kw.playlists && kw.leaderboard && kw.album);
+        assert!(
+            kw.playlist_categories && kw.link_parse,
+            "酷我已接入分类与直解"
+        );
+        assert!(!kw.qr_login, "酷我尚未接入扫码登录");
+
+        let bili = manager.capabilities(SourceId::Bili);
+        assert!(bili.login && bili.qr_login && bili.link_parse);
+
+        let kg = manager.capabilities(SourceId::Kg);
+        assert!(kg.playlist_search && kg.playlist_categories && kg.link_parse);
+
+        let wy = manager.capabilities(SourceId::Wy);
+        assert!(
+            wy.playlist_categories && wy.link_parse,
+            "网易云是分类与直解的参考实现"
+        );
+
+        let tx = manager.capabilities(SourceId::Tx);
+        assert!(tx.playlist_search && tx.playlist_categories && tx.link_parse);
+
+        let mg = manager.capabilities(SourceId::Mg);
+        assert!(mg.playlist_search && mg.playlist_categories && mg.link_parse);
+
+        // 汽水：歌单与直解可用，但没有分类目录（平台本身不提供）。
+        let soda = manager.capabilities(SourceId::Soda);
+        assert!(soda.playlist_search && soda.link_parse);
+        assert!(!soda.playlist_categories);
+
+        // 尚未实现的新平台按「全部不支持」处理，界面不会展示对应入口。
+        assert_eq!(
+            manager.capabilities(SourceId::Local),
+            SourceCapabilities::default()
+        );
+
+        let leaderboards = manager.sources_supporting(|caps| caps.leaderboard);
+        assert!(leaderboards.contains(&SourceId::Kw));
+        assert!(leaderboards.contains(&SourceId::Bili));
+        assert!(!leaderboards.contains(&SourceId::Local));
+
+        // 分类入口只对有实现的音源开放。
+        assert_eq!(
+            manager.sources_supporting(|caps| caps.playlist_categories),
+            vec![
+                SourceId::Kw,
+                SourceId::Kg,
+                SourceId::Tx,
+                SourceId::Wy,
+                SourceId::Mg,
+                SourceId::Qianqian,
+                SourceId::Apple
+            ]
+        );
+    }
 
     struct StubJsSource {
         name: &'static str,
@@ -1060,7 +1284,10 @@ mod tests {
             _song: &SongInfo,
             quality: Quality,
         ) -> Result<SongUrl, FetchError> {
-            self.calls.lock().unwrap_or_else(|e| e.into_inner()).push(self.name);
+            self.calls
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(self.name);
             if !self.succeeds {
                 return Err(FetchError::NotFound);
             }
@@ -1153,7 +1380,10 @@ mod tests {
             .expect("the second JS source should resolve the song");
 
         assert_eq!(result.url, "https://example.com/grass.mp3");
-        assert_eq!(*calls.lock().unwrap_or_else(|e| e.into_inner()), vec!["juhe", "grass"]);
+        assert_eq!(
+            *calls.lock().unwrap_or_else(|e| e.into_inner()),
+            vec!["juhe", "grass"]
+        );
     }
 
     #[tokio::test]
@@ -1190,7 +1420,10 @@ mod tests {
         assert_eq!(first.url, "https://example.com/juhe.mp3");
         assert_eq!(second.url, "https://example.com/grass.mp3");
         assert_eq!(second_index, Some(1));
-        assert_eq!(*calls.lock().unwrap_or_else(|e| e.into_inner()), vec!["juhe", "grass"]);
+        assert_eq!(
+            *calls.lock().unwrap_or_else(|e| e.into_inner()),
+            vec!["juhe", "grass"]
+        );
     }
 
     #[test]

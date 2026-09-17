@@ -3,8 +3,8 @@
 //! POST https://interface3.music.163.com/eapi/song/lyric/v1
 //! 使用 eapi 加密
 
-use std::sync::OnceLock;
 use crate::http::SendWithRetry;
+use std::sync::OnceLock;
 
 use lx_core::model::lyric::LyricData;
 use lx_core::model::song::SongInfo;
@@ -51,18 +51,18 @@ pub async fn get_lyric(song: &SongInfo) -> Result<LyricData, FetchError> {
     let encrypted = crypto::eapi(url, &data);
 
     let client = http::client();
-    let resp = client
-        .post("https://interface3.music.163.com/eapi/song/lyric/v1")
-        .header(
-            "User-Agent",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        )
-        .header("origin", "https://music.163.com")
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(format!("params={}", encrypted))
-        .send_with_retry(crate::http::RETRY_ATTEMPTS)
-        .await
-        .map_err(|e| FetchError::Network(e.to_string()))?;
+    let resp =
+        super::with_cookie(client.post("https://interface3.music.163.com/eapi/song/lyric/v1"))
+            .header(
+                "User-Agent",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            )
+            .header("origin", "https://music.163.com")
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .body(format!("params={}", encrypted))
+            .send_with_retry(crate::http::RETRY_ATTEMPTS)
+            .await
+            .map_err(|e| FetchError::Network(e.to_string()))?;
 
     let text = resp
         .text()
