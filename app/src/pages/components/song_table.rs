@@ -27,7 +27,7 @@ pub fn row(song: &SongInfo, index: usize, width: u16) -> String {
         &song.album_name,
         &duration,
         &quality,
-        song.source.as_str(),
+        song.source.display_name(),
     )
 }
 

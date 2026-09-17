@@ -8,6 +8,7 @@ use ratatui::layout::{Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
+use unicode_width::UnicodeWidthStr;
 
 use crate::context::AppContext;
 use crate::pages::sort::{SortMode, SortTarget};
@@ -319,7 +320,18 @@ impl SongContextMenu {
                 self.selected = index;
                 return self.activate();
             }
-            MouseEventKind::Down(MouseButton::Right) => return MenuOutcome::Close,
+            MouseEventKind::Down(MouseButton::Right) => {
+                // 在子菜单内右键返回上一级，菜单外右键才关闭整个菜单。
+                if self.level != MenuLevel::Root
+                    && area.contains(Position::new(event.column, event.row))
+                {
+                    self.level = MenuLevel::Root;
+                    self.selected = 0;
+                    self.scroll_offset = 0;
+                } else {
+                    return MenuOutcome::Close;
+                }
+            }
             _ => {}
         }
         MenuOutcome::None
@@ -375,7 +387,7 @@ impl SongContextMenu {
     }
 
     fn area(&self, bounds: Rect) -> Rect {
-        menu_area(bounds, self.origin, self.items().len())
+        menu_area(bounds, self.origin, self.items())
     }
 
     fn visible_item_count(&self, bounds: Rect) -> usize {
@@ -447,12 +459,19 @@ impl SongContextMenu {
     }
 }
 
-fn menu_area(bounds: Rect, origin: Position, item_count: usize) -> Rect {
+fn menu_area(bounds: Rect, origin: Position, items: &[MenuItem]) -> Rect {
     if bounds.width == 0 || bounds.height == 0 {
         return Rect::default();
     }
-    let width = 38.min(bounds.width);
-    let height = (item_count as u16 + 2).min(bounds.height);
+    // 根据当前层级最长标签自适应宽度，避免 ReplayGain / 中文歌单名被固定宽度截断。
+    // 上限保持紧凑，窄终端仍由 bounds 做最终裁剪。
+    let max_label_width = items
+        .iter()
+        .map(|item| UnicodeWidthStr::width(item.label.as_str()))
+        .max()
+        .unwrap_or(8);
+    let width = (max_label_width as u16 + 4).clamp(24, 48).min(bounds.width);
+    let height = (items.len() as u16 + 2).min(bounds.height);
     let max_x = bounds.right().saturating_sub(width);
     let max_y = bounds.bottom().saturating_sub(height);
     Rect::new(
@@ -551,7 +570,13 @@ mod tests {
     #[test]
     fn context_menu_is_clamped_inside_content_area() {
         let bounds = Rect::new(10, 5, 40, 12);
-        let area = menu_area(bounds, Position::new(48, 15), 5);
+        let items = (0..5)
+            .map(|i| super::MenuItem {
+                label: format!("item {i}"),
+                action: SongMenuAction::Play,
+            })
+            .collect::<Vec<_>>();
+        let area = menu_area(bounds, Position::new(48, 15), &items);
 
         assert!(bounds.contains(Position::new(area.x, area.y)));
         assert_eq!(area.right(), bounds.right());

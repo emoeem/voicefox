@@ -22,6 +22,12 @@ const SEARCH_SCOPES: &[(Option<SourceId>, &str)] = &[
     (Some(SourceId::Mg), "咪咕 mg"),
     (Some(SourceId::Wy), "网易 wy"),
     (Some(SourceId::Bili), "哔哩哔哩 bili"),
+    (Some(SourceId::Soda), "汽水 soda"),
+    (Some(SourceId::Qianqian), "千千 qianqian"),
+    (Some(SourceId::Joox), "JOOX joox"),
+    (Some(SourceId::Fivesing), "5sing fivesing"),
+    (Some(SourceId::Jamendo), "Jamendo jamendo"),
+    (Some(SourceId::Apple), "Apple Music apple"),
     (Some(SourceId::Local), "本地 local"),
 ];
 

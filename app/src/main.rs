@@ -175,6 +175,8 @@ fn nav_page_scope(tab: NavTab) -> &'static str {
         NavTab::Favorites => "favorites",
         NavTab::History => "history",
         NavTab::LocalMusic => "local",
+        NavTab::Downloads => "downloads",
+        NavTab::Sources => "sources",
         NavTab::Settings => "settings",
     }
 }
@@ -1560,8 +1562,8 @@ fn run_app(
             && key.kind == KeyEventKind::Press
         {
             let key = *key;
-            // 1a. 侧边栏全局快捷键（1-8）—— 输入模式下跳过
-            let settings_input_mode = active_tab == NavTab::Settings
+            // 1a. 侧边栏全局快捷键（1-0）—— 输入模式下跳过
+            let settings_input_mode = matches!(active_tab, NavTab::Settings | NavTab::Sources)
                 && settings_page
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
@@ -1805,9 +1807,9 @@ fn run_app(
                 continue;
             }
 
-            // 设置页独占自己的选项键；数字键 1-8 则始终留给侧边栏。
+            // 设置页独占自己的选项键；数字键 1-0 则始终留给侧边栏。
             // 先判断页面归属，再分发全局快捷键。
-            let settings_owns_key = active_tab == NavTab::Settings
+            let settings_owns_key = matches!(active_tab, NavTab::Settings | NavTab::Sources)
                 && !text_input_active
                 && settings_page
                     .lock()
@@ -1933,7 +1935,9 @@ fn run_app(
                             NavTab::Playlists => NavTab::Favorites,
                             NavTab::Favorites => NavTab::History,
                             NavTab::History => NavTab::LocalMusic,
-                            NavTab::LocalMusic => NavTab::Settings,
+                            NavTab::LocalMusic => NavTab::Downloads,
+                            NavTab::Downloads => NavTab::Sources,
+                            NavTab::Sources => NavTab::Settings,
                             NavTab::Settings => NavTab::Main,
                         };
                         needs_render = true;
@@ -1948,7 +1952,9 @@ fn run_app(
                             NavTab::Favorites => NavTab::Playlists,
                             NavTab::History => NavTab::Favorites,
                             NavTab::LocalMusic => NavTab::History,
-                            NavTab::Settings => NavTab::LocalMusic,
+                            NavTab::Downloads => NavTab::LocalMusic,
+                            NavTab::Sources => NavTab::Downloads,
+                            NavTab::Settings => NavTab::Sources,
                         };
                         needs_render = true;
                         continue;
@@ -2214,9 +2220,23 @@ fn run_app(
                         &search_seq,
                     );
                 }
-                NavTab::Settings => {
+                NavTab::Downloads => {
+                    let tasks = ctx.downloads.snapshot();
+                    if matches!(
+                        downloads_panel.handle_key(&key, &ctx, &tasks),
+                        pages::downloads::PanelOutcome::Close
+                    ) {
+                        active_tab = NavTab::Main;
+                    }
+                    needs_render = true;
+                    continue;
+                }
+                NavTab::Sources | NavTab::Settings => {
                     let action = {
                         let mut sp = settings_page.lock().unwrap_or_else(|e| e.into_inner());
+                        if active_tab == NavTab::Sources {
+                            sp.focus_sources();
+                        }
                         sp.handle_input(key, &ctx, &kb_resolver)
                     };
                     // 扫码登录相关 action 需要发到 channel 交给主循环（生成二维码等）
@@ -2749,6 +2769,7 @@ fn run_app(
                                 Some((SortTarget::History, history_state.mode)),
                             )
                         }),
+                        NavTab::Downloads | NavTab::Sources | NavTab::Settings => None,
                         NavTab::LocalMusic => pages::local_music::context_song_at(
                             mouse,
                             ui_areas.content,
@@ -2765,7 +2786,6 @@ fn run_app(
                                 Some((SortTarget::Local, local_state.mode)),
                             )
                         }),
-                        NavTab::Settings => None,
                     };
                     if let Some(((songs, index), kind, sort)) = target {
                         let is_favorite = ctx.storage.is_favorite(&songs[index]);
@@ -2821,10 +2841,11 @@ fn run_app(
                         &mut data_cache.history,
                         activate,
                     ),
-                    NavTab::Settings => settings_page
+                    NavTab::Sources | NavTab::Settings => settings_page
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
                         .handle_mouse(mouse, ui_areas.content, &ctx, &kb_resolver),
+                    NavTab::Downloads => AppAction::None,
                     NavTab::LocalMusic => pages::local_music::handle_mouse(
                         mouse,
                         ui_areas.content,
@@ -2963,6 +2984,7 @@ fn draw_app(
         pages::sidebar::render(body[0], frame.buffer_mut(), active_tab, ctx);
         components::header::render(main_chunks[0], frame.buffer_mut(), ctx);
         let content_area = main_chunks[1];
+        let tasks = ctx.downloads.snapshot();
         *ui_areas = UiAreas {
             tabs: body[0],
             content: content_area,
@@ -2997,9 +3019,17 @@ fn draw_app(
                     data_cache_history,
                 );
             }
+            NavTab::Sources => {
+                let mut sp = settings_page.lock().unwrap_or_else(|e| e.into_inner());
+                sp.focus_sources();
+                sp.render(content_area, frame.buffer_mut(), ctx);
+            }
             NavTab::Settings => {
                 let mut sp = settings_page.lock().unwrap_or_else(|e| e.into_inner());
                 sp.render(content_area, frame.buffer_mut(), ctx);
+            }
+            NavTab::Downloads => {
+                downloads_panel.render_page(content_area, frame.buffer_mut(), ctx, &tasks);
             }
             NavTab::LocalMusic => {
                 use ratatui::style::{Color, Style};

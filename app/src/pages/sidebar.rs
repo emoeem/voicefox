@@ -17,10 +17,12 @@ pub enum NavTab {
     History,
     Settings,
     LocalMusic,
+    Downloads,
+    Sources,
 }
 
 impl NavTab {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 10] = [
         Self::Main,
         Self::Search,
         Self::Leaderboard,
@@ -28,6 +30,8 @@ impl NavTab {
         Self::Favorites,
         Self::History,
         Self::LocalMusic,
+        Self::Downloads,
+        Self::Sources,
         Self::Settings,
     ];
     fn label(self) -> &'static str {
@@ -39,6 +43,8 @@ impl NavTab {
             Self::Favorites => "收藏",
             Self::History => "历史",
             Self::LocalMusic => "本地音乐",
+            Self::Downloads => "下载",
+            Self::Sources => "音源",
             Self::Settings => "设置",
         }
     }
@@ -51,6 +57,8 @@ impl NavTab {
             Self::Favorites => "♥",
             Self::History => "↶",
             Self::LocalMusic => "♫",
+            Self::Downloads => "⇩",
+            Self::Sources => "◉",
             Self::Settings => "⚙",
         }
     }
@@ -63,7 +71,9 @@ impl NavTab {
             Self::Favorites => '5',
             Self::History => '6',
             Self::LocalMusic => '7',
-            Self::Settings => '8',
+            Self::Downloads => '8',
+            Self::Sources => '9',
+            Self::Settings => '0',
         }
     }
 }
@@ -71,10 +81,20 @@ impl NavTab {
 pub const WIDTH: u16 = 18;
 
 pub fn render(area: Rect, buf: &mut Buffer, active: NavTab, ctx: &crate::context::AppContext) {
+    let transparent = ctx
+        .config
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .ui
+        .sidebar_transparent;
     let block = Block::default()
         .borders(Borders::RIGHT)
         .border_style(Style::new().fg(crate::theme::border(ctx)))
-        .style(Style::new().bg(crate::theme::mantle(ctx)));
+        .style(if transparent {
+            Style::new()
+        } else {
+            Style::new().bg(crate::theme::mantle(ctx))
+        });
     let inner = block.inner(area);
     block.render(area, buf);
     if inner.height == 0 || inner.width == 0 {
@@ -108,9 +128,11 @@ pub fn render(area: Rect, buf: &mut Buffer, active: NavTab, ctx: &crate::context
     for (tab, tab_area) in NavTab::ALL.into_iter().zip(tab_chunks(nav).iter().copied()) {
         let selected = tab == active;
         let bg = if selected {
-            crate::theme::accent(ctx)
+            Some(crate::theme::accent(ctx))
+        } else if transparent {
+            None
         } else {
-            crate::theme::mantle(ctx)
+            Some(crate::theme::mantle(ctx))
         };
         let fg = if selected {
             crate::theme::selection_fg(ctx)
@@ -122,21 +144,19 @@ pub fn render(area: Rect, buf: &mut Buffer, active: NavTab, ctx: &crate::context
         } else {
             crate::theme::overlay1(ctx)
         };
+        let item_style = bg.map_or(Style::new(), |color| Style::new().bg(color));
         Paragraph::new(Line::from(vec![
-            Span::styled(
-                format!(" {} ", tab.shortcut()),
-                Style::new().fg(key_fg).bg(bg),
-            ),
+            Span::styled(format!(" {} ", tab.shortcut()), item_style.fg(key_fg)),
             Span::styled(
                 format!("{} {}", tab.icon(), tab.label()),
-                Style::new().fg(fg).bg(bg).add_modifier(if selected {
+                item_style.fg(fg).add_modifier(if selected {
                     Modifier::BOLD
                 } else {
                     Modifier::empty()
                 }),
             ),
         ]))
-        .style(Style::new().bg(bg))
+        .style(item_style)
         .render(tab_area, buf);
     }
     if inner.height >= 4 {
@@ -182,7 +202,9 @@ pub fn handle_input(key: &KeyEvent) -> Option<NavTab> {
         (KeyModifiers::NONE, KeyCode::Char('5')) => Some(NavTab::Favorites),
         (KeyModifiers::NONE, KeyCode::Char('6')) => Some(NavTab::History),
         (KeyModifiers::NONE, KeyCode::Char('7')) => Some(NavTab::LocalMusic),
-        (KeyModifiers::NONE, KeyCode::Char('8')) => Some(NavTab::Settings),
+        (KeyModifiers::NONE, KeyCode::Char('8')) => Some(NavTab::Downloads),
+        (KeyModifiers::NONE, KeyCode::Char('9')) => Some(NavTab::Sources),
+        (KeyModifiers::NONE, KeyCode::Char('0')) => Some(NavTab::Settings),
         _ => None,
     }
 }
@@ -193,7 +215,7 @@ mod tests {
     use ratatui::layout::Rect;
     #[test]
     fn sidebar_rows_remain_clickable() {
-        let chunks = tab_chunks(Rect::new(1, 3, 17, 8));
+        let chunks = tab_chunks(Rect::new(1, 3, 17, 10));
         assert_eq!(chunks.len(), NavTab::ALL.len());
         assert!(chunks.iter().all(|chunk| chunk.height == 1));
     }

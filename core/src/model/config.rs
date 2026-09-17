@@ -263,6 +263,8 @@ pub struct UiConfig {
     pub wrap_navigation: bool,
     pub scroll_amount: usize,
     pub aggregate_search: bool,
+    /// 侧边导航是否使用终端原生背景，便于与透明终端主题融合。
+    pub sidebar_transparent: bool,
     pub show_cover: bool,
     /// 封面渲染协议：auto / kitty / sixel / iterm2 / halfblocks。
     /// auto 表示由终端探测决定，探测不准时可以指定具体协议。
@@ -289,6 +291,7 @@ impl Default for UiConfig {
             wrap_navigation: true,
             scroll_amount: 3,
             aggregate_search: true,
+            sidebar_transparent: false,
             show_cover: true,
             cover_protocol: "auto".to_string(),
             show_notifications: None,

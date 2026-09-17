@@ -64,6 +64,20 @@ impl DownloadsPanel {
         self.open = false;
     }
 
+    /// 专用下载页渲染：复用下载管理器的成熟布局，但不改变浮层开关状态。
+    pub fn render_page(
+        &mut self,
+        area: Rect,
+        buf: &mut Buffer,
+        ctx: &AppContext,
+        tasks: &[DownloadTaskView],
+    ) {
+        let was_open = self.open;
+        self.open = true;
+        self.render(area, buf, ctx, tasks);
+        self.open = was_open;
+    }
+
     /// 处理按键；`tasks` 为当前任务快照。
     pub fn handle_key(
         &mut self,

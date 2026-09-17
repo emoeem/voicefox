@@ -126,7 +126,7 @@ impl SettingsCategory {
 
     fn option_indices(self) -> &'static [usize] {
         match self {
-            Self::Interface => &[0, 1, 2, 3, 4, 31, 32, 33, 39],
+            Self::Interface => &[0, 1, 2, 3, 4, 31, 32, 33, 39, 61],
             Self::Playback => &[
                 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
             ],
@@ -198,6 +198,10 @@ pub struct SettingsPage {
 }
 
 impl SettingsPage {
+    pub fn focus_sources(&mut self) {
+        self.category = SettingsCategory::Sources;
+    }
+
     /// 检查是否有任何输入模式激活（JS 源输入或本地路径输入）
     pub fn any_input_active(&self) -> bool {
         self.input_mode
@@ -212,7 +216,7 @@ impl SettingsPage {
     /// 与用户可自定义的全局快捷键必然重叠，因此这些键不再交给全局分发。
     /// 未被 settings 页面级动作绑定的 Ctrl/Alt 组合键仍归全局。
     pub fn consumes_key(&self, key: &KeyEvent, resolver: &KeybindingResolver) -> bool {
-        // Bare number keys are reserved for navigation (1-8 select sidebar
+        // Bare number keys are reserved for navigation (1-0 select sidebar
         // tabs). Even a stale or intentionally custom settings binding must
         // not make tab switching stop while the settings page is open.
         if key.modifiers == KeyModifiers::NONE && matches!(key.code, KeyCode::Char('0'..='9')) {
@@ -447,6 +451,11 @@ impl SettingsPage {
                 (KeyModifiers::NONE, KeyCode::Char('g')) => {
                     self.update_config(ctx, |config| {
                         config.ui.aggregate_search = !config.ui.aggregate_search;
+                    });
+                }
+                (KeyModifiers::NONE, KeyCode::Char('l')) => {
+                    self.update_config(ctx, |config| {
+                        config.ui.sidebar_transparent = !config.ui.sidebar_transparent;
                     });
                 }
                 (KeyModifiers::NONE, KeyCode::Char('w')) => {
@@ -2029,6 +2038,13 @@ impl SettingsPage {
                 accent,
                 muted,
             ),
+            setting_line(
+                "导航栏透明背景",
+                config.ui.sidebar_transparent,
+                "l",
+                accent,
+                muted,
+            ),
         ];
         let option_indices = self.category.option_indices();
         let options = options
@@ -2986,13 +3002,13 @@ fn format_duration(value: std::time::Duration) -> String {
 /// 在更新配置项后更新这些常量!
 ///
 /// 鼠标点击时触发的按键，顺序必须与 render 中的选项列表一致
-const SETTING_OPTION_KEYS: [char; 61] = [
+const SETTING_OPTION_KEYS: [char; 62] = [
     't', 'g', 'w', 'c', 'e', 'Q', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',
     '\0', '\0', '\0', '\0', 'm', 'H', 'v', 'u', 'K', 'T', 'Y', ']', 'n', 'N', 'P', 'f', 'z', 'i',
     'o', 'x', 'X', 'R', 'p', 'D', '\0', '\0', '\0', 'b', 'S', 'F', 'M', 'B', 'V', 'W', 'A', 'E',
-    'U', 'L', 'J', 'G', 'I', 'Z', 'C', '\0',
+    'U', 'L', 'J', 'G', 'I', 'Z', 'C', '\0', 'l',
 ];
-const SETTING_OPTION_ACTIONS: [Option<Action>; 61] = [
+const SETTING_OPTION_ACTIONS: [Option<Action>; 62] = [
     None,
     None,
     None,
@@ -3054,6 +3070,7 @@ const SETTING_OPTION_ACTIONS: [Option<Action>; 61] = [
     None,
     None,
     None,
+    None,
 ];
 const TWO_COLUMN_OPTIONS_MIN_WIDTH: u16 = 36;
 const THREE_COLUMN_OPTIONS_MIN_WIDTH: u16 = 72;
@@ -3065,7 +3082,7 @@ const ALL_MANAGEMENT_PANELS_MIN_WIDTH: u16 = 108;
 const SETTINGS_PAGE_CHAR_KEYS: &[char] = &[
     'a', 'd', 'h', 'r', 's', 'y', '[', 'm', 'Q', 'v', 'p', 'b', 'n', 'o', 'c', 'e', 'f', 'g', 'i',
     't', 'u', 'w', 'x', 'z', 'D', 'H', 'K', 'N', 'O', 'P', 'R', 'T', 'X', 'Y', ']', 'S', 'F', 'M',
-    'B', 'V', 'W', 'A', 'E', 'U', 'L', 'J', 'G', 'I', 'Z', 'C',
+    'B', 'V', 'W', 'A', 'E', 'U', 'L', 'J', 'G', 'I', 'Z', 'C', 'l',
 ];
 
 fn render_setting_options<'a>(options: Vec<Line<'a>>, area: Rect, buf: &mut Buffer) {
@@ -3263,7 +3280,7 @@ mod tests {
 
         for (index, key) in SETTING_OPTION_KEYS.into_iter().enumerate() {
             // 新播放/数据动作由页面级 Action 处理，不能再把它们的旧数字
-            // 占位键视为设置页快捷键，否则会遮挡侧边栏的 1-8 切换。
+            // 占位键视为设置页快捷键，否则会遮挡侧边栏的 1-0 切换。
             if SETTING_OPTION_ACTIONS[index].is_some() {
                 continue;
             }
@@ -3393,7 +3410,7 @@ mod tests {
             SettingsCategory::Interface,
         );
 
-        assert_eq!(chunks[0].height, 5);
+        assert_eq!(chunks[0].height, 6);
         assert_eq!(chunks[1], Rect::default());
         assert_eq!(chunks[2], Rect::default());
         assert!(chunks[3].height > 0);
@@ -3408,7 +3425,7 @@ mod tests {
             SettingsCategory::Interface,
         );
 
-        assert_eq!(chunks[0].height, 5);
+        assert_eq!(chunks[0].height, 6);
         assert_eq!(chunks[1].y, chunks[0].bottom());
         assert_eq!(chunks[2].y, chunks[0].bottom());
         assert_eq!(chunks[3].y, chunks[0].bottom());
