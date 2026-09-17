@@ -94,7 +94,7 @@
 
 ### A. 阻塞性问题（影响可用性）
 
-1. **QQ 播放地址**：`CgiGetVkey` + `zzc_sign` 链路返回 `not found`，需要排查签名或请求体变化（参考 music-lib 的 `qq/download.go`）。
+1. **QQ 播放地址**：已完成修复并通过网络 smoke；改用当前 `GetVkey` 请求体并按文件名匹配 `midurlinfo`。
 2. **JOOX 播放地址**：`web_get_songinfo` 返回空响应体，接口疑似下线，需要替代来源。
 3. **千千播放地址**：`tracklink` 响应里没有 `path`/`url`（同响应带 `isVip`/`isPaid`），需要确认登录态能否解锁；酷狗的 v5 阶梯已写好但**要扫码登录后才能端到端验证**。
 
@@ -119,7 +119,7 @@
 
 ### D. 工程与交付
 
-17. 全部改动**未提交**（73 个文件，其中 23 个新增）。
+17. 已提交并推送：`fbf831f feat(source): expand music sources and download features`。
 18. **未在 macOS / Windows 上验证**。
 19. 汽水的解密缓存无容量上限（仅按 7 天过期清理）。
 20. 新音源的**登录态端到端**（扫码 → 播放 → 无损）尚未完整验证，需要真实账号扫码。
