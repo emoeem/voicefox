@@ -10,8 +10,8 @@ use crate::context::AppContext;
 pub fn render(area: Rect, buf: &mut Buffer, ctx: &AppContext) {
     let accent = crate::theme::accent(ctx);
     let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::new().fg(crate::theme::border(ctx)));
+        .borders(Borders::BOTTOM)
+        .border_style(Style::new().fg(crate::theme::surface1(ctx)));
     let inner = block.inner(area);
     block.render(area, buf);
     if inner.height == 0 {
@@ -21,9 +21,9 @@ pub fn render(area: Rect, buf: &mut Buffer, ctx: &AppContext) {
     let columns = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
+            Constraint::Length(18.min(inner.width / 3)),
+            Constraint::Min(12),
             Constraint::Length(24.min(inner.width / 3)),
-            Constraint::Min(10),
-            Constraint::Length(28.min(inner.width / 3)),
         ])
         .split(inner);
     let state = *ctx.player_state.borrow();
@@ -38,7 +38,7 @@ pub fn render(area: Rect, buf: &mut Buffer, ctx: &AppContext) {
     let duration = *ctx.duration.borrow();
     Paragraph::new(vec![
         Line::from(Span::styled(
-            format!("[{}]", state_label),
+            format!("● {}", state_label),
             Style::new()
                 .fg(crate::theme::yellow(ctx))
                 .add_modifier(Modifier::BOLD),
@@ -104,7 +104,7 @@ pub fn render(area: Rect, buf: &mut Buffer, ctx: &AppContext) {
         .unwrap_or_else(|| "-".to_string());
     Paragraph::new(vec![
         Line::from(Span::styled(
-            format!("Volume: {:>3}%", ctx.player.volume()),
+            format!("音量 {:>3}%", ctx.player.volume()),
             Style::new().fg(accent),
         )),
         Line::from(format!(
