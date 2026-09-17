@@ -2941,24 +2941,32 @@ fn draw_app(
             ),
             area,
         );
+        // TUI 2.0：固定导航 + 内容工作区 + 播放/状态底栏。
+        let body = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Length(pages::sidebar::WIDTH),
+                Constraint::Min(30),
+            ])
+            .split(area);
+        let main_area = body[1];
         let main_chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(4), // header
-                Constraint::Length(3), // tabs
-                Constraint::Min(3),    // tab content
-                Constraint::Length(1), // progress bar
-                Constraint::Length(1), // status bar
+                Constraint::Length(3), // header
+                Constraint::Min(3),    // page content
+                Constraint::Length(1), // playback progress
+                Constraint::Length(1), // status / download summary
             ])
-            .split(area);
+            .split(main_area);
 
+        pages::sidebar::render(body[0], frame.buffer_mut(), active_tab, ctx);
         components::header::render(main_chunks[0], frame.buffer_mut(), ctx);
-        pages::sidebar::render(main_chunks[1], frame.buffer_mut(), active_tab, ctx);
-        let content_area = main_chunks[2];
+        let content_area = main_chunks[1];
         *ui_areas = UiAreas {
-            tabs: main_chunks[1],
+            tabs: body[0],
             content: content_area,
-            progress: main_chunks[3],
+            progress: main_chunks[2],
             notification: Rect::default(),
         };
 
@@ -3200,14 +3208,14 @@ fn draw_app(
             p.render(overlay_area, frame.buffer_mut(), ctx);
         }
 
-        components::progress_bar::render(main_chunks[3], frame.buffer_mut(), ctx);
+        components::progress_bar::render(main_chunks[2], frame.buffer_mut(), ctx);
         let sort_status = match active_tab {
             NavTab::Favorites => Some(favorites_page.sort_label()),
             NavTab::History => Some(history_state.mode.label(SortTarget::History)),
             NavTab::LocalMusic => Some(local_state.mode.label(SortTarget::Local)),
             _ => None,
         };
-        components::status_bar::render(main_chunks[4], frame.buffer_mut(), ctx, sort_status);
+        components::status_bar::render(main_chunks[3], frame.buffer_mut(), ctx, sort_status);
         ui_areas.notification = components::notification::area(area, ctx).unwrap_or_default();
         components::notification::render(area, frame.buffer_mut(), ctx);
         if let Some(menu) = song_menu {
