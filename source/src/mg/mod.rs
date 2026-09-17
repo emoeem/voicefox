@@ -15,7 +15,7 @@ use async_trait::async_trait;
 
 use lx_core::model::leaderboard::LeaderboardInfo;
 use lx_core::model::lyric::LyricData;
-use lx_core::model::playlist::Playlist;
+use lx_core::model::playlist::{Album, Playlist};
 use lx_core::model::song::SongInfo;
 use lx_core::model::source::{Quality, SourceId};
 use lx_core::traits::source::{
@@ -120,6 +120,22 @@ impl MusicSource for MgSource {
 
     async fn get_playlist_detail(&self, id: &str, page: u32) -> Result<Vec<SongInfo>, FetchError> {
         playlist::get_detail(id, page).await
+    }
+
+    async fn get_album_songs(
+        &self,
+        album: &Album,
+        _page: u32,
+        _limit: u32,
+    ) -> Result<SearchResult, SearchError> {
+        let (container, songs) = parse::fetch_album(&album.id)
+            .await
+            .map_err(|error| SearchError::Other(error.to_string()))?;
+        Ok(SearchResult {
+            total: container.song_count.max(songs.len() as u32),
+            has_more: false,
+            items: songs,
+        })
     }
 
     async fn get_leaderboard_boards(&self) -> Result<Vec<LeaderboardInfo>, SearchError> {
