@@ -141,7 +141,9 @@ pub(super) fn songs_from_search(json: &Value) -> Vec<SongInfo> {
             Some(entry)
         };
         let Some(info) = info else { continue };
-        let Some(song) = parse_song_info(info) else { continue };
+        let Some(song) = parse_song_info(info) else {
+            continue;
+        };
         if seen.insert(song.id.clone()) {
             songs.push(song);
         }

@@ -115,6 +115,48 @@ pub async fn get_detail_with_meta(id: &str) -> Result<(Playlist, Vec<SongInfo>),
     Ok((playlist, songs))
 }
 
+/// 按专辑 MID 获取专辑曲目，避免走“歌手+专辑名搜索”兜底。
+pub async fn get_album_songs(
+    album_mid: &str,
+    page: u32,
+    limit: u32,
+) -> Result<Vec<SongInfo>, FetchError> {
+    let limit = limit.clamp(1, 1000);
+    let begin = limit * page.saturating_sub(1);
+    let body = serde_json::json!({
+        "comm": { "ct": 24, "cv": 10000 },
+        "albumSonglist": {
+            "method": "GetAlbumSongList",
+            "param": { "albumMid": album_mid, "albumID": 0, "begin": begin, "num": limit, "order": 2 },
+            "module": "music.musichallAlbum.AlbumSongList"
+        }
+    });
+    let json: Value =
+        super::with_cookie(http::client().post("https://u.y.qq.com/cgi-bin/musicu.fcg"))
+            .header("Referer", "https://y.qq.com/")
+            .json(&body)
+            .send_with_retry(crate::http::RETRY_ATTEMPTS)
+            .await
+            .map_err(|error| FetchError::Network(error.to_string()))?
+            .json()
+            .await
+            .map_err(|error| FetchError::Parse(error.to_string()))?;
+    let req = &json["albumSonglist"];
+    if req["code"].as_i64().unwrap_or(-1) != 0 {
+        return Err(FetchError::Other("QQ 专辑曲目请求失败".to_string()));
+    }
+    let songs = req["data"]["songList"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|item| super::search::parse_song(&item["songInfo"]))
+        .collect::<Vec<_>>();
+    if songs.is_empty() {
+        return Err(FetchError::NotFound);
+    }
+    Ok(songs)
+}
+
 /// 当前登录账号的个人歌单。
 pub async fn get_user_playlists(page: u32, limit: u32) -> Result<Vec<Playlist>, FetchError> {
     if !super::session::is_logged_in() {

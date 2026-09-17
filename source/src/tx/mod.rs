@@ -17,7 +17,7 @@ use async_trait::async_trait;
 use lx_core::model::leaderboard::LeaderboardInfo;
 use lx_core::model::login::{QrLoginResult, QrLoginSession};
 use lx_core::model::lyric::LyricData;
-use lx_core::model::playlist::Playlist;
+use lx_core::model::playlist::{Album, Playlist};
 use lx_core::model::song::SongInfo;
 use lx_core::model::source::{Quality, SourceId};
 use lx_core::traits::source::{
@@ -146,6 +146,22 @@ impl MusicSource for TxSource {
         link: &str,
     ) -> Result<lx_core::traits::source::ParsedLink, FetchError> {
         parse::parse(link).await
+    }
+
+    async fn get_album_songs(
+        &self,
+        album: &Album,
+        page: u32,
+        limit: u32,
+    ) -> Result<SearchResult, SearchError> {
+        let items = playlist::get_album_songs(&album.id, page, limit)
+            .await
+            .map_err(|error| SearchError::Other(error.to_string()))?;
+        Ok(SearchResult {
+            total: items.len() as u32,
+            has_more: items.len() as u32 == limit,
+            items,
+        })
     }
 
     async fn get_user_playlists(&self, page: u32, limit: u32) -> Result<Vec<Playlist>, FetchError> {

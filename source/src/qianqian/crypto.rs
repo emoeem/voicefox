@@ -21,16 +21,10 @@ pub fn signed_query(params: &[(&str, &str)]) -> String {
 
 /// tracklink 的 `rate` 是业务参数，但历史 Web 接口的签名明文不包含它。
 pub fn signed_tracklink_query(tsid: &str, rate: &str) -> String {
-    signed_query_with_extra(
-        &[("TSID", tsid), ("appid", APP_ID)],
-        &[("rate", rate)],
-    )
+    signed_query_with_extra(&[("TSID", tsid), ("appid", APP_ID)], &[("rate", rate)])
 }
 
-fn signed_query_with_extra(
-    params: &[(&str, &str)],
-    extra: &[(&str, &str)],
-) -> String {
+fn signed_query_with_extra(params: &[(&str, &str)], extra: &[(&str, &str)]) -> String {
     let mut pairs: Vec<(String, String)> = params
         .iter()
         .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
@@ -44,7 +38,11 @@ fn signed_query_with_extra(
         .collect::<Vec<_>>()
         .join("&");
     let sign = hex::encode(md5::Md5::digest(format!("{joined}{SECRET}").as_bytes()));
-    pairs.extend(extra.iter().map(|(key, value)| ((*key).to_string(), (*value).to_string())));
+    pairs.extend(
+        extra
+            .iter()
+            .map(|(key, value)| ((*key).to_string(), (*value).to_string())),
+    );
     pairs.push(("sign".to_string(), sign));
 
     pairs
