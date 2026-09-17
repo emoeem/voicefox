@@ -115,6 +115,75 @@ pub async fn get_detail_with_meta(id: &str) -> Result<(Playlist, Vec<SongInfo>),
     Ok((playlist, songs))
 }
 
+/// 当前登录账号的个人歌单。
+pub async fn get_user_playlists(page: u32, limit: u32) -> Result<Vec<Playlist>, FetchError> {
+    if !super::session::is_logged_in() {
+        return Err(FetchError::Other("请先在设置页登录 QQ 音乐".to_string()));
+    }
+    let uin = super::session::snapshot()
+        .user_id
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| FetchError::Other("QQ 登录缺少账号 ID，请重新扫码".to_string()))?;
+    let begin = limit.max(1) * page.saturating_sub(1);
+    let url = format!(
+        "https://c.y.qq.com/rsc/fcgi-bin/fcg_user_created_diss.fcg?format=json&hostuin={uin}&sin={begin}&ein={}&g_tk=5381&loginUin={uin}",
+        begin + limit.max(1) - 1
+    );
+    let json: Value = super::with_cookie(http::client().get(url))
+        .header("Referer", "https://y.qq.com/")
+        .send_with_retry(crate::http::RETRY_ATTEMPTS)
+        .await
+        .map_err(|error| FetchError::Network(error.to_string()))?
+        .json()
+        .await
+        .map_err(|error| FetchError::Parse(error.to_string()))?;
+    if json["code"].as_i64().unwrap_or(-1) != 0 {
+        return Err(FetchError::Other(
+            "获取 QQ 个人歌单失败，登录可能已失效".to_string(),
+        ));
+    }
+    let items = json["data"]["disslist"]
+        .as_array()
+        .or_else(|| json["data"]["list"].as_array())
+        .ok_or_else(|| FetchError::Other("QQ 个人歌单列表为空".to_string()))?;
+    Ok(items.iter().filter_map(parse_user_playlist).collect())
+}
+
+fn parse_user_playlist(item: &Value) -> Option<Playlist> {
+    let id = {
+        let id = value_string(&item["dissid"]);
+        if id.is_empty() {
+            value_string(&item["tid"])
+        } else {
+            id
+        }
+    };
+    let name = item["dissname"]
+        .as_str()
+        .or_else(|| item["title"].as_str())?
+        .trim()
+        .to_string();
+    if id.is_empty() || name.is_empty() {
+        return None;
+    }
+    let mut playlist = Playlist::new(id.clone(), name, SourceId::Tx);
+    playlist.cover_url = item["logo"]
+        .as_str()
+        .or_else(|| item["picurl"].as_str())
+        .filter(|url| !url.is_empty())
+        .map(|url| url.replace("http://", "https://"));
+    playlist.song_count = value_u64(&item["songnum"])
+        .or_else(|| value_u64(&item["song_count"]))
+        .unwrap_or_default() as u32;
+    playlist.play_count = value_u64(&item["listennum"]).or_else(|| value_u64(&item["visitnum"]));
+    playlist.creator = item["creatorname"]
+        .as_str()
+        .or_else(|| item["creator"]["name"].as_str())
+        .map(str::to_string);
+    playlist.link = Some(format!("https://y.qq.com/n/ryqq/playlist/{id}"));
+    Some(playlist)
+}
+
 /// 歌单分类目录：老版 `fcg_get_diss_tag_conf` 接口（与 music-lib 一致）。
 pub async fn get_categories() -> Result<Vec<PlaylistCategory>, FetchError> {
     let json: Value = super::with_cookie(http::client()

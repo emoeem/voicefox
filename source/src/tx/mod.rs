@@ -148,6 +148,10 @@ impl MusicSource for TxSource {
         parse::parse(link).await
     }
 
+    async fn get_user_playlists(&self, page: u32, limit: u32) -> Result<Vec<Playlist>, FetchError> {
+        playlist::get_user_playlists(page, limit).await
+    }
+
     async fn get_playlist_detail(&self, id: &str, _page: u32) -> Result<Vec<SongInfo>, FetchError> {
         playlist::get_detail(id).await
     }
