@@ -2044,14 +2044,11 @@ impl SettingsPage {
         );
         render_setting_options(options, options_inner, buf);
 
-        let source_block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::new().fg(if self.focus == SettingsFocus::JsSources {
-                accent
-            } else {
-                crate::theme::border(ctx)
-            }))
-            .title(" JS 音源 [s/a/d/h] ");
+        let source_block = if self.focus == SettingsFocus::JsSources {
+            super::components::chrome::focused_card(ctx, " JS 音源  ·  [s/a/d/h] ")
+        } else {
+            super::components::chrome::card(ctx, " JS 音源  ·  [s/a/d/h] ")
+        };
         let source_inner = source_block.inner(chunks[1]);
         source_block.render(chunks[1], buf);
         if source_inner.height > 0 {
