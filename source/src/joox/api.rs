@@ -98,6 +98,24 @@ pub(super) fn strip_jsonp<'a>(body: &'a str, callback: &str) -> &'a str {
     }
 }
 
+fn joox_cookie() -> Option<String> {
+    std::env::var("JOOX_COOKIE")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn apply_joox_headers(builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    let builder = builder
+        .header("User-Agent", USER_AGENT)
+        .header("Origin", "http://www.joox.com")
+        .header("Referer", "http://www.joox.com");
+    match joox_cookie() {
+        Some(cookie) => builder.header("Cookie", cookie),
+        None => builder,
+    }
+}
+
 async fn openjoox_get(api: &str, params: &[(&str, &str)]) -> Result<Value, ApiError> {
     let mut query = vec![("country", "sg"), ("lang", "zh_cn")];
     query.extend_from_slice(params);
@@ -113,9 +131,7 @@ async fn openjoox_get(api: &str, params: &[(&str, &str)]) -> Result<Value, ApiEr
             .collect::<Vec<_>>()
             .join("&")
     );
-    http::client()
-        .get(url)
-        .header("User-Agent", USER_AGENT)
+    apply_joox_headers(http::client().get(url))
         .header("X-Forwarded-For", X_FORWARDED_FOR)
         .send_with_retry(crate::http::RETRY_ATTEMPTS)
         .await
