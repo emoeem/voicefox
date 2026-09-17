@@ -42,6 +42,8 @@ struct JsSourceEntry {
 }
 
 /// 音源管理器
+type LyricNegativeCache = HashMap<(SourceId, Option<String>, String), Instant>;
+
 pub struct SourceManager {
     sources: HashMap<SourceId, Arc<dyn MusicSource>>,
     /// JS 自定义音源，按配置顺序依次用于解析，并共同参与聚合搜索。
@@ -55,7 +57,7 @@ pub struct SourceManager {
     /// 歌词"确认无词"负缓存（上次确认时间），避免纯音乐/无词歌曲
     /// 每次播放都触发 JS 音源 + 全源聚合补全的长耗时请求。
     /// 键为 (来源，JS 平台标记，歌曲 id)。
-    lyric_negative_cache: std::sync::Mutex<HashMap<(SourceId, Option<String>, String), Instant>>,
+    lyric_negative_cache: std::sync::Mutex<LyricNegativeCache>,
 }
 
 /// 判断是否为真本地文件歌曲：JS 音源的搜索结果同样标记为 `SourceId::Local`，

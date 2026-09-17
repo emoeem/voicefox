@@ -182,7 +182,10 @@ fn decrypt_strategy_response(raw: &[u8]) -> Result<serde_json::Value, FetchError
         raw[4..]
             .iter()
             .enumerate()
-            .map(|(index, byte)| byte.wrapping_add(seed).wrapping_sub(MIGU_KEY[index % MIGU_KEY.len()]))
+            .map(|(index, byte)| {
+                byte.wrapping_add(seed)
+                    .wrapping_sub(MIGU_KEY[index % MIGU_KEY.len()])
+            })
             .collect::<Vec<_>>()
     } else {
         raw.to_vec()
@@ -216,14 +219,22 @@ async fn fetch_strategy_url(
         .send_with_retry(crate::http::RETRY_ATTEMPTS)
         .await
         .map_err(|error| FetchError::Network(error.to_string()))?;
-    let bytes = resp.bytes().await.map_err(|error| FetchError::Network(error.to_string()))?;
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|error| FetchError::Network(error.to_string()))?;
     let json = decrypt_strategy_response(&bytes)?;
     let data = &json["data"];
-    let url = data["url"].as_str().map(str::trim).filter(|url| url.starts_with("http"));
+    let url = data["url"]
+        .as_str()
+        .map(str::trim)
+        .filter(|url| url.starts_with("http"));
     let Some(url) = url else {
         return Err(FetchError::NotFound);
     };
-    let duration = data["song"]["duration"].as_u64().or_else(|| data["duration"].as_u64());
+    let duration = data["song"]["duration"]
+        .as_u64()
+        .or_else(|| data["duration"].as_u64());
     Ok((url.to_string(), duration))
 }
 
@@ -443,14 +454,24 @@ pub async fn get_song_url(song: &SongInfo, quality: Quality) -> Result<SongUrl, 
                     Quality::Flac | Quality::Flac24 => "E",
                     Quality::Low128 | Quality::High320 => "2",
                 });
-            let copyright_id = song.extra.get("copyrightId").map(String::as_str).unwrap_or("0");
-            let strategy = fetch_strategy_url(resource_id, copyright_id, tone_flag, resource_type).await;
+            let copyright_id = song
+                .extra
+                .get("copyrightId")
+                .map(String::as_str)
+                .unwrap_or("0");
+            let strategy =
+                fetch_strategy_url(resource_id, copyright_id, tone_flag, resource_type).await;
             let url = match strategy {
                 Ok((url, duration)) => {
-                    if let (Some(expected), Some(actual)) = (Some(song.duration.as_secs()), duration)
-                        && expected > 0 && actual > 0 && expected.abs_diff(actual) > 5
+                    if let (Some(expected), Some(actual)) =
+                        (Some(song.duration.as_secs()), duration)
+                        && expected > 0
+                        && actual > 0
+                        && expected.abs_diff(actual) > 5
                     {
-                        tracing::debug!("咪咕 strategy 返回时长异常: expected={expected}s actual={actual}s");
+                        tracing::debug!(
+                            "咪咕 strategy 返回时长异常: expected={expected}s actual={actual}s"
+                        );
                     }
                     url
                 }

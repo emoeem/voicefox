@@ -519,9 +519,7 @@ impl FavoritesPage {
         if index >= filtered.len() {
             return None;
         }
-        let Some(original_index) = filtered.get(index).copied() else {
-            return None;
-        };
+        let original_index = filtered.get(index).copied()?;
         // 菜单仍按过滤视图返回 (songs, index)；但右键会退出过滤，列表回到
         // 完整视图，selected 必须映射回原始下标，否则会指向另一首歌。
         let songs = filtered

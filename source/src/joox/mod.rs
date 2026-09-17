@@ -137,7 +137,7 @@ impl MusicSource for JooxSource {
             .map_err(api::ApiError::into_fetch)?;
         // 档位从高到低挑第一个可用的。
         let mut candidates = detail.urls;
-        candidates.sort_by(|left, right| right.0.cmp(&left.0));
+        candidates.sort_by_key(|right| std::cmp::Reverse(right.0));
         let (achieved, url) = candidates
             .iter()
             .find(|(candidate, _)| *candidate <= quality)

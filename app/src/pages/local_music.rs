@@ -63,6 +63,7 @@ impl<'a> LocalSongView<'a> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn handle_mouse(
     event: MouseEvent,
     area: Rect,

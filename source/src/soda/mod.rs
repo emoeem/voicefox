@@ -308,8 +308,10 @@ mod tests {
 
     #[test]
     fn cache_extension_follows_the_stream_format() {
-        let mut stream = play::SodaStream::default();
-        stream.format = "flac".to_string();
+        let mut stream = play::SodaStream {
+            format: "flac".to_string(),
+            ..Default::default()
+        };
         assert_eq!(extension_for(&stream), "flac");
         stream.format = "mp3".to_string();
         assert_eq!(extension_for(&stream), "mp3");

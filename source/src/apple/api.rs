@@ -463,8 +463,7 @@ pub(super) fn link_target(link: &str) -> Option<AppleLink> {
                 .next()
                 .unwrap_or(rest)
                 .split('/')
-                .filter(|segment| !segment.is_empty())
-                .next_back()
+                .rfind(|segment| !segment.is_empty())
                 .unwrap_or_default()
                 .trim()
                 .to_string();

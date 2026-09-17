@@ -241,12 +241,12 @@ impl AudioLinks {
     /// 按请求档位挑一个：优先不高于请求档位的最高档，都没有就取最高档。
     pub(super) fn pick(&self, quality: Quality) -> Option<&AudioLink> {
         let mut sorted = self.entries.iter().collect::<Vec<_>>();
-        sorted.sort_by(|left, right| right.quality.cmp(&left.quality));
+        sorted.sort_by_key(|right| std::cmp::Reverse(right.quality));
         sorted
             .iter()
             .find(|entry| entry.quality <= quality)
             .or_else(|| sorted.first())
-            .map(|entry| *entry)
+            .copied()
     }
 
     pub(super) fn available_qualities(&self) -> Vec<Quality> {

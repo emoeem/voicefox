@@ -165,7 +165,7 @@ pub async fn fetch_song(id: &str) -> Result<SongInfo, FetchError> {
         .as_array()
         .and_then(|songs| songs.first())
         .and_then(search::parse_song)
-        .ok_or_else(|| FetchError::NotFound)
+        .ok_or(FetchError::NotFound)
 }
 
 /// 歌单元数据 + 曲目，用于链接直解与「查看歌单」。

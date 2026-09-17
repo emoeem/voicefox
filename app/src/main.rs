@@ -965,11 +965,11 @@ fn run_app(
                     }
                     qr_login_page = None;
                     let label = source.display_name();
-                    let message = ctx
-                        .source_manager
-                        .is_logged_in(*source)
-                        .then(|| format!("{label}登录成功"))
-                        .unwrap_or_else(|| format!("{label}登录状态未确认，请重新打开设置查看"));
+                    let message = if ctx.source_manager.is_logged_in(*source) {
+                        format!("{label}登录成功")
+                    } else {
+                        format!("{label}登录状态未确认，请重新打开设置查看")
+                    };
                     ctx.notify(Notification::success(message));
                     needs_render = true;
                     continue;

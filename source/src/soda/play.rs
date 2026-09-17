@@ -107,10 +107,10 @@ fn collect(value: &Value, inherited_auth: Option<&str>, out: &mut Vec<SodaStream
         }
         Value::String(text) => {
             // 有些字段把整个 video_model 又编码成字符串，最多剥两层。
-            if text.trim_start().starts_with('{') || text.trim_start().starts_with('[') {
-                if let Ok(nested) = serde_json::from_str::<Value>(text) {
-                    collect(&nested, inherited_auth, out);
-                }
+            if (text.trim_start().starts_with('{') || text.trim_start().starts_with('['))
+                && let Ok(nested) = serde_json::from_str::<Value>(text)
+            {
+                collect(&nested, inherited_auth, out);
             }
         }
         _ => {}
