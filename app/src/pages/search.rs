@@ -787,7 +787,10 @@ impl SearchPage {
             inner_area.height.saturating_sub(1),
         );
 
-        let selected_style = Style::new().bg(accent).fg(crate::theme::selection_fg(ctx));
+        let selected_style = Style::new()
+            .bg(accent)
+            .fg(crate::theme::selection_fg(ctx))
+            .add_modifier(Modifier::BOLD);
         let normal_style = Style::new().fg(crate::theme::text(ctx));
 
         let visible_height = list_area.height as usize;

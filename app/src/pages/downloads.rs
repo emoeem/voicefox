@@ -339,7 +339,9 @@ fn task_title_line(
     let name = truncate_to_width(&task.display_name(), width.saturating_sub(prefix_width + 8));
     let mut style = Style::new().fg(state_color);
     if selected {
-        style = style.add_modifier(Modifier::BOLD);
+        style = style
+            .bg(crate::theme::surface0(ctx))
+            .add_modifier(Modifier::BOLD);
     }
     Line::from(vec![
         Span::styled(
@@ -365,7 +367,9 @@ fn task_progress_line(
     ctx: &AppContext,
 ) -> Line<'static> {
     let style = if selected {
-        Style::new().fg(crate::theme::text(ctx))
+        Style::new()
+            .fg(crate::theme::text(ctx))
+            .bg(crate::theme::surface0(ctx))
     } else {
         Style::new().fg(crate::theme::muted(ctx))
     };
