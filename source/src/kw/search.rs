@@ -26,7 +26,7 @@ fn bitrate_to_quality(bitrate: u32) -> Option<Quality> {
 
 /// 解析 N_MINFO 音质信息字符串
 /// 格式: "level:xxxx,bitrate:4000,format:flac,size:50.1M;level:xxxx,bitrate:320,format:mp3,size:10.2M"
-fn parse_qualities(n_minfo: &str) -> BTreeSet<Quality> {
+pub(crate) fn parse_qualities_for_playlist(n_minfo: &str) -> BTreeSet<Quality> {
     let mut qualities = BTreeSet::new();
     for part in n_minfo.split(';') {
         let part = part.trim();
@@ -121,7 +121,7 @@ pub async fn search(keyword: &str, page: u32, limit: u32) -> Result<SearchResult
 
         // 音质列表
         let n_minfo = item["N_MINFO"].as_str().unwrap_or("");
-        let qualities = parse_qualities(n_minfo);
+        let qualities = parse_qualities_for_playlist(n_minfo);
 
         let mut song = SongInfo::new(song_id, SourceId::Kw, name, artist);
         song.album_name = album;

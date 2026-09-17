@@ -61,6 +61,81 @@ async fn fetch_list_page(page: u32) -> Result<Vec<Value>, FetchError> {
     Ok(items.clone())
 }
 
+/// 直接通过酷我专辑接口获取曲目。
+pub async fn get_album_songs(id: &str) -> Result<Vec<SongInfo>, FetchError> {
+    let album_id = id.trim();
+    if album_id.is_empty() {
+        return Err(FetchError::Other("酷我专辑 ID 为空".to_string()));
+    }
+    let url = format!(
+        "http://search.kuwo.cn/r.s?pn=0&rn=1000&stype=albuminfo&albumid={album_id}&alflac=1&pcmp4=1&encoding=utf8&vipver=MUSIC_8.7.7.0_W4"
+    );
+    let text = http::client()
+        .get(url)
+        .header("Referer", "http://www.kuwo.cn/")
+        .send_with_retry(crate::http::RETRY_ATTEMPTS)
+        .await
+        .map_err(|error| FetchError::Network(error.to_string()))?
+        .text()
+        .await
+        .map_err(|error| FetchError::Network(error.to_string()))?;
+    let json = parse_kuwo_json(&text).map_err(|error| FetchError::Parse(error.to_string()))?;
+    let items = json["musiclist"]
+        .as_array()
+        .ok_or_else(|| FetchError::Parse("酷我专辑曲目列表为空".to_string()))?;
+    let songs = items
+        .iter()
+        .filter_map(parse_album_song)
+        .collect::<Vec<_>>();
+    if songs.is_empty() {
+        return Err(FetchError::NotFound);
+    }
+    Ok(songs)
+}
+
+fn parse_album_song(item: &Value) -> Option<SongInfo> {
+    let id = field(item, "musicrid")
+        .and_then(Value::as_str)
+        .or_else(|| field(item, "id").and_then(Value::as_str))
+        .unwrap_or_default()
+        .strip_prefix("MUSIC_")
+        .unwrap_or_default()
+        .to_string();
+    if id.is_empty() {
+        return None;
+    }
+    let name = field(item, "songname")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let artist = field(item, "artist")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .replace('&', "、");
+    let album_name = field(item, "album")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let album_id = field(item, "albumid").map(value_string).unwrap_or_default();
+    let duration = field(item, "duration")
+        .and_then(value_u64)
+        .unwrap_or_default();
+    let qualities = field(item, "n_minfo")
+        .and_then(Value::as_str)
+        .map(super::search::parse_qualities_for_playlist)
+        .unwrap_or_default();
+    let mut song = SongInfo::new(id, SourceId::Kw, name, artist);
+    song.album_name = album_name;
+    song.album_id = album_id;
+    song.duration = std::time::Duration::from_secs(duration);
+    song.qualities = qualities;
+    song.cover_url = field(item, "pic120")
+        .and_then(Value::as_str)
+        .filter(|url| !url.is_empty())
+        .map(str::to_string);
+    Some(song)
+}
+
 pub async fn get_detail(raw_id: &str, page: u32) -> Result<Vec<SongInfo>, FetchError> {
     let (digest, id) = parse_id(raw_id);
     let id = if digest == Some("5") {
