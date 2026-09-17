@@ -69,18 +69,19 @@ impl NavTab {
             Self::Settings => "设置",
         }
     }
+    /// 侧边栏图标只使用 ASCII 单宽字符，避免 emoji/字体宽度差异导致视觉列错位。
     fn icon(self) -> &'static str {
         match self {
-            Self::Main => "▶",
-            Self::Search => "⌕",
-            Self::Leaderboard => "▤",
-            Self::Playlists => "≡",
-            Self::Favorites => "♥",
-            Self::History => "↶",
-            Self::LocalMusic => "♫",
-            Self::Downloads => "⇩",
-            Self::Sources => "◉",
-            Self::Settings => "⚙",
+            Self::Main => ">",
+            Self::Search => "?",
+            Self::Leaderboard => "#",
+            Self::Playlists => "=",
+            Self::Favorites => "*",
+            Self::History => "~",
+            Self::LocalMusic => "m",
+            Self::Downloads => "v",
+            Self::Sources => "@",
+            Self::Settings => "+",
         }
     }
 }
@@ -136,7 +137,6 @@ pub fn render(area: Rect, buf: &mut Buffer, active: NavTab, ctx: &crate::context
             Constraint::Length(1),
             Constraint::Length(1 + total_tabs + separators),
             Constraint::Min(2),
-            Constraint::Length(1),
         ])
         .split(inner);
 
@@ -226,9 +226,6 @@ pub fn render(area: Rect, buf: &mut Buffer, active: NavTab, ctx: &crate::context
 
     let bottom_area = layout[2];
     render_playing_summary(bottom_area, buf, ctx, bg_style);
-
-    let status_area = layout[3];
-    render_source_status(status_area, buf, ctx, bg_style);
 }
 
 fn render_playing_summary(
@@ -314,58 +311,6 @@ fn render_playing_summary(
     }
 }
 
-fn render_source_status(
-    area: Rect,
-    buf: &mut Buffer,
-    ctx: &crate::context::AppContext,
-    base_style: Style,
-) {
-    if area.width == 0 || area.height == 0 {
-        return;
-    }
-    let health = ctx.source_health.read().unwrap_or_else(|e| e.into_inner());
-    let (online, total) = health.iter().fold((0u32, 0u32), |(ok, tot), h| {
-        (ok + if h.ok { 1 } else { 0 }, tot + 1)
-    });
-
-    let dot = if online == total && total > 0 {
-        "●"
-    } else if online == 0 {
-        "○"
-    } else {
-        "◐"
-    };
-    let fg = if online == total && total > 0 {
-        crate::theme::green(ctx)
-    } else if online == 0 && total > 0 {
-        crate::theme::red(ctx)
-    } else if total == 0 {
-        crate::theme::overlay1(ctx)
-    } else {
-        crate::theme::yellow(ctx)
-    };
-    let label = if total == 0 {
-        let enabled = ctx
-            .config
-            .read()
-            .map(|c| c.source.enabled.len() as u32)
-            .unwrap_or(0);
-        if enabled > 0 {
-            "检测中…".to_string()
-        } else {
-            "未启用".to_string()
-        }
-    } else {
-        format!("{dot} {online}/{total}")
-    };
-
-    Paragraph::new(Line::from(Span::styled(
-        format!("  源 {label}"),
-        base_style.fg(fg),
-    )))
-    .render(area, buf);
-}
-
 fn fmt(pos: Duration, dur: Duration) -> String {
     if dur.is_zero() {
         return format!("{:02}:{:02}", pos.as_secs() / 60, pos.as_secs() % 60);
@@ -403,24 +348,50 @@ fn truncate(song: &lx_core::model::song::SongInfo, max: usize) -> String {
 }
 
 pub fn hit_test(area: Rect, position: Position) -> Option<NavTab> {
-    let inner = Block::default().borders(Borders::RIGHT).inner(area);
-    let nav = Rect::new(
-        inner.x,
-        inner.y + 1,
-        inner.width,
-        NavTab::ALL.len() as u16 + 3,
-    );
-    NavTab::ALL
+    nav_item_areas(area)
         .into_iter()
-        .zip(tab_chunks(nav).iter())
-        .find_map(|(tab, area)| area.contains(position).then_some(tab))
+        .find_map(|(tab, rect)| rect.contains(position).then_some(tab))
 }
 
+/// 渲染与鼠标命中测试共用同一套行坐标。
+/// 以前 hit_test 把 10 个菜单项当成连续行，遗漏了 3 条分组分隔线，
+/// 导致点击「收藏」以后逐项产生偏移，表现为鼠标点 A 实际打开 B。
+fn nav_item_areas(area: Rect) -> Vec<(NavTab, Rect)> {
+    let inner = Block::default().borders(Borders::RIGHT).inner(area);
+    const GROUPS: [&[NavTab]; 4] = [
+        &[NavTab::Main],
+        &[NavTab::Search, NavTab::Leaderboard, NavTab::Playlists],
+        &[
+            NavTab::Favorites,
+            NavTab::History,
+            NavTab::LocalMusic,
+            NavTab::Downloads,
+        ],
+        &[NavTab::Sources, NavTab::Settings],
+    ];
+    let mut result = Vec::with_capacity(NavTab::ALL.len());
+    let mut y = inner.y + 1;
+    for (group_index, group) in GROUPS.iter().enumerate() {
+        if group_index > 0 {
+            y = y.saturating_add(1);
+        }
+        for &tab in *group {
+            if y >= inner.bottom() {
+                return result;
+            }
+            result.push((tab, Rect::new(inner.x, y, inner.width, 1)));
+            y = y.saturating_add(1);
+        }
+    }
+    result
+}
+
+#[cfg(test)]
 fn tab_chunks(area: Rect) -> std::rc::Rc<[Rect]> {
-    Layout::default()
-        .direction(Direction::Vertical)
-        .constraints(NavTab::ALL.iter().map(|_| Constraint::Length(1)))
-        .split(area)
+    nav_item_areas(area)
+        .into_iter()
+        .map(|(_, rect)| rect)
+        .collect()
 }
 
 pub fn handle_input(key: &KeyEvent) -> Option<NavTab> {
@@ -445,8 +416,9 @@ mod tests {
     use ratatui::layout::Rect;
     #[test]
     fn sidebar_rows_remain_clickable() {
-        let chunks = tab_chunks(Rect::new(1, 3, 20, 10));
+        let chunks = tab_chunks(Rect::new(1, 3, 20, 20));
         assert_eq!(chunks.len(), NavTab::ALL.len());
         assert!(chunks.iter().all(|chunk| chunk.height == 1));
+        assert!(chunks.windows(2).any(|rows| rows[1].y > rows[0].bottom()));
     }
 }

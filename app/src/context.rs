@@ -10,9 +10,7 @@ use lx_core::events::Notification;
 use lx_core::model::config::Config;
 use lx_core::model::song::SongInfo;
 use lx_core::model::source::PlayerState;
-use lx_core::traits::player::{
-    AbLoop, AudioInfo, ChannelMode, EqualizerBand, Player, ReplayGainMode,
-};
+use lx_core::traits::player::{AbLoop, ChannelMode, EqualizerBand, Player, ReplayGainMode};
 
 use crate::cover::CoverService;
 use crate::download::DownloadManager;
@@ -32,7 +30,6 @@ pub struct AppContext {
     pub position: tokio::sync::watch::Receiver<std::time::Duration>,
     pub lyric_position: tokio::sync::watch::Receiver<std::time::Duration>,
     pub duration: tokio::sync::watch::Receiver<std::time::Duration>,
-    pub audio_info: tokio::sync::watch::Receiver<AudioInfo>,
 
     // --- 音源 ---
     pub source_manager: Arc<SourceManager>,
@@ -124,7 +121,6 @@ impl AppContext {
         let position = player.position_watcher();
         let lyric_position = player.audible_position_watcher();
         let duration = player.duration_watcher();
-        let audio_info = player.audio_info_watcher();
 
         Ok(Self {
             player,
@@ -132,7 +128,6 @@ impl AppContext {
             position,
             lyric_position,
             duration,
-            audio_info,
             source_manager,
             source_health: std::sync::RwLock::new(Vec::new()),
             source_health_checking: std::sync::atomic::AtomicBool::new(false),

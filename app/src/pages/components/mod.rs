@@ -7,6 +7,7 @@
 
 pub mod chrome;
 pub mod context_menu;
+pub mod geometry;
 pub mod header;
 pub mod list_filter;
 pub mod lyric;
@@ -14,4 +15,5 @@ pub mod notification;
 pub mod player_controls;
 pub mod scroll;
 pub mod song_table;
+pub mod tabs;
 pub mod text;

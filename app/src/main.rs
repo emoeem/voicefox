@@ -109,7 +109,8 @@ enum PlaylistResponse {
 struct UiAreas {
     tabs: Rect,
     content: Rect,
-    progress: Rect,
+    player_progress: Rect,
+    player_controls: Rect,
     notification: Rect,
 }
 
@@ -1817,7 +1818,12 @@ fn run_app(
                     .lock()
                     .unwrap()
                     .consumes_key(&key, &kb_resolver);
-            let sources_owns_key = active_tab == NavTab::Sources && !text_input_active;
+            let sources_owns_key = active_tab == NavTab::Sources
+                && !text_input_active
+                && sources_page
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .consumes_key(&key);
 
             if !text_input_active
                 && !settings_owns_key
@@ -2243,6 +2249,11 @@ fn run_app(
                         let mut sp = sources_page.lock().unwrap_or_else(|e| e.into_inner());
                         sp.handle_key(key, &ctx)
                     };
+                    if matches!(action, AppAction::GoBack) {
+                        active_tab = NavTab::Main;
+                        needs_render = true;
+                        continue;
+                    }
                     if matches!(
                         action,
                         AppAction::QrLogin(_)
@@ -2738,16 +2749,85 @@ fn run_app(
                             .input_mode = true;
                     }
                 }
-            } else if ui_areas.progress.contains(position)
+            } else if ui_areas.player_progress.contains(position)
                 && matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
             {
                 let duration = *ctx.duration.borrow();
                 if let Some(position) = components::player_controls::seek_position(
-                    ui_areas.progress,
+                    ui_areas.player_progress,
                     mouse.column,
                     duration,
                 ) {
                     ctx.seek(position);
+                }
+            } else if ui_areas.player_controls.contains(position)
+                && matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
+            {
+                use components::player_controls::ControlHit;
+                match components::player_controls::control_at(
+                    ui_areas.player_controls,
+                    mouse.column,
+                ) {
+                    Some(ControlHit::Mode) => {
+                        let mode = ctx.playlist.cycle_mode();
+                        let mut config = ctx.config.write().unwrap_or_else(|e| e.into_inner());
+                        config.player.play_mode = mode.as_config().to_string();
+                        let _ = crate::config::loader::save(&config, &ctx.config_path);
+                    }
+                    Some(ControlHit::Previous) => {
+                        if let Some((songs, index)) = ctx.playlist.prev_manual_entry_arc() {
+                            execute_action(
+                                AppAction::PlayFromQueue { songs, index },
+                                &ctx,
+                                rt,
+                                &action_tx,
+                                &search_page,
+                                &settings_page,
+                                &search_seq,
+                            );
+                        }
+                    }
+                    Some(ControlHit::PlayPause) => {
+                        toggle_or_start_current(
+                            &ctx,
+                            rt,
+                            &action_tx,
+                            &search_page,
+                            &settings_page,
+                            &search_seq,
+                        );
+                    }
+                    Some(ControlHit::Next) => {
+                        if let Some((songs, index)) = ctx.playlist.next_manual_entry_arc() {
+                            execute_action(
+                                AppAction::PlayFromQueue { songs, index },
+                                &ctx,
+                                rt,
+                                &action_tx,
+                                &search_page,
+                                &settings_page,
+                                &search_seq,
+                            );
+                        }
+                    }
+                    Some(ControlHit::Volume) => {
+                        if let Some(relative) = components::player_controls::volume_offset(
+                            ui_areas.player_controls,
+                            mouse.column,
+                        ) {
+                            let volume_width =
+                                components::player_controls::volume_width(ui_areas.player_controls);
+                            let volume = if volume_width <= 1 {
+                                100
+                            } else {
+                                (u32::from(relative).saturating_mul(100)
+                                    / u32::from(volume_width - 1))
+                                .min(100)
+                            };
+                            persist_volume(&ctx, volume);
+                        }
+                    }
+                    None => {}
                 }
             } else if ui_areas.content.contains(position) {
                 if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Right)) {
@@ -3007,9 +3087,9 @@ fn draw_app(
         let main_chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(1), // SourceBar (tab + 歌名)
+                Constraint::Length(2), // 页面标题 + 底部分隔线
                 Constraint::Min(3),    // page content
-                Constraint::Length(3), // PlayerBar (歌名 / 进度 / 控制)
+                Constraint::Length(5), // 播放器：歌曲 / 进度 / 控制 + 顶部分隔线
             ])
             .split(main_area);
 
@@ -3022,10 +3102,12 @@ fn draw_app(
 
         components::player_controls::render(controls_area, frame.buffer_mut(), ctx);
 
+        let player_rows = components::player_controls::areas(controls_area);
         *ui_areas = UiAreas {
             tabs: body[0],
             content: content_area,
-            progress: controls_area,
+            player_progress: player_rows.progress,
+            player_controls: player_rows.controls,
             notification: Rect::default(),
         };
 

@@ -3,66 +3,11 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{ListState, Paragraph, Widget};
+use ratatui::widgets::{Paragraph, Widget};
+use unicode_width::UnicodeWidthStr;
 
 use crate::AppAction;
 use crate::context::AppContext;
-
-const FEATURE_SEARCH: char = 'S';
-const FEATURE_PLAYLIST: char = 'P';
-const FEATURE_FAVORITE: char = 'F';
-const FEATURE_LEADERBOARD: char = 'L';
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct SourceFeatures {
-    pub search: bool,
-    pub playlist: bool,
-    pub favorite: bool,
-    pub leaderboard: bool,
-}
-
-impl SourceFeatures {
-    pub fn from_source(source: lx_core::model::source::SourceId) -> Self {
-        use lx_core::model::source::SourceId::*;
-        match source {
-            Kw | Kg | Tx | Wy | Mg | Bili | Soda | Qianqian | Joox | Fivesing | Jamendo | Apple => {
-                Self {
-                    search: true,
-                    playlist: matches!(source, Tx | Wy | Bili | Joox | Qianqian),
-                    favorite: matches!(source, Tx | Wy | Bili | Joox),
-                    leaderboard: matches!(source, Tx | Wy | Joox | Qianqian | Jamendo),
-                }
-            }
-            Local => Self {
-                search: true,
-                playlist: false,
-                favorite: false,
-                leaderboard: false,
-            },
-        }
-    }
-
-    pub fn label(&self) -> String {
-        let mut s = String::new();
-        s.push(if self.search { FEATURE_SEARCH } else { '·' });
-        s.push(if self.playlist {
-            FEATURE_PLAYLIST
-        } else {
-            '·'
-        });
-        s.push(if self.favorite {
-            FEATURE_FAVORITE
-        } else {
-            '·'
-        });
-        s.push(if self.leaderboard {
-            FEATURE_LEADERBOARD
-        } else {
-            '·'
-        });
-        s
-    }
-}
 
 pub struct SourcesPage {
     selected: usize,
@@ -117,7 +62,7 @@ impl SourcesPage {
                 Style::new().fg(accent).add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                "  上下选择 · 空格启用 · d 设为默认 · q 扫码登录",
+                "  ↑/↓ 选择 · Space 启用 · d 默认 · l 登录 · q 返回",
                 Style::new().fg(muted),
             ),
         ]);
@@ -138,9 +83,6 @@ impl SourcesPage {
             self.scroll_offset = self.selected + 1 - visible_rows;
         }
 
-        let mut list_state = ListState::default();
-        list_state.select(Some(self.selected));
-
         let mut row_y = content_area.y;
         let end = (self.scroll_offset + visible_rows).min(total);
         for i in self.scroll_offset..end {
@@ -148,8 +90,6 @@ impl SourcesPage {
             let is_enabled = enabled.contains(&source);
             let is_default = default_source == source;
             let is_logged_in = ctx.source_manager.is_logged_in(source);
-            let features = SourceFeatures::from_source(source);
-
             let selected = i == self.selected;
 
             let mut spans: Vec<Span> = Vec::new();
@@ -168,7 +108,7 @@ impl SourcesPage {
 
             let name = source.display_name();
             spans.push(Span::styled(
-                format!("{:<10}", name),
+                pad_right(name, 10),
                 Style::new()
                     .fg(if selected { accent } else { text })
                     .add_modifier(Modifier::BOLD),
@@ -189,15 +129,11 @@ impl SourcesPage {
                 "未登录"
             };
             spans.push(Span::styled(
-                format!("{:<6}", login_text),
+                pad_right(login_text, 6),
                 Style::new().fg(if is_logged_in { green } else { red }),
             ));
 
             spans.push(Span::styled("  ", Style::new()));
-
-            let feat_label = features.label();
-            let feat_legend = format!("功能: {}  (S搜索 P歌单 F收藏 L排行榜)", feat_label);
-            spans.push(Span::styled(feat_legend, Style::new().fg(muted)));
 
             let line = Line::from(spans);
             Paragraph::new(line)
@@ -214,7 +150,26 @@ impl SourcesPage {
         }
     }
 
+    pub fn consumes_key(&self, key: &KeyEvent) -> bool {
+        match (key.modifiers, key.code) {
+            (KeyModifiers::NONE, KeyCode::Char('1'..='9' | '0')) => false,
+            (KeyModifiers::NONE, KeyCode::Esc) | (KeyModifiers::NONE, KeyCode::Tab) => false,
+            (
+                KeyModifiers::NONE,
+                KeyCode::Char('j' | 'k' | 'g' | 'G' | 'd' | 'l' | 'L' | 'q' | ' ' | 'h' | 'K'),
+            ) => true,
+            (KeyModifiers::NONE, KeyCode::Up | KeyCode::Down) => true,
+            _ => false,
+        }
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent, ctx: &AppContext) -> AppAction {
+        if matches!(
+            (key.modifiers, key.code),
+            (KeyModifiers::NONE, KeyCode::Esc)
+        ) {
+            return AppAction::GoBack;
+        }
         match (key.modifiers, key.code) {
             (KeyModifiers::NONE, KeyCode::Char('j') | KeyCode::Down) => {
                 let total = Self::sources().len();
@@ -252,7 +207,7 @@ impl SourcesPage {
                 self.set_as_default(ctx);
                 AppAction::None
             }
-            (KeyModifiers::NONE, KeyCode::Char('q')) => {
+            (KeyModifiers::NONE, KeyCode::Char('l')) => {
                 let source = Self::sources()[self.selected.min(Self::sources().len() - 1)];
                 if ctx.source_manager.is_logged_in(source) {
                     self.status_msg = Some(format!("{} 已登录", source.display_name()));
@@ -377,4 +332,12 @@ impl SourcesPage {
             }
         }
     }
+}
+
+fn pad_right(value: &str, width: usize) -> String {
+    let used = UnicodeWidthStr::width(value);
+    if used >= width {
+        return value.to_string();
+    }
+    format!("{value}{}", " ".repeat(width - used))
 }

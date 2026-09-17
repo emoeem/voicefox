@@ -397,12 +397,13 @@ impl LeaderboardPage {
                     (self.selected + scroll_amount).min(self.current_list_len().saturating_sub(1));
             }
             MouseEventKind::Down(MouseButton::Left) => {
-                for (index, tab) in source_tab_rects(page.sources, &self.sources)
-                    .iter()
-                    .enumerate()
-                {
-                    if tab.contains(position) {
-                        self.select_source(index);
+                for tab in crate::pages::components::tabs::rects(
+                    page.sources,
+                    self.sources.iter().map(|s| s.display_name()),
+                    12,
+                ) {
+                    if tab.rect.contains(position) {
+                        self.select_source(tab.index);
                         return AppAction::None;
                     }
                 }
@@ -461,33 +462,12 @@ impl LeaderboardPage {
     }
 
     fn render_sources(&self, area: Rect, buf: &mut Buffer, ctx: &AppContext) {
-        if area.width == 0 || area.height == 0 {
-            return;
-        }
-        let accent = crate::theme::accent(ctx);
-        let sel_fg = crate::theme::selection_fg(ctx);
-        let muted = crate::theme::muted(ctx);
-        let surface = crate::theme::surface0(ctx);
-
-        let mut row: Vec<Span> = Vec::new();
-        for (index, source) in self.sources.iter().enumerate() {
-            if index > 0 {
-                row.push(Span::styled("  ", Style::new().bg(surface)));
-            }
-            let label = format!(" {} ", source_name(*source));
-            let style = if index == self.source_index {
-                Style::new()
-                    .bg(accent)
-                    .fg(sel_fg)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::new().bg(surface).fg(muted)
-            };
-            row.push(Span::styled(label, style));
-        }
-        Paragraph::new(Line::from(row))
-            .style(Style::new().bg(surface))
-            .render(Rect::new(area.x, area.y, area.width, 1), buf);
+        let labels: Vec<String> = self
+            .sources
+            .iter()
+            .map(|s| s.display_name().to_string())
+            .collect();
+        super::components::tabs::render(area, &labels, self.source_index, 12, ctx, buf);
     }
 
     fn render_boards(&mut self, area: Rect, buf: &mut Buffer, ctx: &AppContext) {
@@ -862,25 +842,6 @@ fn page_chunks(area: Rect, board_count: usize) -> PageChunks {
         boards: content[0],
         songs: content[1],
     }
-}
-
-fn source_tab_rects(area: Rect, sources: &[SourceId]) -> Vec<Rect> {
-    if sources.is_empty() {
-        return Vec::new();
-    }
-    let gap = 2u16;
-    let mut rects = Vec::with_capacity(sources.len());
-    let mut x = area.x;
-    for (i, source) in sources.iter().enumerate() {
-        let label = source_name(*source).chars().count() as u16 + 2;
-        if x + label > area.x + area.width {
-            break;
-        }
-        rects.push(Rect::new(x, area.y, label.min(area.width), 1));
-        x += label + gap;
-        let _ = i;
-    }
-    rects
 }
 
 fn ensure_visible(selected: usize, visible: usize, total: usize, offset: &mut usize) {

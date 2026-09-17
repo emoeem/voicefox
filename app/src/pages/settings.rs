@@ -4,8 +4,7 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use lx_core::events::AppAction;
-use lx_core::keybinding::{Action, KeybindingConfig, KeybindingResolver};
-use lx_core::model::config::StatusBarItem;
+use lx_core::keybinding::{Action, KeybindingResolver};
 use lx_core::model::source::{Quality, SourceId};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
@@ -66,7 +65,6 @@ fn truncate_display(value: &str, max_chars: usize) -> String {
 enum SettingsFocus {
     JsSources,
     LocalPaths,
-    StatusBar,
 }
 
 /// 下载设置里的文本输入目标。
@@ -144,8 +142,7 @@ impl SettingsFocus {
     fn next(self) -> Self {
         match self {
             Self::JsSources => Self::LocalPaths,
-            Self::LocalPaths => Self::StatusBar,
-            Self::StatusBar => Self::JsSources,
+            Self::LocalPaths => Self::JsSources,
         }
     }
 }
@@ -182,12 +179,6 @@ pub struct SettingsPage {
     login_picker: Option<usize>,
     /// 内置音源开关当前指向的音源
     pub enabled_source_index: usize,
-    /// 状态栏字段列表的选中索引
-    pub selected_status_item: usize,
-    /// 状态栏字段列表的滚动位置
-    status_item_scroll: usize,
-    /// 状态栏拖拽当前所在的字段行，避免同一行重复触发重排。
-    status_drag_target: Option<usize>,
     /// 当前聚焦区域
     focus: SettingsFocus,
     category: SettingsCategory,
@@ -235,17 +226,6 @@ impl SettingsPage {
         {
             return false;
         }
-        if self.focus == SettingsFocus::StatusBar
-            && (matches!(
-                (key.modifiers, key.code),
-                (KeyModifiers::NONE, KeyCode::Enter | KeyCode::Char(' '))
-            ) || matches!(
-                (key.modifiers, key.code),
-                (KeyModifiers::SHIFT, KeyCode::Left | KeyCode::Right)
-            ))
-        {
-            return true;
-        }
         match key.code {
             KeyCode::Up | KeyCode::Down | KeyCode::Left | KeyCode::Right => true,
             KeyCode::Char(character) => SETTINGS_PAGE_CHAR_KEYS.contains(&character),
@@ -272,9 +252,6 @@ impl SettingsPage {
             download_input_target: None,
             login_picker: None,
             enabled_source_index: 0,
-            selected_status_item: 0,
-            status_item_scroll: 0,
-            status_drag_target: None,
             focus: SettingsFocus::JsSources,
             category: SettingsCategory::Interface,
             delete_source_armed: None,
@@ -364,11 +341,6 @@ impl SettingsPage {
             // 当前列表区域的按键优先处理。
             if self.focus == SettingsFocus::LocalPaths
                 && let Some(action) = self.handle_local_keys(key, ctx, resolver)
-            {
-                return action;
-            }
-            if self.focus == SettingsFocus::StatusBar
-                && let Some(action) = self.handle_status_bar_keys(key, ctx, resolver)
             {
                 return action;
             }
@@ -1379,152 +1351,6 @@ impl SettingsPage {
         }
     }
 
-    fn handle_status_bar_keys(
-        &mut self,
-        key: KeyEvent,
-        ctx: &AppContext,
-        resolver: &KeybindingResolver,
-    ) -> Option<AppAction> {
-        let item_count = StatusBarItem::ALL.len();
-        match (key.modifiers, key.code) {
-            (KeyModifiers::NONE, KeyCode::Enter | KeyCode::Char(' ')) => {
-                self.toggle_status_bar_item(ctx);
-                return Some(AppAction::None);
-            }
-            (KeyModifiers::SHIFT, KeyCode::Left | KeyCode::Up) => {
-                self.move_status_bar_item(ctx, -1);
-                return Some(AppAction::None);
-            }
-            (KeyModifiers::SHIFT, KeyCode::Right | KeyCode::Down) => {
-                self.move_status_bar_item(ctx, 1);
-                return Some(AppAction::None);
-            }
-            (KeyModifiers::NONE, KeyCode::Up) => {
-                self.selected_status_item = self.selected_status_item.saturating_sub(1);
-                return Some(AppAction::None);
-            }
-            (KeyModifiers::NONE, KeyCode::Down) => {
-                self.selected_status_item =
-                    (self.selected_status_item + 1).min(item_count.saturating_sub(1));
-                return Some(AppAction::None);
-            }
-            (KeyModifiers::NONE, KeyCode::Char('a' | 'd' | 'r')) => {
-                return Some(AppAction::None);
-            }
-            _ => {}
-        }
-
-        if let Some(action) = resolver.resolve_page("settings", &key) {
-            match action {
-                Action::ListSelectUp => {
-                    self.selected_status_item = self.selected_status_item.saturating_sub(1);
-                    return Some(AppAction::None);
-                }
-                Action::ListSelectDown => {
-                    self.selected_status_item =
-                        (self.selected_status_item + 1).min(item_count.saturating_sub(1));
-                    return Some(AppAction::None);
-                }
-                _ => {}
-            }
-        }
-        None
-    }
-
-    fn toggle_status_bar_item(&mut self, ctx: &AppContext) {
-        let item = StatusBarItem::ALL[self.selected_status_item % StatusBarItem::ALL.len()];
-        let (enabled, result) = {
-            let mut config = ctx.config.write().unwrap_or_else(|e| e.into_inner());
-            if config.ui.status_bar_items.contains(&item) {
-                config
-                    .ui
-                    .status_bar_items
-                    .retain(|candidate| *candidate != item);
-                let result = crate::config::loader::save(&config, &ctx.config_path);
-                (false, result)
-            } else {
-                config.ui.status_bar_items.push(item);
-                let result = crate::config::loader::save(&config, &ctx.config_path);
-                (true, result)
-            }
-        };
-        self.status_msg = Some(match result {
-            Ok(()) => format!(
-                "状态栏“{}”已{}",
-                status_bar_item_label(item),
-                if enabled { "显示" } else { "隐藏" }
-            ),
-            Err(error) => format!("状态栏已更新，但保存失败: {error}"),
-        });
-    }
-
-    fn move_status_bar_item(&mut self, ctx: &AppContext, direction: isize) {
-        let item = StatusBarItem::ALL[self.selected_status_item % StatusBarItem::ALL.len()];
-        let (position, result) = {
-            let mut config = ctx.config.write().unwrap_or_else(|e| e.into_inner());
-            let Some(index) = config
-                .ui
-                .status_bar_items
-                .iter()
-                .position(|candidate| *candidate == item)
-            else {
-                self.status_msg = Some("请先启用这个状态栏字段".to_string());
-                return;
-            };
-            let new_index = if direction < 0 {
-                index.saturating_sub(1)
-            } else {
-                (index + 1).min(config.ui.status_bar_items.len().saturating_sub(1))
-            };
-            if new_index == index {
-                return;
-            }
-            config.ui.status_bar_items.swap(index, new_index);
-            let result = crate::config::loader::save(&config, &ctx.config_path);
-            (new_index + 1, result)
-        };
-        self.status_msg = Some(match result {
-            Ok(()) => format!(
-                "状态栏“{}”已移到第 {position} 位",
-                status_bar_item_label(item)
-            ),
-            Err(error) => format!("状态栏顺序已更新，但保存失败: {error}"),
-        });
-    }
-
-    fn move_status_bar_item_to(&mut self, ctx: &AppContext, target_index: usize) {
-        let item = StatusBarItem::ALL[self.selected_status_item % StatusBarItem::ALL.len()];
-        let Some(&target) = StatusBarItem::ALL.get(target_index) else {
-            return;
-        };
-        if item == target {
-            return;
-        }
-
-        let (position, result) = {
-            let mut config = ctx.config.write().unwrap_or_else(|e| e.into_inner());
-            if !config.ui.status_bar_items.contains(&item) {
-                self.status_msg = Some("请先启用这个状态栏字段".to_string());
-                return;
-            }
-            let Some(position) =
-                reorder_status_bar_items(&mut config.ui.status_bar_items, item, target)
-            else {
-                // Disabled fields have no display-order position to drop on.
-                return;
-            };
-            let result = crate::config::loader::save(&config, &ctx.config_path);
-            (position + 1, result)
-        };
-        self.status_msg = Some(match result {
-            Ok(()) => format!(
-                "状态栏“{}”已移到第 {position} 位",
-                status_bar_item_label(item)
-            ),
-            Err(error) => format!("状态栏顺序已更新，但保存失败: {error}"),
-        });
-    }
-
     fn update_config(
         &mut self,
         ctx: &AppContext,
@@ -2290,75 +2116,9 @@ impl SettingsPage {
             }
         }
 
-        // ── 状态栏字段 ──
-        let status_block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::new().fg(if self.focus == SettingsFocus::StatusBar {
-                accent
-            } else {
-                crate::theme::border(ctx)
-            }))
-            .title(" 状态栏 [s/Space/Shift+方向键] ");
-        let status_inner = status_block.inner(chunks[3]);
-        status_block.render(chunks[3], buf);
-        let status_rows = status_inner.height.saturating_sub(1) as usize;
-        self.selected_status_item = self
-            .selected_status_item
-            .min(StatusBarItem::ALL.len().saturating_sub(1));
-        if self.selected_status_item < self.status_item_scroll {
-            self.status_item_scroll = self.selected_status_item;
-        } else if status_rows > 0
-            && self.selected_status_item >= self.status_item_scroll + status_rows
-        {
-            self.status_item_scroll = self.selected_status_item + 1 - status_rows;
-        }
-        self.status_item_scroll = self
-            .status_item_scroll
-            .min(StatusBarItem::ALL.len().saturating_sub(status_rows.max(1)));
-
-        for (row, (index, item)) in StatusBarItem::ALL
-            .iter()
-            .enumerate()
-            .skip(self.status_item_scroll)
-            .take(status_rows)
-            .enumerate()
-        {
-            let order = config
-                .ui
-                .status_bar_items
-                .iter()
-                .position(|candidate| candidate == item)
-                .map(|position| position + 1);
-            let selected = index == self.selected_status_item;
-            let style = if selected {
-                Style::new()
-                    .fg(crate::theme::selection_fg(ctx))
-                    .bg(accent)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::new().fg(crate::theme::text(ctx))
-            };
-            let text = format!(
-                " [{}] {:>2}  {}",
-                if order.is_some() { "x" } else { " " },
-                order.map_or_else(|| "-".to_string(), |value| value.to_string()),
-                status_bar_item_label(*item)
-            );
-            Paragraph::new(Line::from(Span::styled(text, style))).render(
-                Rect::new(
-                    status_inner.x,
-                    status_inner.y + row as u16,
-                    status_inner.width,
-                    1,
-                ),
-                buf,
-            );
-        }
-
         let focused_inner = match self.focus {
             SettingsFocus::JsSources => source_inner,
             SettingsFocus::LocalPaths => local_inner,
-            SettingsFocus::StatusBar => status_inner,
         };
         if let Some(ref msg) = self.status_msg
             && focused_inner.height > 1
@@ -2513,10 +2273,7 @@ impl SettingsPage {
         let position = Position::new(event.column, event.row);
         match event.kind {
             MouseEventKind::ScrollUp => {
-                if chunks[3].contains(position) {
-                    self.selected_status_item = self.selected_status_item.saturating_sub(1);
-                    self.focus = SettingsFocus::StatusBar;
-                } else if chunks[2].contains(position) {
+                if chunks[2].contains(position) {
                     self.selected_local_path = self.selected_local_path.saturating_sub(1);
                     self.focus = SettingsFocus::LocalPaths;
                 } else if chunks[1].contains(position) {
@@ -2525,11 +2282,7 @@ impl SettingsPage {
                 }
             }
             MouseEventKind::ScrollDown => {
-                if chunks[3].contains(position) {
-                    self.selected_status_item = (self.selected_status_item + 1)
-                        .min(StatusBarItem::ALL.len().saturating_sub(1));
-                    self.focus = SettingsFocus::StatusBar;
-                } else if chunks[2].contains(position) {
+                if chunks[2].contains(position) {
                     let len = ctx
                         .config
                         .read()
@@ -2552,27 +2305,15 @@ impl SettingsPage {
                     self.focus = SettingsFocus::JsSources;
                 }
             }
-            MouseEventKind::Drag(MouseButton::Left) => {
-                let status_inner = Block::default().borders(Borders::ALL).inner(chunks[3]);
-                if let Some(index) = status_item_at(status_inner, position, self.status_item_scroll)
-                {
-                    self.focus = SettingsFocus::StatusBar;
-                    if self.status_drag_target.is_some() && self.status_drag_target != Some(index) {
-                        self.move_status_bar_item_to(ctx, index);
-                        self.status_drag_target = Some(index);
-                    }
-                }
-            }
+            MouseEventKind::Drag(MouseButton::Left) => {}
             MouseEventKind::Down(button)
                 if matches!(button, MouseButton::Left | MouseButton::Right) =>
             {
                 let right_click = button == MouseButton::Right;
-                self.status_drag_target = None;
                 if !right_click && area.width < ALL_MANAGEMENT_PANELS_MIN_WIDTH {
                     let focused_panel = chunks[match self.focus {
                         SettingsFocus::JsSources => 1,
                         SettingsFocus::LocalPaths => 2,
-                        SettingsFocus::StatusBar => 3,
                     }];
                     // Narrow layouts show only one management panel. Its
                     // title already advertises `[s]`; clicking that title
@@ -2699,28 +2440,55 @@ impl SettingsPage {
                     }
                     return AppAction::None;
                 }
-
-                let status_inner = Block::default().borders(Borders::ALL).inner(chunks[3]);
-                if let Some(index) = status_item_at(status_inner, position, self.status_item_scroll)
-                {
-                    self.selected_status_item = index;
-                    self.focus = SettingsFocus::StatusBar;
-                    let checkbox = event.column < status_inner.x.saturating_add(5);
-                    if !right_click && !checkbox {
-                        self.status_drag_target = Some(index);
-                    }
-                    if right_click || checkbox {
-                        self.toggle_status_bar_item(ctx);
-                    }
-                }
             }
-            MouseEventKind::Up(MouseButton::Left) => {
-                self.status_drag_target = None;
-            }
+            MouseEventKind::Up(MouseButton::Left) => {}
             _ => {}
         }
         AppAction::None
     }
+}
+
+fn enabled(value: bool) -> &'static str {
+    if value { "开启" } else { "关闭" }
+}
+
+fn settings_binding<'a>(
+    config: &'a lx_core::keybinding::KeybindingConfig,
+    action: Action,
+    fallback: &'a str,
+) -> &'a str {
+    config
+        .pages
+        .get("settings")
+        .and_then(|bindings| bindings.get(&action))
+        .map(String::as_str)
+        .unwrap_or(fallback)
+}
+
+fn settings_action_is_page_owned(action: Action) -> bool {
+    matches!(
+        action,
+        Action::ListSelectUp
+            | Action::ListSelectDown
+            | Action::SettingsCyclePlaybackSpeed
+            | Action::SettingsEditAudioDevice
+            | Action::SettingsCycleReplayGainMode
+            | Action::SettingsCycleReplayGainPreamp
+            | Action::SettingsCycleChannelMode
+            | Action::SettingsCycleBalance
+            | Action::SettingsToggleReplayGainClip
+            | Action::SettingsCycleFadeInDuration
+            | Action::SettingsCycleFadeOutDuration
+            | Action::SettingsCycleEqualizerPreset
+            | Action::SettingsRunFadeIn
+            | Action::SettingsRunFadeOut
+            | Action::SettingsSetAbLoopStart
+            | Action::SettingsSetAbLoopEnd
+            | Action::SettingsClearAbLoop
+            | Action::SettingsExportData
+            | Action::SettingsImportData
+            | Action::SettingsImportPlaylist
+    )
 }
 
 fn list_window_start(selected: usize, len: usize, rows: usize) -> usize {
@@ -2766,88 +2534,6 @@ fn list_row_at(area: Rect, position: Position, rows: usize) -> Option<usize> {
         return None;
     }
     Some(position.y.saturating_sub(area.y + 2) as usize)
-}
-
-fn status_item_at(area: Rect, position: Position, scroll: usize) -> Option<usize> {
-    if !area.contains(position) || position.y >= area.bottom().saturating_sub(1) {
-        return None;
-    }
-    let index = scroll + position.y.saturating_sub(area.y) as usize;
-    (index < StatusBarItem::ALL.len()).then_some(index)
-}
-
-fn enabled(value: bool) -> &'static str {
-    if value { "开启" } else { "关闭" }
-}
-
-fn settings_binding<'a>(
-    config: &'a KeybindingConfig,
-    action: Action,
-    fallback: &'a str,
-) -> &'a str {
-    config
-        .pages
-        .get("settings")
-        .and_then(|bindings| bindings.get(&action))
-        .map(String::as_str)
-        .unwrap_or(fallback)
-}
-
-fn settings_action_is_page_owned(action: Action) -> bool {
-    matches!(
-        action,
-        Action::ListSelectUp
-            | Action::ListSelectDown
-            | Action::SettingsCyclePlaybackSpeed
-            | Action::SettingsEditAudioDevice
-            | Action::SettingsCycleReplayGainMode
-            | Action::SettingsCycleReplayGainPreamp
-            | Action::SettingsCycleChannelMode
-            | Action::SettingsCycleBalance
-            | Action::SettingsToggleReplayGainClip
-            | Action::SettingsCycleFadeInDuration
-            | Action::SettingsCycleFadeOutDuration
-            | Action::SettingsCycleEqualizerPreset
-            | Action::SettingsRunFadeIn
-            | Action::SettingsRunFadeOut
-            | Action::SettingsSetAbLoopStart
-            | Action::SettingsSetAbLoopEnd
-            | Action::SettingsClearAbLoop
-            | Action::SettingsExportData
-            | Action::SettingsImportData
-            | Action::SettingsImportPlaylist
-    )
-}
-
-fn status_bar_item_label(item: StatusBarItem) -> &'static str {
-    match item {
-        StatusBarItem::State => "播放状态",
-        StatusBarItem::Source => "当前音源",
-        StatusBarItem::Sort => "页面排序",
-        StatusBarItem::Song => "歌曲名称",
-        StatusBarItem::Time => "播放时间",
-        StatusBarItem::Volume => "音量",
-        StatusBarItem::PlayMode => "播放模式",
-        StatusBarItem::Quality => "音质",
-        StatusBarItem::Queue => "队列位置",
-        StatusBarItem::JsSourceState => "JS 音源状态",
-    }
-}
-
-fn reorder_status_bar_items(
-    items: &mut Vec<StatusBarItem>,
-    item: StatusBarItem,
-    target: StatusBarItem,
-) -> Option<usize> {
-    let item_position = items.iter().position(|candidate| *candidate == item)?;
-    let target_position = items.iter().position(|candidate| *candidate == target)?;
-    if item_position == target_position {
-        return Some(item_position);
-    }
-    items.remove(item_position);
-    let insertion = target_position.min(items.len());
-    items.insert(insertion, item);
-    Some(insertion)
 }
 
 /// 在更新配置项后更新这些常量!
@@ -3163,7 +2849,7 @@ fn setting_options_height(panel_width: u16, option_count: usize) -> u16 {
     rows.saturating_add(2)
 }
 
-fn settings_chunks(area: Rect, focus: SettingsFocus, category: SettingsCategory) -> [Rect; 4] {
+fn settings_chunks(area: Rect, focus: SettingsFocus, category: SettingsCategory) -> [Rect; 3] {
     let option_height =
         setting_options_height(area.width, category.option_indices().len()).min(area.height);
     let vertical = Layout::default()
@@ -3172,28 +2858,18 @@ fn settings_chunks(area: Rect, focus: SettingsFocus, category: SettingsCategory)
         .split(area);
 
     if area.width >= ALL_MANAGEMENT_PANELS_MIN_WIDTH {
-        // 宽屏：选项占满上排，三个管理区域共享下排。
+        // 宽屏：选项占满上排，JS 音源与本地目录共享下排。
         let bottom = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Percentage(34),
-                Constraint::Percentage(33),
-                Constraint::Percentage(33),
-            ])
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
             .split(vertical[1]);
-        [vertical[0], bottom[0], bottom[1], bottom[2]]
+        [vertical[0], bottom[0], bottom[1]]
     } else {
         // 窄屏只显示当前管理区域，避免列表被分割到无法使用。
-        let mut chunks = [
-            vertical[0],
-            Rect::default(),
-            Rect::default(),
-            Rect::default(),
-        ];
+        let mut chunks = [vertical[0], Rect::default(), Rect::default()];
         chunks[match focus {
             SettingsFocus::JsSources => 1,
             SettingsFocus::LocalPaths => 2,
-            SettingsFocus::StatusBar => 3,
         }] = vertical[1];
         chunks
     }
@@ -3207,13 +2883,13 @@ mod tests {
     use unicode_width::UnicodeWidthStr;
 
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use lx_core::keybinding::{Action, KeybindingConfig, KeybindingResolver};
-    use lx_core::model::config::StatusBarItem;
+    use lx_core::keybinding::KeybindingConfig;
+    use lx_core::keybinding::{Action, KeybindingResolver};
 
     use super::{
         KEY_COLUMN_WIDTH, LABEL_COLUMN_WIDTH, SETTING_OPTION_ACTIONS, SETTING_OPTION_KEYS,
-        SettingsCategory, SettingsFocus, SettingsPage, command_key_at, reorder_status_bar_items,
-        setting_line, setting_option_index, setting_value_line, settings_chunks, shorten_source,
+        SettingsCategory, SettingsFocus, SettingsPage, command_key_at, setting_line,
+        setting_option_index, setting_value_line, settings_chunks, shorten_source,
     };
 
     /// 各设置项取值统一起始的列号
@@ -3411,34 +3087,6 @@ mod tests {
     }
 
     #[test]
-    fn status_bar_focus_owns_toggle_and_reorder_keys() {
-        let resolver = KeybindingResolver::from_config(&KeybindingConfig::default());
-        let mut page = SettingsPage::new();
-        let space = KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE);
-        let shift_left = KeyEvent::new(KeyCode::Left, KeyModifiers::SHIFT);
-
-        assert!(!page.consumes_key(&space, &resolver));
-        page.focus = SettingsFocus::StatusBar;
-        assert!(page.consumes_key(&space, &resolver));
-        assert!(page.consumes_key(&shift_left, &resolver));
-    }
-
-    #[test]
-    fn narrow_settings_show_only_the_focused_management_panel() {
-        let chunks = settings_chunks(
-            Rect::new(0, 0, 80, 24),
-            SettingsFocus::StatusBar,
-            SettingsCategory::Interface,
-        );
-
-        assert_eq!(chunks[0].height, 6);
-        assert_eq!(chunks[1], Rect::default());
-        assert_eq!(chunks[2], Rect::default());
-        assert!(chunks[3].height > 0);
-        assert_eq!(chunks[3].bottom(), 24);
-    }
-
-    #[test]
     fn wide_settings_keep_all_management_panels_visible() {
         let chunks = settings_chunks(
             Rect::new(0, 0, 120, 30),
@@ -3449,8 +3097,7 @@ mod tests {
         assert_eq!(chunks[0].height, 6);
         assert_eq!(chunks[1].y, chunks[0].bottom());
         assert_eq!(chunks[2].y, chunks[0].bottom());
-        assert_eq!(chunks[3].y, chunks[0].bottom());
-        assert_eq!(chunks[1].width + chunks[2].width + chunks[3].width, 120);
+        assert_eq!(chunks[1].width + chunks[2].width, 120);
     }
 
     #[test]
@@ -3522,34 +3169,5 @@ mod tests {
             ),
             None
         );
-    }
-
-    #[test]
-    fn status_bar_drag_reorders_once_at_the_target_position() {
-        let mut items = vec![
-            StatusBarItem::State,
-            StatusBarItem::Source,
-            StatusBarItem::Sort,
-            StatusBarItem::Song,
-        ];
-
-        assert_eq!(
-            reorder_status_bar_items(&mut items, StatusBarItem::State, StatusBarItem::Sort),
-            Some(2)
-        );
-        assert_eq!(
-            items,
-            vec![
-                StatusBarItem::Source,
-                StatusBarItem::Sort,
-                StatusBarItem::State,
-                StatusBarItem::Song,
-            ]
-        );
-        assert_eq!(
-            reorder_status_bar_items(&mut items, StatusBarItem::Song, StatusBarItem::Source),
-            Some(0)
-        );
-        assert_eq!(items[0], StatusBarItem::Song);
     }
 }

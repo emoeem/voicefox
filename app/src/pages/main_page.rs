@@ -10,7 +10,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Widget};
+use ratatui::widgets::{Paragraph, Widget};
 
 use crate::context::AppContext;
 use crate::cover::{CoverGeometry, CoverRenderer, CoverState};
@@ -452,8 +452,9 @@ impl MainPage {
             return;
         }
 
+        let table_width = inner.width.saturating_sub(2);
         Paragraph::new(Line::from(Span::styled(
-            super::components::song_table::header(inner.width),
+            format!("  {}", super::components::song_table::header(table_width)),
             Style::new()
                 .fg(crate::theme::muted(ctx))
                 .add_modifier(Modifier::BOLD),
@@ -536,7 +537,12 @@ impl MainPage {
 
 fn queue_index_at(event: MouseEvent, area: Rect, scroll: usize, len: usize) -> Option<usize> {
     let queue_area = queue_area(area);
-    let inner = Block::default().borders(Borders::ALL).inner(queue_area);
+    let inner = Rect::new(
+        queue_area.x,
+        queue_area.y,
+        queue_area.width,
+        queue_area.height.saturating_sub(1),
+    );
     let list_y = inner.y.saturating_add(1);
     if event.column < inner.x
         || event.column >= inner.right()

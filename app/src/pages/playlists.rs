@@ -1135,12 +1135,13 @@ impl PlaylistsPage {
                 }
             }
             MouseEventKind::Down(MouseButton::Left) => {
-                for (index, tab) in scope_tab_rects(page.scopes, &self.scopes)
+                let labels = self
+                    .scopes
                     .iter()
-                    .enumerate()
-                {
-                    if tab.contains(position) {
-                        self.select_scope(index, ctx);
+                    .map(|scope| scope_label(*scope, page.scopes.width >= 60));
+                for tab in crate::pages::components::tabs::rects(page.scopes, labels, 12) {
+                    if tab.rect.contains(position) {
+                        self.select_scope(tab.index, ctx);
                         return AppAction::None;
                     }
                 }
@@ -1328,33 +1329,12 @@ impl PlaylistsPage {
     }
 
     fn render_scopes(&self, area: Rect, buf: &mut Buffer, ctx: &AppContext) {
-        if area.width == 0 || area.height == 0 {
-            return;
-        }
-        let accent = crate::theme::accent(ctx);
-        let sel_fg = crate::theme::selection_fg(ctx);
-        let muted = crate::theme::muted(ctx);
-        let surface = crate::theme::surface0(ctx);
-
-        let mut row: Vec<Span> = Vec::new();
-        for (index, scope) in self.scopes.iter().enumerate() {
-            if index > 0 {
-                row.push(Span::styled("  ", Style::new().bg(surface)));
-            }
-            let label = format!(" {} ", scope_label(*scope, area.width >= 60));
-            let style = if index == self.scope_index {
-                Style::new()
-                    .bg(accent)
-                    .fg(sel_fg)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::new().bg(surface).fg(muted)
-            };
-            row.push(Span::styled(label, style));
-        }
-        Paragraph::new(Line::from(row))
-            .style(Style::new().bg(surface))
-            .render(Rect::new(area.x, area.y, area.width, 1), buf);
+        let labels: Vec<String> = self
+            .scopes
+            .iter()
+            .map(|scope| scope_label(*scope, area.width >= 60).to_string())
+            .collect();
+        super::components::tabs::render(area, &labels, self.scope_index, 12, ctx, buf);
     }
 
     fn render_playlists(&mut self, area: Rect, buf: &mut Buffer, ctx: &AppContext) {
@@ -1959,25 +1939,6 @@ fn name_input_with_cursor(value: &str, width: usize) -> String {
     }
     visible.reverse();
     visible.into_iter().chain(std::iter::once('█')).collect()
-}
-
-fn scope_tab_rects(area: Rect, scopes: &[PlaylistScope]) -> Vec<Rect> {
-    if scopes.is_empty() {
-        return Vec::new();
-    }
-    let gap = 2u16;
-    let mut rects = Vec::with_capacity(scopes.len());
-    let mut x = area.x;
-    for scope in scopes.iter() {
-        let label = scope_label(*scope, area.width >= 60);
-        let width = label.chars().count() as u16 + 2;
-        if x + width > area.x + area.width {
-            break;
-        }
-        rects.push(Rect::new(x, area.y, width.min(area.width), 1));
-        x += width + gap;
-    }
-    rects
 }
 
 fn ensure_visible(selected: usize, visible: usize, total: usize, offset: &mut usize) {

@@ -212,7 +212,7 @@ impl SongContextMenu {
         // —— 歌单组 ——
         root_items.push(
             MenuItem::new("加入自建歌单…", A::OpenCustomPlaylists)
-                .with_icon("♪")
+                .with_icon("+")
                 .in_group(G::Playlist),
         );
         if let Some(playlist_id) = current_custom_playlist {
@@ -232,7 +232,7 @@ impl SongContextMenu {
                 },
                 A::ToggleFavorite,
             )
-            .with_icon(if is_favorite { "☆" } else { "♥" })
+            .with_icon(if is_favorite { "-" } else { "*" })
             .with_shortcut("f")
             .in_group(G::Playlist),
         );
@@ -242,7 +242,7 @@ impl SongContextMenu {
         if !song.singer.trim().is_empty() {
             root_items.push(
                 MenuItem::new("查看歌手", A::ViewArtist)
-                    .with_icon("👤")
+                    .with_icon("@")
                     .in_group(G::Info),
             );
         }
@@ -258,7 +258,7 @@ impl SongContextMenu {
         if playback.is_some() {
             root_items.push(
                 MenuItem::new("播放控制…", A::OpenPlaybackControls)
-                    .with_icon("⚙")
+                    .with_icon("+")
                     .in_group(G::Operations),
             );
         }
@@ -290,14 +290,14 @@ impl SongContextMenu {
                 );
                 root_items.push(
                     MenuItem::new("清空播放历史", A::ClearHistory)
-                        .with_icon("🗑")
+                        .with_icon("x")
                         .with_shortcut("⇧D")
                         .in_group(G::Manage),
                 );
             }
             SongMenuKind::Local => root_items.push(
                 MenuItem::new("删除本地文件", A::DeleteLocal)
-                    .with_icon("🗑")
+                    .with_icon("x")
                     .with_shortcut("D")
                     .in_group(G::Manage),
             ),
@@ -315,7 +315,7 @@ impl SongContextMenu {
                 .into_iter()
                 .map(|(id, name)| {
                     MenuItem::new(name, A::AddToCustomPlaylist(id))
-                        .with_icon("♪")
+                        .with_icon("+")
                         .in_group(G::Playlist)
                 })
                 .collect()
@@ -460,22 +460,6 @@ impl SongContextMenu {
 
         for (row, (index, item)) in visible.iter().enumerate() {
             let y = inner.y + row as u16;
-
-            // 分组分隔线 —— 当前 item 不是第一，且 group 和上一个不同
-            if *index > 0 && *index > self.scroll_offset {
-                let prev = &items[index - 1];
-                if prev.group != item.group && !prev.disabled {
-                    let sep = "─".repeat(inner.width.saturating_sub(2) as usize);
-                    Paragraph::new(Line::from(Span::styled(
-                        format!(" {} ", sep),
-                        Style::new()
-                            .fg(crate::theme::surface2(ctx))
-                            .bg(crate::theme::surface0(ctx)),
-                    )))
-                    .render(Rect::new(inner.x, y, inner.width, 1), buf);
-                    continue;
-                }
-            }
 
             let (label_fg, label_bg, is_selected) = if item.disabled {
                 (
@@ -676,13 +660,13 @@ fn build_playback_control_items(state: PlaybackMenuState) -> Vec<MenuItem> {
             format!("播放速度: {:.2}x（切换）", state.speed),
             MA::Playback(A::CycleSpeed),
         )
-        .with_icon("⏩")
+        .with_icon(">>")
         .in_group(G::Operations),
         MenuItem::new(
             format!("音频设备: {}（恢复默认）", state.audio_device),
             MA::Playback(A::UseDefaultAudioDevice),
         )
-        .with_icon("🔊")
+        .with_icon("~")
         .in_group(G::Operations),
         MenuItem::new(
             format!("ReplayGain: {}（切换）", state.replaygain_mode),

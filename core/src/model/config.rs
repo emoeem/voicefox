@@ -71,7 +71,15 @@ impl StatusBarItem {
 }
 
 fn default_status_bar_items() -> Vec<StatusBarItem> {
-    StatusBarItem::ALL.to_vec()
+    // 默认只保留用户播放时真正有用的信息；音源/JS 音源状态等诊断信息
+    // 仍可在设置中手动打开，但不应该挤占每个页面的底部空间。
+    vec![
+        StatusBarItem::State,
+        StatusBarItem::Song,
+        StatusBarItem::Time,
+        StatusBarItem::Volume,
+        StatusBarItem::Queue,
+    ]
 }
 
 fn deserialize_status_bar_items<'de, D>(deserializer: D) -> Result<Vec<StatusBarItem>, D::Error>

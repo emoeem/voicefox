@@ -848,46 +848,17 @@ impl SearchPage {
     }
 
     fn render_source_tabs(&self, area: Rect, buf: &mut Buffer, ctx: &AppContext) {
-        if area.width == 0 || area.height == 0 {
-            return;
-        }
+        let labels: Vec<String> = self
+            .search_scopes
+            .iter()
+            .map(|(_, label)| (*label).to_string())
+            .collect();
         let selected = self
             .search_scopes
             .iter()
             .position(|(scope, _)| *scope == self.source_filter)
             .unwrap_or(0);
-        let tabs = compact_source_tabs(area, &self.search_scopes);
-        let accent = crate::theme::accent(ctx);
-        let sel_fg = crate::theme::selection_fg(ctx);
-        let muted = crate::theme::muted(ctx);
-        let dim = crate::theme::overlay0(ctx);
-        let surface = crate::theme::surface0(ctx);
-
-        let mut row: Vec<Span> = Vec::new();
-        for (i, tab) in tabs.iter().enumerate() {
-            if i > 0 {
-                row.push(Span::styled(" ", Style::new().bg(surface)));
-                row.push(Span::styled(" ", Style::new().bg(surface)));
-            }
-            let label = if i == selected {
-                format!(" {} ", tab.label)
-            } else {
-                format!(" {} ", tab.label)
-            };
-            let style = if i == selected {
-                Style::new()
-                    .bg(accent)
-                    .fg(sel_fg)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::new().bg(surface).fg(muted)
-            };
-            row.push(Span::styled(label, style));
-        }
-        Paragraph::new(Line::from(row))
-            .style(Style::new().bg(surface))
-            .render(Rect::new(area.x, area.y, area.width, 1), buf);
-        let _ = dim;
+        super::components::tabs::render(area, &labels, selected, 8, ctx, buf);
     }
 
     pub fn handle_mouse(&mut self, event: MouseEvent, area: Rect, activate: bool) -> AppAction {
@@ -917,9 +888,14 @@ impl SearchPage {
         }
         if chunks[1].contains((event.column, event.row).into())
             && matches!(event.kind, MouseEventKind::Down(MouseButton::Left))
-            && let Some(index) = compact_source_tabs(chunks[1], &self.search_scopes)
-                .iter()
-                .position(|tab| tab.rect.contains((event.column, event.row).into()))
+            && let Some(index) = super::components::tabs::rects(
+                chunks[1],
+                self.search_scopes.iter().map(|(_, label)| *label),
+                8,
+            )
+            .iter()
+            .find(|tab| tab.rect.contains((event.column, event.row).into()))
+            .map(|tab| tab.index)
         {
             self.input_mode = false;
             return self.select_source(index);
@@ -1457,43 +1433,6 @@ impl SearchPage {
                 buf,
             );
     }
-}
-
-#[derive(Clone)]
-struct CompactTabRect {
-    label: String,
-    rect: Rect,
-}
-
-fn compact_source_tabs(
-    area: Rect,
-    scopes: &[(Option<SourceId>, &'static str)],
-) -> Vec<CompactTabRect> {
-    let gap = 3u16;
-    let max_label_width = 7u16;
-    let mut tabs = Vec::with_capacity(scopes.len());
-    let mut x = area.x;
-    for (i, (source, full_label)) in scopes.iter().enumerate() {
-        let _ = source;
-        let label = full_label.to_string();
-        let display = label
-            .chars()
-            .take(max_label_width as usize)
-            .collect::<String>();
-        let width = display.chars().count() as u16;
-        if x + width > area.x + area.width {
-            break;
-        }
-        let rect = Rect::new(x, area.y, width.min(area.width), 2);
-        tabs.push(CompactTabRect {
-            label: display,
-            rect,
-        });
-        let advance = width + gap;
-        x = (x + advance).min(area.x + area.width);
-        let _ = i;
-    }
-    tabs
 }
 
 fn enabled_search_scopes(enabled_sources: &[SourceId]) -> Vec<(Option<SourceId>, &'static str)> {
