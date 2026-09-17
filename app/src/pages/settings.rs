@@ -1607,10 +1607,10 @@ impl SettingsPage {
             .map(|points| format_duration(points.end))
             .unwrap_or_else(|| "未设置".to_string());
 
-        let options_block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::new().fg(crate::theme::border(ctx)))
-            .title(format!(" 设置 · {}  [←/→切换分类] ", self.category.label()));
+        let options_block = super::components::chrome::focused_card(
+            ctx,
+            format!(" 设置  ·  {}  ·  ←/→ 分类 ", self.category.label()),
+        );
         let options_inner = options_block.inner(chunks[0]);
         options_block.render(chunks[0], buf);
         let options = vec![

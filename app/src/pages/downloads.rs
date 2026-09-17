@@ -5,7 +5,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
+use ratatui::widgets::{Clear, Paragraph, Widget};
 use unicode_width::UnicodeWidthStr;
 
 use crate::context::AppContext;
@@ -191,11 +191,8 @@ impl DownloadsPanel {
                 ctx.downloads.record_count(),
             )
         };
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::new().fg(crate::theme::accent(ctx)))
-            .title(title)
-            .style(Style::new().bg(crate::theme::mantle(ctx)));
+        let block = super::components::chrome::focused_card(ctx, title)
+            .style(Style::new().bg(crate::theme::base(ctx)));
         let inner = block.inner(panel);
         block.render(panel, buf);
 

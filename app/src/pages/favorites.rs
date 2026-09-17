@@ -354,15 +354,15 @@ impl FavoritesPage {
         let filtered = self.filtered_song_indices(favorites);
         self.clamp_selection(filtered.len());
 
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::new().fg(crate::theme::border(ctx)))
-            .title(format!(
-                " 收藏 {}/{} · 排序 {} · s 切换 · / 筛选 ",
+        let block = super::components::chrome::card(
+            ctx,
+            format!(
+                " 收藏  ·  {}/{}  ·  排序 {}  ·  s 切换  ·  / 筛选 ",
                 filtered.len(),
                 favorites.len(),
                 self.sort_label()
-            ));
+            ),
+        );
         let inner = block.inner(area);
         block.render(area, buf);
         if inner.height == 0 {

@@ -687,14 +687,14 @@ impl SearchPage {
             .map(|source| source.as_str().to_string())
             .unwrap_or_else(|| "全部音源".to_string());
         let mode = if self.input_mode { "INSERT" } else { "NORMAL" };
-        let input_block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::new().fg(if self.input_mode {
-                crate::theme::green(ctx)
-            } else {
-                accent
-            }))
-            .title(format!("搜索 · {} · {}", scope, mode));
+        let input_block = if self.input_mode {
+            super::components::chrome::focused_card(
+                ctx,
+                format!(" 搜索  ·  {}  ·  {} ", scope, mode),
+            )
+        } else {
+            super::components::chrome::card(ctx, format!(" 搜索  ·  {}  ·  {} ", scope, mode))
+        };
 
         let cursor = if self.input_mode
             && (std::time::SystemTime::now()
@@ -748,8 +748,7 @@ impl SearchPage {
                 filters
             )
         };
-        let result_block = Block::default().borders(Borders::ALL).title(result_title);
-        let result_block = result_block.border_style(Style::new().fg(crate::theme::border(ctx)));
+        let result_block = super::components::chrome::card(ctx, result_title);
 
         let inner_area = result_block.inner(chunks[2]);
         result_block.render(chunks[2], buf);

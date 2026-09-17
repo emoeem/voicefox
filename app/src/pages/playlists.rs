@@ -1369,10 +1369,7 @@ impl PlaylistsPage {
                 )
             }
         };
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::new().fg(crate::theme::border(ctx)))
-            .title(title);
+        let block = super::components::chrome::card(ctx, title);
         let inner = block.inner(area);
         block.render(area, buf);
 
@@ -1471,10 +1468,7 @@ impl PlaylistsPage {
                 }
             })
             .unwrap_or_else(|| "歌曲列表".to_string());
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::new().fg(crate::theme::border(ctx)))
-            .title(title);
+        let block = super::components::chrome::card(ctx, title);
         let inner = block.inner(area);
         block.render(area, buf);
 

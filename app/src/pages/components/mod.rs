@@ -5,6 +5,7 @@
 //! - song_list: 歌曲列表
 //! - notification: 错误/提示 toast
 
+pub mod chrome;
 pub mod context_menu;
 pub mod header;
 pub mod list_filter;
