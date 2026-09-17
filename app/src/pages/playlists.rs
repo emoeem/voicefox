@@ -1323,6 +1323,7 @@ impl PlaylistsPage {
             } else {
                 Style::new().fg(crate::theme::muted(ctx))
             };
+            let label = format!(" {} ", label);
             Paragraph::new(label)
                 .alignment(Alignment::Center)
                 .style(style)
