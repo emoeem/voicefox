@@ -4417,23 +4417,39 @@ fn start_song_playback(
     };
     let tx = action_tx.clone();
 
+    let downloaded_song = ctx.downloads.existing_download(&song);
     rt.spawn(async move {
-        let resolved = tokio::time::timeout(
-            Duration::from_secs(40),
-            resolve_playable_song(
-                Arc::clone(&source_mgr),
-                song,
-                quality,
-                auto_toggle,
-                PlaybackResolveRequest {
-                    play_request_id: Arc::clone(&play_request_id),
-                    attempted_sources: Arc::clone(&attempted_sources),
-                    js_source_index: Arc::clone(&js_source_index),
-                    request_id,
+        // go-musicfox 的 TrackManager 同样采用“已下载 → 缓存 → 网络”的解析顺序。
+        // Voicefox 当前把自动缓存落在下载目录，因此已下载/自动缓存文件统一走这里，
+        // 避免再次请求失效或受限的远程播放地址。
+        let resolved = if let Some(path) = downloaded_song {
+            Ok(Ok(Some((
+                song.clone(),
+                SongUrl {
+                    url: path.to_string_lossy().into_owned(),
+                    quality,
+                    duration: song.duration,
+                    ..SongUrl::default()
                 },
-            ),
-        )
-        .await;
+            ))))
+        } else {
+            tokio::time::timeout(
+                Duration::from_secs(40),
+                resolve_playable_song(
+                    Arc::clone(&source_mgr),
+                    song,
+                    quality,
+                    auto_toggle,
+                    PlaybackResolveRequest {
+                        play_request_id: Arc::clone(&play_request_id),
+                        attempted_sources: Arc::clone(&attempted_sources),
+                        js_source_index: Arc::clone(&js_source_index),
+                        request_id,
+                    },
+                ),
+            )
+            .await
+        };
 
         if play_request_id.load(Ordering::SeqCst) != request_id {
             return;

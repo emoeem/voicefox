@@ -89,7 +89,8 @@ impl SourcesPage {
             let source = sources[i];
             let is_enabled = enabled.contains(&source);
             let is_default = default_source == source;
-            let is_logged_in = ctx.source_manager.is_logged_in(source);
+            let capabilities = ctx.source_manager.capabilities(source);
+            let is_logged_in = capabilities.login && ctx.source_manager.is_logged_in(source);
             let selected = i == self.selected;
 
             let mut spans: Vec<Span> = Vec::new();
@@ -123,14 +124,16 @@ impl SourcesPage {
 
             spans.push(Span::styled(" ", Style::new()));
 
-            let login_text = if is_logged_in {
-                "已登录"
+            let (login_text, login_color) = if !capabilities.login {
+                ("无需登录", muted)
+            } else if is_logged_in {
+                ("已登录", green)
             } else {
-                "未登录"
+                ("未登录", red)
             };
             spans.push(Span::styled(
                 pad_right(login_text, 6),
-                Style::new().fg(if is_logged_in { green } else { red }),
+                Style::new().fg(login_color),
             ));
 
             spans.push(Span::styled("  ", Style::new()));
@@ -209,7 +212,14 @@ impl SourcesPage {
             }
             (KeyModifiers::NONE, KeyCode::Char('l')) => {
                 let source = Self::sources()[self.selected.min(Self::sources().len() - 1)];
-                if ctx.source_manager.is_logged_in(source) {
+                let capabilities = ctx.source_manager.capabilities(source);
+                if !capabilities.login {
+                    self.status_msg = Some(format!("{} 无需登录", source.display_name()));
+                    AppAction::None
+                } else if !capabilities.qr_login {
+                    self.status_msg = Some(format!("{} 暂不支持扫码登录", source.display_name()));
+                    AppAction::None
+                } else if ctx.source_manager.is_logged_in(source) {
                     self.status_msg = Some(format!("{} 已登录", source.display_name()));
                     AppAction::None
                 } else {

@@ -276,6 +276,14 @@ impl DownloadManager {
             .clone()
     }
 
+    /// 返回仍然存在的已下载文件，供播放解析器执行“本地优先”。
+    ///
+    /// 这让下载完成后的再次播放不再重新请求网络；自动缓存任务也因此
+    /// 真正参与播放路径，而不是只能作为一个独立的下载动作。
+    pub fn existing_download(&self, song: &SongInfo) -> Option<PathBuf> {
+        self.records.existing_download(song, &self.download_dir())
+    }
+
     pub fn snapshot(&self) -> Vec<DownloadTaskView> {
         let tasks = self.tasks.lock().unwrap_or_else(|error| error.into_inner());
         tasks
@@ -726,13 +734,23 @@ impl DownloadManager {
         // 与参考实现一致：地址解析失败或下载中断时，换下一个解析器/音源继续，
         // 而不是直接判定整首歌下载失败。
         let mut js_start_index = 0usize;
+        // 一旦某个 URL 已经实际返回“非音频内容”（例如网易云外链的 404 HTML），
+        // 后续重试不能再走同一个内置音源；必须转入跨源匹配。
+        let mut skip_builtin_fallback = false;
         let mut last_error = None;
         let mut downloaded = None;
         for attempt in 0..DOWNLOAD_ATTEMPTS {
-            // 解析失败不必立刻放弃：下一轮从后面的 JS 音源继续试。
-            let Ok((resolved_song, url, js_index)) =
-                resolve_download_url(sources, song, quality, settings.auto_toggle, js_start_index)
-                    .await
+            // 解析失败不必立刻放弃：下一轮从后面的 JS 音源继续试；
+            // 如果上一轮已经拿到非音频响应，则禁止重复使用同一个内置回退地址。
+            let Ok((resolved_song, url, js_index)) = resolve_download_url(
+                sources,
+                song,
+                quality,
+                settings.auto_toggle,
+                js_start_index,
+                skip_builtin_fallback,
+            )
+            .await
             else {
                 tracing::debug!(
                     "download resolve attempt {}/{} failed for {} (js index {})",
@@ -764,7 +782,11 @@ impl DownloadManager {
                         if let Err(reason) = validate_audio(&final_dest, song.duration) {
                             tracing::warn!("rejecting copied audio: {reason}");
                             let _ = std::fs::remove_file(&final_dest);
+                            let is_non_audio = reason.contains("不是音频文件");
                             last_error = Some(reason);
+                            if is_non_audio {
+                                skip_builtin_fallback = true;
+                            }
                             continue;
                         }
                         downloaded = Some((resolved_song, url, final_dest, bytes));
@@ -798,7 +820,11 @@ impl DownloadManager {
                     if let Err(reason) = validate_audio(&final_dest, song.duration) {
                         tracing::warn!("rejecting downloaded audio: {reason}");
                         let _ = std::fs::remove_file(&final_dest);
+                        let is_non_audio = reason.contains("不是音频文件");
                         last_error = Some(reason);
+                        if is_non_audio {
+                            skip_builtin_fallback = true;
+                        }
                         continue;
                     }
                     downloaded = Some((resolved_song, url, final_dest, bytes));
@@ -923,29 +949,43 @@ async fn resolve_download_url(
     quality: Quality,
     auto_toggle: bool,
     js_start_index: usize,
+    skip_builtin_fallback: bool,
 ) -> Result<(SongInfo, SongUrl, Option<usize>), TaskError> {
-    match tokio::time::timeout(
-        Duration::from_secs(60),
-        sources.get_song_url_from_js_index(song, quality, js_start_index),
-    )
-    .await
-    {
-        Ok(Ok((url, index))) => return Ok((song.clone(), url, index)),
-        Ok(Err(error)) if !auto_toggle => {
-            return Err(TaskError::from_message(error.to_string()));
-        }
-        Ok(Err(error)) => tracing::debug!("download url failed for {}: {error}", song.name),
-        Err(_) => tracing::debug!("download url timed out for {}", song.name),
-    }
-
-    for candidate in sources.find_music(song).await {
+    if !skip_builtin_fallback {
         match tokio::time::timeout(
             Duration::from_secs(60),
-            sources.get_song_url_from_js_index(&candidate, quality, js_start_index),
+            sources.get_song_url_from_js_index(song, quality, js_start_index),
         )
         .await
         {
-            Ok(Ok((url, index))) => return Ok((candidate, url, index)),
+            Ok(Ok((url, index))) => return Ok((song.clone(), url, index)),
+            Ok(Err(error)) if !auto_toggle => {
+                return Err(TaskError::from_message(error.to_string()));
+            }
+            Ok(Err(error)) => tracing::debug!("download url failed for {}: {error}", song.name),
+            Err(_) => tracing::debug!("download url timed out for {}", song.name),
+        }
+    } else if !auto_toggle {
+        return Err(TaskError::from_message(
+            "下载地址返回的不是音频文件".to_string(),
+        ));
+    }
+
+    // 如果已经确认当前地址返回的不是音频，不能再次调用同一个内置回退源。
+    // 这正是网易云外链返回 404 HTML 时的典型场景：解析“成功”但实际资源不可用。
+    // 此时直接使用跨源搜索得到的其它平台歌曲，并调用其内置音源，避免再次绕回
+    // 同一个失效 JS/内置 URL。
+    for candidate in sources.find_music(song).await {
+        let Some(source) = sources.get(candidate.source) else {
+            continue;
+        };
+        match tokio::time::timeout(
+            Duration::from_secs(60),
+            source.get_song_url(&candidate, quality),
+        )
+        .await
+        {
+            Ok(Ok(url)) => return Ok((candidate, url, None)),
             Ok(Err(error)) => tracing::debug!(
                 "download toggle source {} failed: {error}",
                 candidate.source.as_str()

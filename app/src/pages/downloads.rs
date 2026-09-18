@@ -71,122 +71,231 @@ impl DownloadsPanel {
         ctx: &AppContext,
         tasks: &[DownloadTaskView],
     ) {
-        if area.width < 20 || area.height < 5 {
+        if area.width < 28 || area.height < 8 {
             return;
         }
-        use ratatui::layout::{Constraint, Direction, Layout};
 
-        let active = ctx.downloads.active_count();
         let history = ctx.downloads.records_recent(HISTORY_LIMIT);
-        let history_rows = history_rows(history.len()) as u16;
+        let active = tasks
+            .iter()
+            .filter(|task| {
+                matches!(
+                    task.state,
+                    DownloadState::Downloading | DownloadState::Resolving | DownloadState::Tagging
+                )
+            })
+            .count();
+        let queued = tasks
+            .iter()
+            .filter(|task| task.state == DownloadState::Queued)
+            .count();
+        let finished = tasks
+            .iter()
+            .filter(|task| matches!(task.state, DownloadState::Done | DownloadState::Skipped))
+            .count();
+        let failed = tasks
+            .iter()
+            .filter(|task| matches!(task.state, DownloadState::Failed | DownloadState::Cancelled))
+            .count();
 
-        let title_card = if tasks.is_empty() && history.is_empty() {
-            "下载 · 暂无任务"
-        } else if tasks.is_empty() {
-            &format!("下载 · 历史 {} 条", ctx.downloads.record_count())
-        } else {
-            let queued = tasks
-                .iter()
-                .filter(|t| t.state == DownloadState::Queued)
-                .count();
-            let done = tasks
-                .iter()
-                .filter(|t| t.state == DownloadState::Done)
-                .count();
-            let failed = tasks
-                .iter()
-                .filter(|t| matches!(t.state, DownloadState::Failed | DownloadState::Cancelled))
-                .count();
-            &format!(
-                "下载 · {} 条 · ▶ {} 进行 · {} 等待 · ✓ {} 完成 · ✗ {} 失败 · 历史 {} 条",
-                tasks.len(),
-                active,
-                queued,
-                done,
-                failed,
-                ctx.downloads.record_count(),
-            )
+        let header = Line::from(vec![
+            Span::styled(
+                "下载",
+                Style::new()
+                    .fg(crate::theme::text(ctx))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("  ", Style::new()),
+            Span::styled(
+                format!("{} 进行中", active),
+                Style::new().fg(crate::theme::accent(ctx)),
+            ),
+            Span::styled("  ·  ", Style::new().fg(crate::theme::surface1(ctx))),
+            Span::styled(
+                format!("{} 等待", queued),
+                Style::new().fg(crate::theme::muted(ctx)),
+            ),
+            Span::styled("  ·  ", Style::new().fg(crate::theme::surface1(ctx))),
+            Span::styled(
+                format!("{} 完成", finished),
+                Style::new().fg(crate::theme::green(ctx)),
+            ),
+            Span::styled("  ·  ", Style::new().fg(crate::theme::surface1(ctx))),
+            Span::styled(
+                format!("{} 失败", failed),
+                Style::new().fg(crate::theme::red(ctx)),
+            ),
+        ]);
+        super::components::chrome::card(ctx, header).render(area, buf);
+        let inner = Rect {
+            x: area.x,
+            y: area.y + 1,
+            width: area.width,
+            height: area.height.saturating_sub(1),
         };
-        let card = super::components::chrome::card(ctx, title_card.to_string());
-        let inner = card.inner(area);
-        card.render(area, buf);
 
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Min(3),
-                Constraint::Length(history_rows.max(1)),
-                Constraint::Length(1),
-            ])
-            .split(inner);
+        let active_indices: Vec<usize> = tasks
+            .iter()
+            .enumerate()
+            .filter(|(_, task)| {
+                !matches!(
+                    task.state,
+                    DownloadState::Done
+                        | DownloadState::Skipped
+                        | DownloadState::Failed
+                        | DownloadState::Cancelled
+                )
+            })
+            .map(|(i, _)| i)
+            .collect();
+        let finished_indices: Vec<usize> = tasks
+            .iter()
+            .enumerate()
+            .filter(|(_, task)| matches!(task.state, DownloadState::Done | DownloadState::Skipped))
+            .map(|(i, _)| i)
+            .collect();
+        let failed_indices: Vec<usize> = tasks
+            .iter()
+            .enumerate()
+            .filter(|(_, task)| {
+                matches!(task.state, DownloadState::Failed | DownloadState::Cancelled)
+            })
+            .map(|(i, _)| i)
+            .collect();
 
-        let list_area = chunks[0];
-        let history_area = chunks[1];
-        let footer_area = chunks[2];
+        let section_count = usize::from(!active_indices.is_empty())
+            + usize::from(!finished_indices.is_empty())
+            + usize::from(!failed_indices.is_empty());
+        let history_height = if history.is_empty() {
+            0
+        } else {
+            (history.len() + 1) as u16
+        };
+        let footer_height = 1u16;
+        let available = inner.height.saturating_sub(history_height + footer_height);
+        let section_headers = section_count as u16;
+        let rows_capacity = available.saturating_sub(section_headers) as usize / 2;
+        let indices: Vec<usize> = active_indices
+            .iter()
+            .chain(finished_indices.iter())
+            .chain(failed_indices.iter())
+            .copied()
+            .collect();
 
-        if tasks.is_empty() {
-            let hint = Line::from(vec![
+        if indices.is_empty() {
+            let empty = Rect {
+                y: inner.y,
+                height: available,
+                ..inner
+            };
+            let line = Line::from(vec![
+                Span::styled("↓  ", Style::new().fg(crate::theme::accent(ctx))),
                 Span::styled(
-                    "暂无下载任务  ",
-                    Style::new().fg(crate::theme::overlay1(ctx)),
-                ),
-                Span::styled(
-                    "D",
+                    "还没有下载任务",
                     Style::new()
-                        .fg(crate::theme::accent(ctx))
+                        .fg(crate::theme::text(ctx))
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    " 歌曲列表下载当前 · ",
-                    Style::new().fg(crate::theme::muted(ctx)),
-                ),
-                Span::styled(
-                    "Ctrl+s",
-                    Style::new()
-                        .fg(crate::theme::accent(ctx))
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    " 任意页下载 · 右键菜单也可下载",
+                    "  ·  在歌曲列表按 D，或使用右键菜单下载",
                     Style::new().fg(crate::theme::muted(ctx)),
                 ),
             ]);
-            Paragraph::new(hint)
-                .wrap(ratatui::widgets::Wrap { trim: false })
-                .render(list_area, buf);
+            Paragraph::new(line).render(empty, buf);
         } else {
-            let rows = (list_area.height as usize) / 2;
-            self.clamp_scroll(tasks.len(), rows.max(1));
-            let width = list_area.width as usize;
-            let mut lines: Vec<Line> = Vec::new();
-            for (index, task) in tasks.iter().enumerate().skip(self.scroll).take(rows.max(1)) {
+            self.selected = self.selected.min(tasks.len().saturating_sub(1));
+            let position = indices
+                .iter()
+                .position(|&i| i == self.selected)
+                .unwrap_or(0);
+            let visible = rows_capacity.max(1);
+            let start = position.saturating_sub(visible.saturating_sub(1));
+            let visible_indices = indices.into_iter().skip(start).take(visible);
+            self.scroll = start;
+
+            let list = Rect {
+                y: inner.y,
+                height: available,
+                ..inner
+            };
+            let mut y = list.y;
+            let end_y = list.y + list.height;
+            let mut last_section = None;
+            for index in visible_indices {
+                let task = &tasks[index];
+                let section = if matches!(task.state, DownloadState::Done | DownloadState::Skipped)
+                {
+                    "已完成"
+                } else if matches!(task.state, DownloadState::Failed | DownloadState::Cancelled) {
+                    "需要处理"
+                } else {
+                    "当前任务"
+                };
+                if last_section != Some(section) {
+                    if y >= end_y {
+                        break;
+                    }
+                    Paragraph::new(Line::from(vec![
+                        Span::styled("  ", Style::new()),
+                        Span::styled(
+                            section,
+                            Style::new()
+                                .fg(crate::theme::overlay1(ctx))
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            "  ─────────────────",
+                            Style::new().fg(crate::theme::surface1(ctx)),
+                        ),
+                    ]))
+                    .render(
+                        Rect {
+                            x: list.x,
+                            y,
+                            width: list.width,
+                            height: 1,
+                        },
+                        buf,
+                    );
+                    y += 1;
+                    last_section = Some(section);
+                }
+                if y + 2 > end_y {
+                    break;
+                }
                 let selected = index == self.selected;
-                lines.push(task_title_line(task, selected, width, ctx));
-                lines.push(task_progress_line(task, selected, width, ctx));
+                let row = Rect {
+                    x: list.x,
+                    y,
+                    width: list.width,
+                    height: 2,
+                };
+                Paragraph::new(vec![
+                    task_title_line(task, selected, list.width as usize, ctx),
+                    task_progress_line(task, selected, list.width as usize, ctx),
+                ])
+                .render(row, buf);
+                y += 2;
             }
-            Paragraph::new(lines).render(list_area, buf);
         }
 
         if !history.is_empty() {
+            let history_area = Rect {
+                y: inner.y + inner.height.saturating_sub(footer_height + history_height),
+                height: history_height,
+                ..inner
+            };
             render_history(history_area, buf, ctx, &history);
         }
 
-        if footer_area.height > 0 && footer_area.width > 0 {
-            let mut parts: Vec<Span> = Vec::new();
-            parts.push(Span::styled(
-                format!("⌘ {}", ctx.downloads.download_dir().display()),
-                Style::new().fg(crate::theme::overlay1(ctx)),
-            ));
-            parts.push(Span::styled("   ", Style::new()));
-            parts.push(Span::styled(
-                "c 取消/移除 · x 清理完成 · C 清空历史 · Esc 返回",
-                Style::new().fg(crate::theme::muted(ctx)),
-            ));
-            Paragraph::new(Line::from(parts)).render(footer_area, buf);
-        }
+        let footer = Rect {
+            y: inner.y + inner.height.saturating_sub(1),
+            height: 1,
+            ..inner
+        };
+        self.render_footer(footer, buf, ctx);
     }
 
-    /// 处理按键；`tasks` 为当前任务快照。
     pub fn handle_key(
         &mut self,
         key: &KeyEvent,

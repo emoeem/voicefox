@@ -1491,7 +1491,13 @@ impl PlaylistsPage {
                 base
             }
         };
-        let block = super::components::chrome::card(ctx, title);
+        // 与排行榜保持一致：右侧详情是当前焦点区域，使用强调边框，
+        // 避免「歌单列表」和「歌单歌曲」视觉上粘成一块。
+        let block = if self.selected_playlist.is_some() {
+            super::components::chrome::focused_card(ctx, title)
+        } else {
+            super::components::chrome::card(ctx, title)
+        };
         let inner = block.inner(area);
         block.render(area, buf);
 
