@@ -470,7 +470,7 @@ impl FavoritesPage {
                     (self.selected + scroll_amount).min(filtered.len().saturating_sub(1));
             }
             MouseEventKind::Down(MouseButton::Left) => {
-                let inner = super::components::chrome::card(ctx, "").inner(area);
+                let inner = super::components::chrome::card_inner(area);
                 let search_height =
                     u16::from(self.filter.is_active() || !self.filter.query().is_empty());
                 if search_height == 1 && event.row == inner.y {
@@ -509,7 +509,7 @@ impl FavoritesPage {
     ) -> Option<(Vec<SongInfo>, usize)> {
         let favorites = self.sorted_favorites(ctx, cache);
         let filtered = self.filtered_song_indices(favorites);
-        let inner = super::components::chrome::card(ctx, "").inner(area);
+        let inner = super::components::chrome::card_inner(area);
         let search_height = u16::from(self.filter.is_active() || !self.filter.query().is_empty());
         let list_y = inner.y.saturating_add(search_height).saturating_add(1);
         if event.row < list_y || event.row >= inner.bottom() {

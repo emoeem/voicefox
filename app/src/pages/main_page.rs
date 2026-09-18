@@ -536,14 +536,8 @@ impl MainPage {
 }
 
 fn queue_index_at(event: MouseEvent, area: Rect, scroll: usize, len: usize) -> Option<usize> {
-    let queue_area = queue_area(area);
-    let inner = Rect::new(
-        queue_area.x,
-        queue_area.y,
-        queue_area.width,
-        queue_area.height.saturating_sub(1),
-    );
-    let list_y = inner.y.saturating_add(1);
+    let inner = super::components::chrome::card_inner(queue_area(area));
+    let list_y = inner.y.saturating_add(1); // 表头占一行，数据行从下一行开始
     if event.column < inner.x
         || event.column >= inner.right()
         || event.row < list_y
@@ -648,6 +642,44 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     use super::{QueueEditCommand, queue_edit_command};
+
+    #[test]
+    fn queue_click_rows_align_with_rendered_rows() {
+        use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+        use ratatui::layout::Rect;
+
+        use super::queue_index_at;
+
+        let area = Rect::new(0, 0, 100, 20);
+        let click = |column: u16, row: u16, scroll: usize, len: usize| {
+            queue_index_at(
+                MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column,
+                    row,
+                    modifiers: KeyModifiers::NONE,
+                },
+                area,
+                scroll,
+                len,
+            )
+        };
+
+        // 标题行为 y=0，表头行为 y=1，首个数据行为 y=2。
+        assert_eq!(click(50, 0, 0, 100), None);
+        assert_eq!(click(50, 1, 0, 100), None);
+        // 数据行按显示位置映射到对应的队列项。
+        assert_eq!(click(50, 2, 0, 100), Some(0));
+        assert_eq!(click(50, 11, 0, 100), Some(9));
+        // 滚动偏移参与映射。
+        assert_eq!(click(50, 2, 7, 100), Some(7));
+        // y=18 是末个可见数据行，y=19 是底部边框。
+        assert_eq!(click(50, 18, 0, 100), Some(16));
+        assert_eq!(click(50, 19, 0, 100), None);
+        // 长度为 5 时 y=8 超出数据范围；x=35 位于左栏。
+        assert_eq!(click(50, 8, 0, 5), None);
+        assert_eq!(click(35, 5, 0, 100), None);
+    }
 
     #[test]
     fn queue_reorder_shortcuts_accept_terminal_shift_variants() {
