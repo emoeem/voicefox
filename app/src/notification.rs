@@ -117,6 +117,7 @@ fn run_windows_worker(rx: std::sync::mpsc::Receiver<Notification>) {
 struct WindowsNotifier {
     hwnd: windows_sys::Win32::Foundation::HWND,
     data: windows_sys::Win32::UI::Shell::NOTIFYICONDATAW,
+    has_notification: bool,
 }
 
 #[cfg(windows)]
@@ -190,12 +191,19 @@ impl WindowsNotifier {
             return Err(std::io::Error::other("Shell_NotifyIconW(NIM_ADD) failed"));
         }
 
-        Ok(Self { hwnd, data })
+        Ok(Self {
+            hwnd,
+            data,
+            has_notification: false,
+        })
     }
 
     fn show(&mut self, notification: &Notification) -> std::io::Result<()> {
         use windows_sys::Win32::UI::Shell::{NIF_INFO, NIM_MODIFY, Shell_NotifyIconW};
 
+        if self.has_notification {
+            self.hide()?;
+        }
         self.data.uFlags = NIF_INFO;
         self.data.dwInfoFlags = windows_info_flags();
         self.data.szInfoTitle = utf16_array(&notification_title(notification));
@@ -206,6 +214,23 @@ impl WindowsNotifier {
                 "Shell_NotifyIconW(NIM_MODIFY) failed",
             ));
         }
+        self.has_notification = true;
+        Ok(())
+    }
+
+    fn hide(&mut self) -> std::io::Result<()> {
+        use windows_sys::Win32::UI::Shell::{NIF_INFO, NIM_MODIFY, Shell_NotifyIconW};
+
+        self.data.uFlags = NIF_INFO;
+        self.data.szInfoTitle = [0; 64];
+        self.data.szInfo = [0; 256];
+        // SAFETY: data belongs to the notification icon registered by this instance.
+        if unsafe { Shell_NotifyIconW(NIM_MODIFY, &self.data) } == 0 {
+            return Err(std::io::Error::other(
+                "Shell_NotifyIconW(NIM_MODIFY) failed to hide notification",
+            ));
+        }
+        self.has_notification = false;
         Ok(())
     }
 }
