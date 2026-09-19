@@ -29,12 +29,18 @@ fn main() {
 
 fn compile_msvc(resource: &Path, out_dir: &Path) -> PathBuf {
     let output = out_dir.join("voicefox.res");
-    let status = Command::new("rc.exe")
+    println!("cargo:rerun-if-env-changed=VOICEFOX_RC");
+    let target = env::var("TARGET").expect("TARGET is set by Cargo");
+    let mut compiler = env::var_os("VOICEFOX_RC")
+        .map(Command::new)
+        .or_else(|| find_msvc_tools::find(&target, "rc.exe"))
+        .unwrap_or_else(|| Command::new("rc.exe"));
+    let status = compiler
         .arg("/nologo")
         .arg(format!("/fo{}", output.display()))
         .arg(resource)
         .status()
-        .expect("rc.exe is required to embed the Windows application icon");
+        .expect("Cannot run rc.exe; install the Windows SDK or set VOICEFOX_RC to its resource compiler path");
     assert!(
         status.success(),
         "rc.exe failed to compile the application icon"
@@ -44,14 +50,42 @@ fn compile_msvc(resource: &Path, out_dir: &Path) -> PathBuf {
 
 fn compile_gnu(resource: &Path, out_dir: &Path) -> PathBuf {
     let output = out_dir.join("voicefox-resource.o");
-    let status = Command::new("windres")
-        .arg("--input")
-        .arg(resource)
-        .arg("--output")
-        .arg(&output)
-        .arg("--output-format=coff")
-        .status()
-        .expect("windres is required to embed the Windows application icon");
+    println!("cargo:rerun-if-env-changed=WINDRES");
+    let target = env::var("TARGET").expect("TARGET is set by Cargo");
+    let (prefixed, format) = match target.as_str() {
+        "x86_64-pc-windows-gnu" => (Some("x86_64-w64-mingw32-windres"), Some("pe-x86-64")),
+        "i686-pc-windows-gnu" => (Some("i686-w64-mingw32-windres"), Some("pe-i386")),
+        _ => (None, None),
+    };
+    let compile = |program| {
+        let mut command = Command::new(program);
+        command
+            .arg("--input")
+            .arg(resource)
+            .arg("--output")
+            .arg(&output)
+            .arg("--output-format=coff");
+        if let Some(format) = format {
+            command.arg("--target").arg(format);
+        }
+        command.status()
+    };
+    let result = if let Some(program) = env::var_os("WINDRES") {
+        compile(program)
+    } else if env::var("HOST").as_deref() != Ok(target.as_str()) {
+        match prefixed.map(|program| compile(program.into())) {
+            Some(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                compile("windres".into())
+            }
+            Some(result) => result,
+            None => compile("windres".into()),
+        }
+    } else {
+        compile("windres".into())
+    };
+    let status = result.expect(
+        "Cannot run windres; install MinGW binutils or set WINDRES to its resource compiler path",
+    );
     assert!(
         status.success(),
         "windres failed to compile the application icon"

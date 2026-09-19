@@ -4533,6 +4533,7 @@ dependencies = [
  "crossterm",
  "dashmap 6.2.1",
  "dirs",
+ "find-msvc-tools",
  "image",
  "lofty",
  "lx-core",
