@@ -124,13 +124,15 @@ impl WindowsNotifier {
     fn new() -> std::io::Result<Self> {
         use std::mem::size_of;
         use std::ptr::{null, null_mut};
+        use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
         use windows_sys::Win32::UI::Shell::{
             NIF_ICON, NIF_TIP, NIM_ADD, NOTIFYICONDATAW, Shell_NotifyIconW,
         };
         use windows_sys::Win32::UI::WindowsAndMessaging::{
-            CreateWindowExW, DestroyWindow, IDI_APPLICATION, LoadIconW, WS_OVERLAPPED,
+            CreateWindowExW, DestroyWindow, LoadIconW, WS_OVERLAPPED,
         };
 
+        const APP_ICON_RESOURCE_ID: usize = 1;
         const STATIC_CLASS: [u16; 7] = [83, 84, 65, 84, 73, 67, 0];
         // SAFETY: STATIC_CLASS is NUL-terminated and all optional handles are null.
         let hwnd = unsafe {
@@ -153,8 +155,17 @@ impl WindowsNotifier {
             return Err(std::io::Error::last_os_error());
         }
 
-        // SAFETY: IDI_APPLICATION is a predefined shared icon resource.
-        let icon = unsafe { LoadIconW(null_mut(), IDI_APPLICATION) };
+        // SAFETY: null requests the module containing the current executable.
+        let module = unsafe { GetModuleHandleW(null()) };
+        if module.is_null() {
+            let error = std::io::Error::last_os_error();
+            // SAFETY: hwnd was created by this thread and is still valid.
+            unsafe { DestroyWindow(hwnd) };
+            return Err(error);
+        }
+
+        // SAFETY: resource 1 is the application icon embedded at build time.
+        let icon = unsafe { LoadIconW(module, APP_ICON_RESOURCE_ID as _) };
         if icon.is_null() {
             let error = std::io::Error::last_os_error();
             // SAFETY: hwnd was created by this thread and is still valid.
@@ -168,6 +179,7 @@ impl WindowsNotifier {
             uID: 1,
             uFlags: NIF_ICON | NIF_TIP,
             hIcon: icon,
+            hBalloonIcon: icon,
             ..Default::default()
         };
         data.szTip = utf16_array("voicefox");
@@ -185,7 +197,7 @@ impl WindowsNotifier {
         use windows_sys::Win32::UI::Shell::{NIF_INFO, NIM_MODIFY, Shell_NotifyIconW};
 
         self.data.uFlags = NIF_INFO;
-        self.data.dwInfoFlags = windows_info_flags(notification);
+        self.data.dwInfoFlags = windows_info_flags();
         self.data.szInfoTitle = utf16_array(&notification_title(notification));
         self.data.szInfo = utf16_array(&notification.message);
         // SAFETY: data belongs to the notification icon registered by this instance.
@@ -213,18 +225,10 @@ impl Drop for WindowsNotifier {
 }
 
 #[cfg(windows)]
-fn windows_info_flags(notification: &Notification) -> u32 {
-    use lx_core::events::NotificationLevel;
-    use windows_sys::Win32::UI::Shell::{
-        NIIF_ERROR, NIIF_INFO, NIIF_RESPECT_QUIET_TIME, NIIF_WARNING,
-    };
+fn windows_info_flags() -> u32 {
+    use windows_sys::Win32::UI::Shell::{NIIF_LARGE_ICON, NIIF_RESPECT_QUIET_TIME, NIIF_USER};
 
-    let level = match &notification.level {
-        NotificationLevel::Info | NotificationLevel::Success => NIIF_INFO,
-        NotificationLevel::Warn => NIIF_WARNING,
-        NotificationLevel::Error => NIIF_ERROR,
-    };
-    level | NIIF_RESPECT_QUIET_TIME
+    NIIF_USER | NIIF_LARGE_ICON | NIIF_RESPECT_QUIET_TIME
 }
 
 #[cfg(all(not(target_os = "linux"), not(windows)))]
@@ -378,27 +382,13 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn windows_levels_use_matching_system_icons() {
+    fn windows_notifications_use_the_application_icon() {
         use super::windows_info_flags;
-        use windows_sys::Win32::UI::Shell::{
-            NIIF_ERROR, NIIF_INFO, NIIF_RESPECT_QUIET_TIME, NIIF_WARNING,
-        };
+        use windows_sys::Win32::UI::Shell::{NIIF_LARGE_ICON, NIIF_RESPECT_QUIET_TIME, NIIF_USER};
 
         assert_eq!(
-            windows_info_flags(&Notification::info("body")),
-            NIIF_INFO | NIIF_RESPECT_QUIET_TIME
-        );
-        assert_eq!(
-            windows_info_flags(&Notification::success("body")),
-            NIIF_INFO | NIIF_RESPECT_QUIET_TIME
-        );
-        assert_eq!(
-            windows_info_flags(&Notification::warning("body")),
-            NIIF_WARNING | NIIF_RESPECT_QUIET_TIME
-        );
-        assert_eq!(
-            windows_info_flags(&Notification::error("body")),
-            NIIF_ERROR | NIIF_RESPECT_QUIET_TIME
+            windows_info_flags(),
+            NIIF_USER | NIIF_LARGE_ICON | NIIF_RESPECT_QUIET_TIME
         );
     }
 }
