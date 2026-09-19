@@ -191,10 +191,10 @@ save_lyric = true            # 保存 .lrc 并内嵌歌词
 
 | 字段 | 默认值 | 说明 |
 |------|--------|------|
-| `enable` | `true` | Linux 桌面系统通知 |
+| `enable` | `true` | Linux / Windows 桌面系统通知 |
 | `inApp` | `true` | TUI 内浮动 toast |
 | `inAppTimeout` | `4` | toast 停留秒数，运行时限制 1-60 |
-| `albumCover` | `true` | 桌面通知附带专辑封面 |
+| `albumCover` | `true` | Linux 桌面通知附带专辑封面 |
 | `trackChange` | `true` | 切歌时发送通知 |
 
 ### `[integration]` 桌面集成

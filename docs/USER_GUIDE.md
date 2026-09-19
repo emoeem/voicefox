@@ -60,7 +60,11 @@ JS 音源可以动态加载多个社区脚本，具体能力由脚本声明，�
 
 ## 通知与平台
 
-Linux 使用 D-Bus/MPRIS 等桌面接口。Windows 已提供 Windows 会话下的提示音/桌面提示路径；Windows SMTC/硬件媒体键仍需要 Windows 11 原生环境最终验收。
+- Linux：D-Bus 桌面通知和 MPRIS。
+- Windows：`Shell_NotifyIconW` 通知区气泡。
+  - 遵循系统的提示音与勿扰设置，通知区图标在最后一次通知 10 秒后移除。
+  - 不提供专辑封面、操作按钮和通知中心历史。
+- Windows SMTC / 硬件媒体键：尚未实现。
 
 ## 数据目录
 
@@ -80,7 +84,7 @@ Linux 使用 D-Bus/MPRIS 等桌面接口。Windows 已提供 Windows 会话下�
 - 多歌手分别查看。
 - 下载上下选择、右键操作与帮助提示。
 - 失败下载不再与历史重复展示。
-- Windows 桌面提示/提示音路径。
+- Windows 桌面通知。
 - 平台数据目录规范。
 - 网易云歌词落盘标准化。
 - JS 音源非法 URL 不再触发 HTTP request builder panic。
@@ -92,5 +96,3 @@ Linux 使用 D-Bus/MPRIS 等桌面接口。Windows 已提供 Windows 会话下�
 - `cargo test -p lx-core`
 - `cargo test -p lx-lyric`
 - `cargo check -p voicefox-app --target x86_64-pc-windows-gnu`
-
-Windows 目标交叉编译检查通过；Windows 11 原生媒体键/SMTC 等硬件相关行为需要 Windows 实机最终验收。

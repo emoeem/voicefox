@@ -58,10 +58,10 @@ status_bar_items = [
 ]
 
 [notification]
-enable = true               # 桌面系统通知（Linux D-Bus）
+enable = true               # 桌面系统通知（Linux / Windows）
 inApp = true                # TUI 内浮动 toast
 inAppTimeout = 4            # toast 停留秒数，运行时限制 1-60
-albumCover = true           # 桌面通知附带专辑封面
+albumCover = true           # Linux 桌面通知附带专辑封面
 trackChange = true          # 切歌时发送桌面通知
 
 [integration]
