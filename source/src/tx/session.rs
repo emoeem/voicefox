@@ -10,8 +10,13 @@ use lx_core::model::source::SourceId;
 
 use crate::session::{SessionStore, SourceSession};
 
-/// 登录凭据：QQ 音乐以 `uin` + `qqmusic_key` 判定已登录。
-const LOGIN_COOKIES: [&str; 2] = ["uin", "qqmusic_key"];
+/// 登录凭据分两半：身份 + 音乐凭证，两半各命中一个才算已登录。
+///
+/// QQ 扫码写 `uin` + `qqmusic_key`；微信扫码写 `wxuin`（值同 `uin`）+
+/// `qm_keyst`（值同 `qqmusic_key`，微信账号的 musickey 前缀是 `W_X_`）。
+/// 两组都接受，是因为历史登录数据里两种命名都可能存在。
+const LOGIN_ID_COOKIES: [&str; 2] = ["uin", "wxuin"];
+const LOGIN_KEY_COOKIES: [&str; 2] = ["qqmusic_key", "qm_keyst"];
 
 static STORE: OnceLock<SessionStore> = OnceLock::new();
 static PENDING: OnceLock<Mutex<BTreeMap<String, BTreeMap<String, String>>>> = OnceLock::new();
@@ -42,10 +47,17 @@ pub(super) fn cookie_header() -> Option<String> {
     Some(pairs.join("; "))
 }
 
-/// 已登录：两个关键 cookie 都在才算。
+/// 已登录：身份与音乐凭证各至少一个都在才算。
 pub(super) fn is_logged_in() -> bool {
-    let session = snapshot();
-    LOGIN_COOKIES.iter().all(|name| session.has_cookie(name))
+    logged_in(&snapshot())
+}
+
+/// 判定逻辑独立成函数，便于不碰全局存储的单测。
+fn logged_in(session: &SourceSession) -> bool {
+    LOGIN_ID_COOKIES.iter().any(|name| session.has_cookie(name))
+        && LOGIN_KEY_COOKIES
+            .iter()
+            .any(|name| session.has_cookie(name))
 }
 
 /// 暂存登录过程中的预热 cookie。
@@ -71,7 +83,7 @@ pub(super) fn clear_pending(key: &str) {
 }
 
 pub(super) fn save_login(cookies: &BTreeMap<String, String>) -> Result<(), String> {
-    let user_id = cookies.get("uin").cloned();
+    let user_id = cookies.get("uin").or_else(|| cookies.get("wxuin")).cloned();
     store().update(|session| {
         for (name, value) in cookies {
             session.set_cookie(name, value);
@@ -95,13 +107,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn login_requires_both_credentials() {
+    fn login_requires_an_identity_and_a_key() {
         let mut session = SourceSession::default();
-        assert!(!LOGIN_COOKIES.iter().all(|name| session.has_cookie(name)));
+        assert!(!logged_in(&session));
         session.set_cookie("uin", "o123");
-        assert!(!LOGIN_COOKIES.iter().all(|name| session.has_cookie(name)));
+        assert!(!logged_in(&session), "只有身份、没有音乐凭证，不算登录");
         session.set_cookie("qqmusic_key", "key");
-        assert!(LOGIN_COOKIES.iter().all(|name| session.has_cookie(name)));
+        assert!(logged_in(&session));
+
+        // 微信扫码写的是另一组命名，必须同样识别。
+        let mut wechat = SourceSession::default();
+        assert!(!logged_in(&wechat));
+        wechat.set_cookie("wxuin", "123456");
+        assert!(!logged_in(&wechat));
+        wechat.set_cookie("qm_keyst", "W_X_key");
+        assert!(logged_in(&wechat), "微信登录态用的是 wxuin + qm_keyst");
     }
 
     #[test]

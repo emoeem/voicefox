@@ -11,7 +11,7 @@
 
 use std::collections::BTreeMap;
 
-use lx_core::model::login::{QrLoginResult, QrLoginSession, QrLoginStatus};
+use lx_core::model::login::{QrLoginKind, QrLoginResult, QrLoginSession, QrLoginStatus};
 use lx_core::model::source::SourceId;
 use lx_core::traits::source::FetchError;
 use md5::Digest;
@@ -197,6 +197,7 @@ pub async fn create() -> Result<QrLoginSession, FetchError> {
     session::save_pending(key, &device);
     Ok(QrLoginSession {
         source: SourceId::Kg,
+        kind: QrLoginKind::Standard,
         key: key.to_string(),
         url: format!("https://h5.kugou.com/apps/loginQRCode/html/index.html?qrcode={key}"),
         image_png: None,

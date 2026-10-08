@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use lx_core::events::AppAction;
 use lx_core::keybinding::KeybindingResolver;
-use lx_core::model::login::{QrLoginResult, QrLoginSession, QrLoginStatus};
+use lx_core::model::login::{QrLoginKind, QrLoginResult, QrLoginSession, QrLoginStatus};
 use lx_core::model::source::SourceId;
 use qrcode::{Color, QrCode};
 use ratatui::buffer::Buffer;
@@ -68,6 +68,8 @@ pub enum QrLoginState {
 /// 通用扫码登录页。
 pub struct QrLoginPage {
     pub source: SourceId,
+    /// 本轮扫码走的是哪条渠道（QQ 音乐有 QQ / 微信两条）。
+    pub kind: QrLoginKind,
     pub display_name: String,
     pub state: QrLoginState,
     /// 本轮轮询是否已经发出，避免主循环每个 tick 重复请求。
@@ -81,9 +83,12 @@ pub struct QrLoginPage {
 }
 
 impl QrLoginPage {
-    pub fn new(source: SourceId, display_name: String) -> Self {
+    /// 指定扫码渠道创建页面（普通音源传 `QrLoginKind::Standard`，
+    /// QQ 音乐的「微信」入口传 `QrLoginKind::WeChat`）。
+    pub fn with_kind(source: SourceId, display_name: String, kind: QrLoginKind) -> Self {
         Self {
             source,
+            kind,
             display_name,
             state: QrLoginState::Generating,
             polling: false,
@@ -95,6 +100,8 @@ impl QrLoginPage {
 
     /// 二维码生成完成。
     pub fn set_qr(&mut self, session: QrLoginSession) {
+        // 会话自己带渠道（重建二维码时可能与页面初始渠道一致，以会话为准）。
+        self.kind = session.kind;
         // 有些平台（QQ）返回的是二维码图片而不是链接，此时直接渲染图片。
         let qr_lines = match session.image_png.as_deref() {
             Some(encoded) => render_png_qr(encoded, PNG_QR_MAX_WIDTH),
@@ -369,8 +376,13 @@ impl QrLoginPage {
             .borders(Borders::ALL)
             .border_style(Style::new().fg(accent))
             .title(format!(
-                " {} 扫码登录 · Esc/q 关闭 · R 重新生成 ",
-                self.display_name
+                // 非默认渠道（微信）在标题里标出来，避免与 QQ 扫码页面混淆。
+                " {} 扫码登录{} · Esc/q 关闭 · R 重新生成 ",
+                self.display_name,
+                match self.kind.badge() {
+                    Some(badge) => format!("（{badge}）"),
+                    None => String::new(),
+                }
             ))
             .style(Style::new().bg(theme::mantle(ctx)));
         let inner = block.inner(area);
@@ -602,7 +614,11 @@ mod tests {
     use super::*;
 
     fn test_page() -> QrLoginPage {
-        QrLoginPage::new(SourceId::Wy, "网易云音乐".to_string())
+        QrLoginPage::with_kind(
+            SourceId::Wy,
+            "网易云音乐".to_string(),
+            QrLoginKind::Standard,
+        )
     }
 
     #[test]
@@ -620,6 +636,7 @@ mod tests {
     fn poll_is_throttled_until_a_result_arrives() {
         let mut page = test_page();
         page.set_qr(QrLoginSession {
+            kind: QrLoginKind::Standard,
             source: SourceId::Wy,
             key: "key-1".to_string(),
             url: "https://music.163.com/login?codekey=key-1".to_string(),
@@ -642,6 +659,7 @@ mod tests {
     fn transient_errors_use_exponential_backoff_without_expiring_the_qr() {
         let mut page = test_page();
         page.set_qr(QrLoginSession {
+            kind: QrLoginKind::Standard,
             source: SourceId::Wy,
             key: "k".to_string(),
             url: "https://music.163.com/login?codekey=k".to_string(),
@@ -660,6 +678,7 @@ mod tests {
     fn scanned_state_keeps_the_qr_and_switches_the_hint() {
         let mut page = test_page();
         page.set_qr(QrLoginSession {
+            kind: QrLoginKind::Standard,
             source: SourceId::Wy,
             key: "k".to_string(),
             url: "https://music.163.com/login?codekey=k".to_string(),
@@ -677,6 +696,7 @@ mod tests {
     fn success_carries_the_account_name_and_stops_polling() {
         let mut page = test_page();
         page.set_qr(QrLoginSession {
+            kind: QrLoginKind::Standard,
             source: SourceId::Wy,
             key: "k".to_string(),
             url: "https://music.163.com/login?codekey=k".to_string(),
@@ -698,6 +718,7 @@ mod tests {
     fn expired_auto_regenerates_until_the_cap_then_needs_manual_refresh() {
         let mut page = test_page();
         page.set_qr(QrLoginSession {
+            kind: QrLoginKind::Standard,
             source: SourceId::Wy,
             key: "k".to_string(),
             url: "https://music.163.com/login?codekey=k".to_string(),
@@ -721,6 +742,7 @@ mod tests {
 
         let mut page = test_page();
         page.set_qr(QrLoginSession {
+            kind: QrLoginKind::Standard,
             source: SourceId::Wy,
             key: "k".to_string(),
             url: "https://music.163.com/login?codekey=k".to_string(),
@@ -738,6 +760,7 @@ mod tests {
         // 还没拿到，旧实现会让页面永远停在「0 秒后过期」。
         let mut page = test_page();
         page.set_qr(QrLoginSession {
+            kind: QrLoginKind::Standard,
             source: SourceId::Wy,
             key: "k".to_string(),
             url: "https://music.163.com/login?codekey=k".to_string(),
@@ -758,6 +781,7 @@ mod tests {
     fn r_key_requests_a_manual_refresh() {
         let mut page = test_page();
         page.set_qr(QrLoginSession {
+            kind: QrLoginKind::Standard,
             source: SourceId::Wy,
             key: "k".to_string(),
             url: "https://music.163.com/login?codekey=k".to_string(),
@@ -772,6 +796,7 @@ mod tests {
         // Shift+R 同样生效。
         let mut page = test_page();
         page.set_qr(QrLoginSession {
+            kind: QrLoginKind::Standard,
             source: SourceId::Wy,
             key: "k".to_string(),
             url: "https://music.163.com/login?codekey=k".to_string(),
@@ -793,6 +818,7 @@ mod tests {
     fn transient_statuses_keep_the_qr_alive() {
         let mut page = test_page();
         page.set_qr(QrLoginSession {
+            kind: QrLoginKind::Standard,
             source: SourceId::Wy,
             key: "k".to_string(),
             url: "https://music.163.com/login?codekey=k".to_string(),

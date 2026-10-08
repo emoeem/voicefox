@@ -58,6 +58,11 @@ pub struct SourceCapabilities {
     pub login: bool,
     /// 支持扫码登录。
     pub qr_login: bool,
+    /// 除自带渠道外还支持微信扫码（目前只有 QQ 音乐）。
+    ///
+    /// 界面据此决定要不要在扫码入口旁多渲染一个「微信」入口；
+    /// 渠道本身通过 [`MusicSource::create_qr_login_kind`] 选择。
+    pub wechat_login: bool,
     /// 读取账号下的个人歌单（需要登录）。
     pub user_playlists: bool,
     /// 区分 VIP 曲目 / VIP 账号。
@@ -266,6 +271,16 @@ pub trait MusicSource: Send + Sync {
     /// 创建扫码登录会话。未实现的音源返回错误。
     async fn create_qr_login(&self) -> Result<QrLoginSession, FetchError> {
         Err(FetchError::Other("该音源不支持扫码登录".to_string()))
+    }
+    /// 按渠道创建扫码登录会话。
+    ///
+    /// 默认忽略 `kind`：只有声明了 [`SourceCapabilities::wechat_login`] 的音源
+    /// 才需要覆写它，其余音源零改动。
+    async fn create_qr_login_kind(
+        &self,
+        _kind: crate::model::login::QrLoginKind,
+    ) -> Result<QrLoginSession, FetchError> {
+        self.create_qr_login().await
     }
     /// 轮询扫码状态；登录成功后实现方负责把 cookie 写入本地会话存储。
     async fn check_qr_login(&self, _key: &str) -> Result<QrLoginResult, FetchError> {

@@ -649,6 +649,17 @@ impl SourceManager {
         self.online_source_fetch(source)?.create_qr_login().await
     }
 
+    /// 按渠道生成扫码登录会话（QQ 音乐的微信入口用）。
+    pub async fn create_qr_login_kind(
+        &self,
+        source: SourceId,
+        kind: lx_core::model::login::QrLoginKind,
+    ) -> Result<lx_core::model::login::QrLoginSession, FetchError> {
+        self.online_source_fetch(source)?
+            .create_qr_login_kind(kind)
+            .await
+    }
+
     /// 轮询扫码状态。
     pub async fn check_qr_login(
         &self,

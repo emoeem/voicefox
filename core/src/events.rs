@@ -133,7 +133,8 @@ pub enum AppAction {
     /// 从设置页发起的外部歌单导入。文件解析与写盘都在后台任务中完成，
     /// 避免在 TUI 主循环里同步解析大歌单并反复写盘。
     ImportExternalPlaylist(String),
-    QrLogin(SourceId),
+    /// 发起扫码登录。第二个字段是渠道（QQ 音乐有 QQ / 微信两条）。
+    QrLogin(SourceId, crate::model::login::QrLoginKind),
     QrLogout(SourceId),
     QrLoginSuccess(SourceId),
     /// 与网易云账号进行双向增量同步（仅增加，不自动删除）。

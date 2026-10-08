@@ -6,6 +6,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent,
 use lx_core::events::AppAction;
 use lx_core::keybinding::{Action, KeybindingResolver};
 use lx_core::model::config::{SourcePolicy, StatusBarItem};
+use lx_core::model::login::QrLoginKind;
 use lx_core::model::source::{Quality, SourceId};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
@@ -438,6 +439,7 @@ impl SettingsRows {
     ///
     /// 只有「封面协议」用它：`Shift+P` 是设置页刻意保留的页面级组合键
     /// （见 `COVER_PROTOCOL_ROW_KEY`），键位列必须把真正生效的键写出来。
+    #[allow(clippy::too_many_arguments)]
     fn value_with_key_hint(
         &mut self,
         category: SettingsCategory,
@@ -1551,12 +1553,22 @@ impl SettingsPage {
         self.cover_capabilities = capabilities;
     }
 
-    fn qr_login_sources(&self, ctx: &AppContext) -> Vec<SourceId> {
-        SourceId::all_online()
-            .iter()
-            .copied()
-            .filter(|source| ctx.source_manager.capabilities(*source).qr_login)
-            .collect()
+    /// 扫码登录入口列表。
+    ///
+    /// 支持自带扫码渠道的音源各一条；声明了 `wechat_login` 的音源再补一条微信
+    /// 入口（目前只有 QQ 音乐，issue #43 的诉求）。条目顺序就是界面行顺序。
+    fn qr_login_sources(&self, ctx: &AppContext) -> Vec<(SourceId, QrLoginKind)> {
+        let mut entries = Vec::new();
+        for source in SourceId::all_online().iter().copied() {
+            let capabilities = ctx.source_manager.capabilities(source);
+            if capabilities.qr_login {
+                entries.push((source, QrLoginKind::Standard));
+            }
+            if capabilities.wechat_login {
+                entries.push((source, QrLoginKind::WeChat));
+            }
+        }
+        entries
     }
 
     pub fn handle_input(
@@ -1646,8 +1658,8 @@ impl SettingsPage {
                         self.set_status("当前没有支持扫码登录的音源".to_string());
                     } else {
                         self.qr_login_source_index %= login_sources.len();
-                        let source = login_sources[self.qr_login_source_index];
-                        return self.qr_login_toggle(source, ctx);
+                        let (source, kind) = login_sources[self.qr_login_source_index];
+                        return self.qr_login_toggle(source, kind, ctx);
                     }
                 } else {
                     self.set_category(SettingsCategory::Accounts);
@@ -1725,9 +1737,9 @@ impl SettingsPage {
                             return AppAction::None;
                         }
                         (KeyModifiers::NONE, KeyCode::Enter) => {
-                            let source =
+                            let (source, kind) =
                                 login_sources[self.qr_login_source_index % login_sources.len()];
-                            return self.qr_login_toggle(source, ctx);
+                            return self.qr_login_toggle(source, kind, ctx);
                         }
                         _ => {}
                     }
@@ -2185,8 +2197,8 @@ impl SettingsPage {
                     return AppAction::None;
                 }
                 self.qr_login_source_index %= login_sources.len();
-                let source = login_sources[self.qr_login_source_index];
-                self.qr_login_toggle(source, ctx)
+                let (source, kind) = login_sources[self.qr_login_source_index];
+                self.qr_login_toggle(source, kind, ctx)
             }
             D::SyncNetease => AppAction::SyncNetease,
             D::SyncQq => AppAction::SyncQq,
@@ -2633,8 +2645,13 @@ impl SettingsPage {
     ///
     /// 删掉 `b`（退出登录）之后，登录态切换只剩这一条路：设置行、扫码列表的
     /// `Enter`、鼠标点击列表条目都走它，因此**退出登录仍然可达**。
-    fn qr_login_toggle(&mut self, source: SourceId, ctx: &AppContext) -> AppAction {
-        qr_login_action(ctx.source_manager.is_logged_in(source), source)
+    fn qr_login_toggle(
+        &mut self,
+        source: SourceId,
+        kind: QrLoginKind,
+        ctx: &AppContext,
+    ) -> AppAction {
+        qr_login_action(ctx.source_manager.is_logged_in(source), source, kind)
     }
 
     /// 处理本地音乐路径输入模式
@@ -3094,7 +3111,7 @@ impl SettingsPage {
         ctx: &AppContext,
         accent: Color,
         muted: Color,
-        login_sources: &[SourceId],
+        login_sources: &[(SourceId, QrLoginKind)],
     ) -> EmbeddedHits {
         let block = Block::default()
             .borders(PANEL_BORDERS)
@@ -3115,10 +3132,18 @@ impl SettingsPage {
             .get(self.qr_login_source_index % login_sources.len().max(1))
             .copied();
         let mut row = inner.y;
+        // 一个音源可能有两个入口（QQ / 微信），计数按音源去重，
+        // 否则「支持扫码 / 已登录」会跟着渠道数量一起翻倍。
+        let mut supported: Vec<SourceId> = Vec::new();
+        for (source, _) in login_sources {
+            if !supported.contains(source) {
+                supported.push(*source);
+            }
+        }
         let summary = format!(
             " 支持扫码: {}  · 已登录: {}",
-            login_sources.len(),
-            login_sources
+            supported.len(),
+            supported
                 .iter()
                 .filter(|source| source_session_valid(**source, ctx))
                 .count(),
@@ -3127,12 +3152,12 @@ impl SettingsPage {
             .render(Rect::new(inner.x, row, inner.width, 1), buf);
         row = row.saturating_add(1);
 
-        for (index, source) in login_sources.iter().enumerate() {
+        for (index, (source, kind)) in login_sources.iter().enumerate() {
             if row >= inner.bottom() {
                 break;
             }
             let (status, status_color) = source_login_display(*source, ctx);
-            let qr_selected = selected_qr == Some(*source);
+            let qr_selected = selected_qr == Some((*source, *kind));
             let style = if qr_selected {
                 Style::new()
                     .fg(crate::theme::selection_fg(ctx))
@@ -3141,8 +3166,13 @@ impl SettingsPage {
             } else {
                 Style::new().fg(crate::theme::text(ctx))
             };
+            // 同一音源的第二条渠道（微信）要在名字后标出来，否则两行长得一样。
+            let label = match kind.badge() {
+                Some(badge) => format!(" {:<12} ", format!("{}（{badge}）", source.display_name())),
+                None => format!(" {:<12} ", source.display_name()),
+            };
             let line = Line::from(vec![
-                Span::styled(format!(" {:<12} ", source.display_name()), style),
+                Span::styled(label, style),
                 Span::styled(status, Style::new().fg(status_color)),
             ]);
             let rect = Rect::new(inner.x, row, inner.width, 1);
@@ -4918,13 +4948,14 @@ fn enum_menu(
 
 /// 扫码登录列表 / 「扫码登录」行上按 `Enter`（或点击条目）的语义（纯函数）。
 ///
-/// 未登录 → 登录，已登录 → 退出登录。删掉 `b`（退出登录）之后，退出登录只剩
+/// 未登录 → 登录（按条目自己的渠道），已登录 → 退出登录（退出登录与渠道无关，
+/// 因为两条渠道写的是同一份登录态）。删掉 `b`（退出登录）之后，退出登录只剩
 /// 这一条路，因此必须由它有明确分支。
-fn qr_login_action(logged_in: bool, source: SourceId) -> AppAction {
+fn qr_login_action(logged_in: bool, source: SourceId, kind: QrLoginKind) -> AppAction {
     if logged_in {
         AppAction::QrLogout(source)
     } else {
-        AppAction::QrLogin(source)
+        AppAction::QrLogin(source, kind)
     }
 }
 
@@ -5329,6 +5360,7 @@ fn render_setting_rows(
 /// `area` 是含边框的整块矩形（来自同一份 [`SettingsPanes`]），内区一律走
 /// `panel_inner`：命中账本因此天然扣掉左右边框，既不会出现"边框那一列还能
 /// 选中"，也不会出现"最后一列选不中"。
+#[allow(clippy::too_many_arguments)]
 fn render_setting_categories(
     categories: &[SettingsCategory],
     area: Rect,
@@ -5932,6 +5964,7 @@ mod tests {
     use lx_core::events::AppAction;
     use lx_core::keybinding::{Action, KeybindingConfig, KeybindingResolver};
     use lx_core::model::config::{Config, SourcePolicy, StatusBarItem};
+    use lx_core::model::login::QrLoginKind;
     use lx_core::model::source::{Quality, SourceId};
 
     use crate::pages::components::context_menu::{MenuAction, StatusBarMenuAction};
@@ -9506,9 +9539,8 @@ mod tests {
         );
         assert_eq!(hits.len(), LOCAL_PATH_COMMANDS.len());
         for (rect, character) in &hits {
-            assert_eq!(
+            assert!(
                 embedded_command(SettingsFocus::LocalPaths, *character).is_some(),
-                true,
                 "点「{character}」按钮必须有操作"
             );
             assert_eq!(
@@ -9550,16 +9582,26 @@ mod tests {
 
         // ④ 扫码登录：Enter / 点击条目的语义（未登录 → 登录，已登录 → 退出登录）
         assert!(matches!(
-            qr_login_action(false, SourceId::Wy),
-            AppAction::QrLogin(SourceId::Wy)
+            qr_login_action(false, SourceId::Wy, QrLoginKind::Standard),
+            AppAction::QrLogin(SourceId::Wy, QrLoginKind::Standard)
         ));
         assert!(
             matches!(
-                qr_login_action(true, SourceId::Wy),
+                qr_login_action(true, SourceId::Wy, QrLoginKind::Standard),
                 AppAction::QrLogout(SourceId::Wy)
             ),
             "删掉 b 之后，退出登录必须靠这一条路"
         );
+        // 微信入口点下去必须带微信渠道，否则用户还是被送去 QQ 扫码（issue #43）。
+        // 退出登录则与渠道无关：两条渠道写的是同一份登录态。
+        assert!(matches!(
+            qr_login_action(false, SourceId::Tx, QrLoginKind::WeChat),
+            AppAction::QrLogin(SourceId::Tx, QrLoginKind::WeChat)
+        ));
+        assert!(matches!(
+            qr_login_action(true, SourceId::Tx, QrLoginKind::WeChat),
+            AppAction::QrLogout(SourceId::Tx)
+        ));
     }
 
     /// 新增的两个取值菜单（音源开关 / 歌词偏移）端到端接上了纯配置写入。

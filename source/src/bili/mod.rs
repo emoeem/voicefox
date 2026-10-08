@@ -14,7 +14,7 @@ use md5::Digest;
 use serde_json::Value;
 
 use lx_core::model::leaderboard::LeaderboardInfo;
-use lx_core::model::login::{QrLoginResult, QrLoginSession, QrLoginStatus};
+use lx_core::model::login::{QrLoginKind, QrLoginResult, QrLoginSession, QrLoginStatus};
 use lx_core::model::lyric::LyricData;
 use lx_core::model::playlist::Playlist;
 use lx_core::model::song::SongInfo;
@@ -429,6 +429,7 @@ impl MusicSource for BiliSource {
         let qr = self.generate_qr_code().await.map_err(FetchError::Other)?;
         Ok(QrLoginSession {
             source: SourceId::Bili,
+            kind: QrLoginKind::Standard,
             key: qr.key,
             url: qr.url,
             image_png: None,

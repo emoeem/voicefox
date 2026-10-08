@@ -15,7 +15,7 @@ pub mod url;
 use async_trait::async_trait;
 
 use lx_core::model::leaderboard::LeaderboardInfo;
-use lx_core::model::login::{QrLoginResult, QrLoginSession};
+use lx_core::model::login::{QrLoginKind, QrLoginResult, QrLoginSession};
 use lx_core::model::lyric::LyricData;
 use lx_core::model::playlist::{Album, Playlist};
 use lx_core::model::song::SongInfo;
@@ -69,6 +69,8 @@ impl MusicSource for TxSource {
             link_parse: true,
             login: true,
             qr_login: true,
+            // QQ 音乐额外支持微信账号扫码（issue #43：用户是微信登录的账号）。
+            wechat_login: true,
             user_playlists: true,
             ..Default::default()
         }
@@ -76,6 +78,10 @@ impl MusicSource for TxSource {
 
     async fn create_qr_login(&self) -> Result<QrLoginSession, FetchError> {
         login::create().await
+    }
+
+    async fn create_qr_login_kind(&self, kind: QrLoginKind) -> Result<QrLoginSession, FetchError> {
+        login::create_kind(kind).await
     }
 
     async fn check_qr_login(&self, key: &str) -> Result<QrLoginResult, FetchError> {

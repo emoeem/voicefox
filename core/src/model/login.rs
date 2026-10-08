@@ -48,15 +48,43 @@ impl QrLoginStatus {
     }
 }
 
+/// 同一个音源可以提供多条扫码渠道。
+///
+/// 典型的是 QQ 音乐：QQ 账号扫码与微信账号扫码是两套完全不同的协议，
+/// 但登录成功后的登录态是同一份，所以渠道只出现在「怎么拿凭据」这一段。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QrLoginKind {
+    /// 音源自带的那条扫码渠道（QQ 音乐=QQ 扫码，网易云/哔哩哔哩/酷狗=各自 App）。
+    #[default]
+    Standard,
+    /// 微信扫码。目前只有 QQ 音乐提供（微信账号登录 QQ 音乐）。
+    WeChat,
+}
+
+impl QrLoginKind {
+    /// 界面上的补充角标；`Standard` 不需要额外标注。
+    pub const fn badge(self) -> Option<&'static str> {
+        match self {
+            Self::Standard => None,
+            Self::WeChat => Some("微信"),
+        }
+    }
+}
+
 /// 一次扫码登录会话.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QrLoginSession {
     pub source: SourceId,
+    /// 本轮扫码用的是哪条渠道。
+    #[serde(default)]
+    pub kind: QrLoginKind,
     /// 轮询用的票据。
     pub key: String,
-    /// 二维码内容，界面据此渲染二维码。
+    /// 二维码内容，界面据此渲染二维码。走图片二维码的渠道这里留空。
     pub url: String,
-    /// 部分平台（QQ）返回的是二维码图片而不是链接，这里是 PNG 的 base64。
+    /// 部分平台返回的是二维码图片而不是链接，这里是图片字节的 base64
+    /// （QQ=PNG / 微信=JPEG），界面按图片渲染，与 `url` 二选一。
     #[serde(default)]
     pub image_png: Option<String>,
     /// 二维码有效期（秒）。

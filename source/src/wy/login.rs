@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 
-use lx_core::model::login::{QrLoginResult, QrLoginSession, QrLoginStatus};
+use lx_core::model::login::{QrLoginKind, QrLoginResult, QrLoginSession, QrLoginStatus};
 use lx_core::model::source::SourceId;
 use lx_core::traits::source::FetchError;
 use serde_json::Value;
@@ -142,6 +142,7 @@ pub async fn create() -> Result<QrLoginSession, FetchError> {
         .ok_or_else(|| FetchError::Parse("网易云二维码 key 为空".to_string()))?;
     Ok(QrLoginSession {
         source: SourceId::Wy,
+        kind: QrLoginKind::Standard,
         key: key.to_string(),
         url: format!("https://music.163.com/login?codekey={key}"),
         image_png: None,

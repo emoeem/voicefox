@@ -1978,17 +1978,20 @@ fn run_app(
         while let Ok(action) = action_rx.try_recv() {
             // 拦截扫码登录相关 action
             match &action {
-                AppAction::QrLogin(source) => {
+                AppAction::QrLogin(source, kind) => {
                     if let Some(task) = qr_generate_task.take() {
                         task.abort();
                     }
                     if let Some(task) = qr_poll_task.take() {
                         task.abort();
                     }
-                    let page = Arc::new(std::sync::Mutex::new(pages::qr_login::QrLoginPage::new(
-                        *source,
-                        source.display_name().to_string(),
-                    )));
+                    let page = Arc::new(std::sync::Mutex::new(
+                        pages::qr_login::QrLoginPage::with_kind(
+                            *source,
+                            source.display_name().to_string(),
+                            *kind,
+                        ),
+                    ));
                     qr_generate_task = Some(spawn_qr_generate(
                         rt,
                         &ctx,
@@ -3526,7 +3529,7 @@ fn run_app(
                     // BiliLogin/BiliLogout 需要发到 channel 让主循环处理（生成 QR 码等）
                     if matches!(
                         action,
-                        AppAction::QrLogin(_)
+                        AppAction::QrLogin(..)
                             | AppAction::QrLogout(_)
                             | AppAction::QrLoginSuccess(_)
                             | AppAction::SyncNetease
@@ -5134,9 +5137,13 @@ fn spawn_qr_generate(
     wake_tx: mpsc::UnboundedSender<AppAction>,
 ) -> tokio::task::JoinHandle<()> {
     let manager = Arc::clone(&ctx.source_manager);
-    let source_id = page.lock().unwrap_or_else(|e| e.into_inner()).source;
+    // 渠道也跟着页面走：过期自动重建时要重建同一条渠道，不能退回默认渠道。
+    let (source_id, kind) = {
+        let page = page.lock().unwrap_or_else(|e| e.into_inner());
+        (page.source, page.kind)
+    };
     rt.spawn(async move {
-        let result = manager.create_qr_login(source_id).await;
+        let result = manager.create_qr_login_kind(source_id, kind).await;
         let mut page = page.lock().unwrap_or_else(|e| e.into_inner());
         match result {
             Ok(session) => page.set_qr(session),
@@ -5827,7 +5834,7 @@ fn execute_action(
         | AppAction::GoBack
         | AppAction::Quit
         | AppAction::None
-        | AppAction::QrLogin(_)
+        | AppAction::QrLogin(..)
         | AppAction::QrLogout(_)
         | AppAction::QrLoginSuccess(_)
         | AppAction::SyncNetease

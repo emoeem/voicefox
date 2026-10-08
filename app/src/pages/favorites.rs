@@ -110,9 +110,7 @@ impl FavoritesPage {
     }
 
     pub fn handle_remote_menu_mouse(&mut self, event: MouseEvent) -> Option<AppAction> {
-        let Some((origin, selected)) = self.remote_menu else {
-            return None;
-        };
+        let (origin, selected) = self.remote_menu?;
         let rect = Rect::new(origin.x, origin.y, REMOTE_MENU_WIDTH, REMOTE_MENU_HEIGHT);
         // 条目区 = 去掉边框后的内部区域。渲染与命中判定共用它，
         // 就不会再出现「渲染多一行 / 点击少一行」这类错位。
@@ -129,7 +127,10 @@ impl FavoritesPage {
                 return match REMOTE_MENU_ITEMS[item] {
                     // 「关闭」：只关菜单（上面已关），不派发动作。
                     "关闭" => None,
-                    _ if item == 0 => Some(AppAction::QrLogin(SourceId::Wy)),
+                    _ if item == 0 => Some(AppAction::QrLogin(
+                        SourceId::Wy,
+                        lx_core::model::login::QrLoginKind::Standard,
+                    )),
                     _ => Some(AppAction::SyncNetease),
                 };
             }
@@ -371,40 +372,40 @@ impl FavoritesPage {
                 self.filter.activate();
             }
             (KeyModifiers::NONE, KeyCode::Left) => {
-                if let Some(selector) = self.source_selector.as_mut() {
-                    if let Some(result) = selector.cycle(-1) {
-                        match result {
-                            SourceSelectorKey::All => self.select_source(0),
-                            SourceSelectorKey::Source(source) => {
-                                if let Some(index) = self
-                                    .sources
-                                    .iter()
-                                    .position(|candidate| *candidate == source)
-                                {
-                                    self.select_source(index + 1);
-                                }
+                if let Some(selector) = self.source_selector.as_mut()
+                    && let Some(result) = selector.cycle(-1)
+                {
+                    match result {
+                        SourceSelectorKey::All => self.select_source(0),
+                        SourceSelectorKey::Source(source) => {
+                            if let Some(index) = self
+                                .sources
+                                .iter()
+                                .position(|candidate| *candidate == source)
+                            {
+                                self.select_source(index + 1);
                             }
-                            _ => {}
                         }
+                        _ => {}
                     }
                 }
             }
             (KeyModifiers::NONE, KeyCode::Right) => {
-                if let Some(selector) = self.source_selector.as_mut() {
-                    if let Some(result) = selector.cycle(1) {
-                        match result {
-                            SourceSelectorKey::All => self.select_source(0),
-                            SourceSelectorKey::Source(source) => {
-                                if let Some(index) = self
-                                    .sources
-                                    .iter()
-                                    .position(|candidate| *candidate == source)
-                                {
-                                    self.select_source(index + 1);
-                                }
+                if let Some(selector) = self.source_selector.as_mut()
+                    && let Some(result) = selector.cycle(1)
+                {
+                    match result {
+                        SourceSelectorKey::All => self.select_source(0),
+                        SourceSelectorKey::Source(source) => {
+                            if let Some(index) = self
+                                .sources
+                                .iter()
+                                .position(|candidate| *candidate == source)
+                            {
+                                self.select_source(index + 1);
                             }
-                            _ => {}
                         }
+                        _ => {}
                     }
                 }
             }
@@ -843,9 +844,7 @@ impl FavoritesPage {
             self.selected,
             filtered.len(),
         )?;
-        let Some(original_index) = filtered.get(index).copied() else {
-            return None;
-        };
+        let original_index = filtered.get(index).copied()?;
         // 菜单仍按过滤视图返回 (songs, index)；但右键会退出过滤，列表回到
         // 完整视图，selected 必须映射回原始下标，否则会指向另一首歌。
         let songs = filtered
@@ -1014,7 +1013,7 @@ mod tests {
         // 第 1 行（origin.y + 1）= 登录
         let action = page.handle_remote_menu_mouse(click(12, 6));
         assert!(
-            matches!(action, Some(AppAction::QrLogin(_))),
+            matches!(action, Some(AppAction::QrLogin(..))),
             "第 1 行应当是登录, 实际 {action:?}"
         );
         assert!(!page.remote_menu_open(), "点中条目后菜单应关闭");
