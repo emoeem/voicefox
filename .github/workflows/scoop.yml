@@ -1,0 +1,56 @@
+name: Scoop 清单
+
+# 清单里的 version / url / hash 必须三者同时正确（scoop 安装时校验 sha256），
+# 所以刷新逻辑放在 packaging/scoop/update-manifest.sh 里，本地和 CI 跑同一份：
+# 从 Releases API 取最新 Windows 包、下载、算 hash、按需重写清单。
+# 这里不引入第三方 action —— 一次脚本 + 一次 git commit 就够，免得把
+# contents: write 交给 @main 这类浮动版本。
+
+on:
+  # 兜底轮询：release workflow 用 GITHUB_TOKEN 创建的 release 不会再触发
+  # workflow（GitHub 的递归保护），所以定时器才是可靠的那条路。
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+  # 手动在网页上发布 release 时立刻跟进。
+  release:
+    types: ["published"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: scoop-manifest
+  cancel-in-progress: false
+
+jobs:
+  update:
+    name: 刷新 packaging/scoop/voicefox.json
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          # release / schedule 触发的默认 checkout 可能不在 main 上
+          # （release 事件拿到的是 tag，处于 detached HEAD），显式钉住 main
+          # 才能让后面的 git push 有分支可推。
+          ref: main
+
+      - name: 按最新 release 刷新清单
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: packaging/scoop/update-manifest.sh
+
+      - name: 提交改动
+        run: |
+          if [ -z "$(git status --porcelain packaging/scoop/voicefox.json)" ]; then
+            echo "清单已是最新，无需提交"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add packaging/scoop/voicefox.json
+          git commit -m "♻️ 自动更新软件清单"
+          git push origin main
