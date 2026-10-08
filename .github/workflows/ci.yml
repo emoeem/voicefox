@@ -14,6 +14,26 @@ env:
   LIBMPV_SHA256: 4cbc2f77c1380b0fb4d7d1f0373d881038f5f974f1c4799d0405eda54a488ee5
 
 jobs:
+  # ── Lint：fmt + clippy 零警告门禁 ──
+  lint:
+    name: Lint (fmt + clippy)
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libmpv-dev
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy (zero warnings)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
   # ── Linux 构建 ──
   build-linux:
     name: Build Linux x86_64
