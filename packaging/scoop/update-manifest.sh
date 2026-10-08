@@ -12,7 +12,8 @@
 #   GITHUB_TOKEN           可选，提 API 限额（CI 里由 Actions 注入）
 #
 # 用法：packaging/scoop/update-manifest.sh [清单路径]
-# 清单已是最新时打印一行说明并以 0 退出（幂等，定时任务不会空提交）。
+# 清单已是最新时打印一行说明并以 0 退出（幂等，定时任务不会空提交）；
+# 最新 release 还没有 Windows 包时同样以 0 退出并说明（构建中，等下次触发）。
 
 set -euo pipefail
 
@@ -32,7 +33,9 @@ fi
 
 release_json="$(curl -fsSL "${curl_headers[@]}" "https://api.github.com/repos/${repo}/releases/latest")"
 
-# 输出「tag\t下载地址」，两个字段各占一行交给 bash 切分。
+# 输出「tag\t下载地址」，两个字段各占一行交给 bash 切分；
+# 资产还没上传时输出 PENDING（release 刚创建、压缩包仍在构建是常态，
+# 这里不当作失败 —— 定时任务与 Release 完成触发的任务都会再来一次）。
 info="$(
     printf '%s' "$release_json" | python3 -c '
 import json
@@ -42,10 +45,17 @@ release = json.load(sys.stdin)
 asset_name = sys.argv[1]
 assets = {asset["name"]: asset["browser_download_url"] for asset in release["assets"]}
 if asset_name not in assets:
-    sys.exit("最新 release " + release["tag_name"] + " 里没有资产 " + asset_name)
+    print("PENDING")
+    sys.exit(0)
 print(release["tag_name"] + "\t" + assets[asset_name])
 ' "$asset_name"
 )"
+
+if [ "$info" = "PENDING" ]; then
+    echo "最新 release 里还没有 $asset_name（构建可能仍在进行），跳过本次刷新"
+    exit 0
+fi
+
 tag="${info%%$'\t'*}"
 asset_url="${info#*$'\t'}"
 

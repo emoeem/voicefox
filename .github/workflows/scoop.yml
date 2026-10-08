@@ -7,12 +7,17 @@ name: Scoop 清单
 # contents: write 交给 @main 这类浮动版本。
 
 on:
-  # 兜底轮询：release workflow 用 GITHUB_TOKEN 创建的 release 不会再触发
-  # workflow（GitHub 的递归保护），所以定时器才是可靠的那条路。
+  # 兜底轮询：GitHub 用 GITHUB_TOKEN 触发的事件有递归保护，定时器是最后一道保险。
   schedule:
     - cron: "0 */6 * * *"
   workflow_dispatch:
-  # 手动在网页上发布 release 时立刻跟进。
+  # 首选路径：等 Release workflow 真正跑完再读资产。
+  # 不能用 `release: published` 当主触发 —— 那一刻 release 刚刚创建，
+  # 各平台压缩包还在构建/上传，必然读不到 voicefox-windows-x86_64.zip。
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
+  # 手动在网页上发布（或补发）release 时也跟进一次；资产还没到就跳过。
   release:
     types: ["published"]
 
@@ -27,6 +32,8 @@ jobs:
   update:
     name: 刷新 packaging/scoop/voicefox.json
     runs-on: ubuntu-24.04
+    # Release 失败时没有新资产可跟，等下一次触发即可。
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
 
     steps:
       - name: Checkout
