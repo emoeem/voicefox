@@ -90,7 +90,9 @@ fn decode_mrc_container(data: &[u8], depth: usize) -> Result<String, String> {
 
 fn decrypt_mrc_hex(data: &[u8]) -> Result<String, String> {
     let mut words = data
-        .chunks_exact(16)
+        .as_chunks::<16>()
+        .0
+        .iter()
         .map(|chunk| {
             let value = std::str::from_utf8(chunk).map_err(|error| error.to_string())?;
             u64::from_str_radix(value, 16)
@@ -199,7 +201,9 @@ fn decode_utf16(data: &[u8], little_endian: bool) -> Option<String> {
         return None;
     }
     let units = data
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|chunk| {
             if little_endian {
                 u16::from_le_bytes([chunk[0], chunk[1]])
@@ -315,7 +319,9 @@ mod tests {
             utf16.push(0);
         }
         let mut words = utf16
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|chunk| {
                 i64::from_le_bytes([
                     chunk[0] as u8,

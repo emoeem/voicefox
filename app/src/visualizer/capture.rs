@@ -336,7 +336,7 @@ fn run_capture_with(
             consecutive_failures = 0;
             // s16le 交错立体声 → 单声道 f32（忽略落单的最后一个字节）。
             mono.clear();
-            for frame in raw[..read.saturating_sub(read % 4)].chunks_exact(4) {
+            for frame in raw[..read.saturating_sub(read % 4)].as_chunks::<4>().0 {
                 let left = i16::from_le_bytes([frame[0], frame[1]]);
                 let right = i16::from_le_bytes([frame[2], frame[3]]);
                 mono.push((f32::from(left) + f32::from(right)) / (2.0 * f32::from(i16::MAX)));
