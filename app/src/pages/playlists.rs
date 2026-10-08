@@ -1118,8 +1118,8 @@ impl PlaylistsPage {
                 .scope_selector
                 .as_mut()
                 .and_then(|selector| selector.handle_mouse(event, area));
-            if let Some(key) = result {
-                if let Some(index) = self.scopes.iter().position(|scope| match (scope, key) {
+            if let Some(key) = result
+                && let Some(index) = self.scopes.iter().position(|scope| match (scope, key) {
                     (PlaylistScope::Custom, SourceSelectorKey::Custom)
                     | (PlaylistScope::Favorites, SourceSelectorKey::Favorites) => true,
                     (PlaylistScope::Account(source), SourceSelectorKey::Account(selected)) => {
@@ -1129,12 +1129,12 @@ impl PlaylistsPage {
                         *source == selected
                     }
                     _ => false,
-                }) {
-                    self.scope_selector
-                        .as_mut()
-                        .map(|selector| selector.close());
-                    self.select_scope(index, ctx);
+                })
+            {
+                if let Some(selector) = self.scope_selector.as_mut() {
+                    selector.close()
                 }
+                self.select_scope(index, ctx);
             }
             return AppAction::None;
         }
@@ -1170,12 +1170,12 @@ impl PlaylistsPage {
                 }
                 _ => return AppAction::None,
             }
-        } else if matches!(event.kind, MouseEventKind::Down(MouseButton::Left)) {
-            if let Some(target) = self.resize_target_at(event, &page) {
-                let committed = self.committed_ratio(target);
-                self.splitter.begin(target, committed);
-                return AppAction::None;
-            }
+        } else if matches!(event.kind, MouseEventKind::Down(MouseButton::Left))
+            && let Some(target) = self.resize_target_at(event, &page)
+        {
+            let committed = self.committed_ratio(target);
+            self.splitter.begin(target, committed);
+            return AppAction::None;
         }
 
         if self.selected_playlist.is_some() {
@@ -1276,21 +1276,21 @@ impl PlaylistsPage {
                     return AppAction::None;
                 }
 
-                if self.selected_playlist.is_some() {
-                    if let Some(index) = crate::pages::components::hit_test::row_at(
+                if self.selected_playlist.is_some()
+                    && let Some(index) = crate::pages::components::hit_test::row_at(
                         page.songs,
                         position,
                         self.song_scroll_offset,
                         self.songs.len(),
                         1,
-                    ) {
-                        self.selected = index;
-                        if activate {
-                            return AppAction::PlaySong {
-                                songs: self.songs.clone(),
-                                index,
-                            };
-                        }
+                    )
+                {
+                    self.selected = index;
+                    if activate {
+                        return AppAction::PlaySong {
+                            songs: self.songs.clone(),
+                            index,
+                        };
                     }
                 }
             }
@@ -2108,14 +2108,14 @@ impl PlaylistsPage {
         };
         if selector.handle_key(*key).is_some() {
             let index = selector.selected_index();
-            self.scope_selector
-                .as_mut()
-                .map(|selector| selector.close());
+            if let Some(selector) = self.scope_selector.as_mut() {
+                selector.close()
+            }
             self.select_scope(index, ctx);
-        } else if !selector.is_open() {
-            self.scope_selector
-                .as_mut()
-                .map(|selector| selector.close());
+        } else if !selector.is_open()
+            && let Some(selector) = self.scope_selector.as_mut()
+        {
+            selector.close()
         }
     }
 
@@ -2233,6 +2233,20 @@ fn custom_playlist_metadata(playlist: &CustomPlaylistSummary) -> Playlist {
 fn truncate_chars(value: &str, max: usize) -> String {
     // 按显示宽度截断（CJK 占 2 列），共享实现见 components::text
     super::components::text::truncate_width(value, max).into_owned()
+}
+
+/// 自建歌单导出路径的预填值：音乐目录（或主目录）下的「歌单名.m3u」。
+fn default_m3u_path(playlist_name: &str) -> String {
+    let file_name = format!(
+        "{}.m3u",
+        playlist_name
+            .trim()
+            .replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_")
+    );
+    let base = dirs::audio_dir()
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    base.join(file_name).to_string_lossy().to_string()
 }
 
 #[cfg(test)]
@@ -2688,18 +2702,4 @@ mod tests {
         assert!(!hit.matches(list_inner.right() - 1, songs_inner.y));
         assert!(!hit.matches(songs_inner.x, songs_inner.y));
     }
-}
-
-/// 自建歌单导出路径的预填值：音乐目录（或主目录）下的「歌单名.m3u」。
-fn default_m3u_path(playlist_name: &str) -> String {
-    let file_name = format!(
-        "{}.m3u",
-        playlist_name
-            .trim()
-            .replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_")
-    );
-    let base = dirs::audio_dir()
-        .or_else(dirs::home_dir)
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
-    base.join(file_name).to_string_lossy().to_string()
 }

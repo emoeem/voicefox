@@ -366,8 +366,10 @@ mod tests {
             source: SourceId::Wy,
             songs: Vec::new(),
         };
-        let mut options = SyncOptions::default();
-        options.batch_size = batch_size;
+        let options = SyncOptions {
+            batch_size,
+            ..SyncOptions::default()
+        };
         (
             SyncEngine::plan(source_collection, target_collection, &options).unwrap(),
             options,

@@ -620,14 +620,13 @@ impl LeaderboardPage {
                 .source_selector
                 .as_mut()
                 .and_then(|selector| selector.handle_mouse(event, area));
-            if let Some(SourceSelectorKey::Source(source)) = result {
-                if let Some(index) = self
+            if let Some(SourceSelectorKey::Source(source)) = result
+                && let Some(index) = self
                     .sources
                     .iter()
                     .position(|candidate| *candidate == source)
-                {
-                    self.select_source(index);
-                }
+            {
+                self.select_source(index);
             }
             return AppAction::None;
         }
@@ -666,12 +665,12 @@ impl LeaderboardPage {
                 }
                 _ => return AppAction::None,
             }
-        } else if matches!(event.kind, MouseEventKind::Down(MouseButton::Left)) {
-            if let Some(target) = self.resize_target_at(event, &page) {
-                let committed = self.committed_ratio(target);
-                self.splitter.begin(target, committed);
-                return AppAction::None;
-            }
+        } else if matches!(event.kind, MouseEventKind::Down(MouseButton::Left))
+            && let Some(target) = self.resize_target_at(event, &page)
+        {
+            let committed = self.committed_ratio(target);
+            self.splitter.begin(target, committed);
+            return AppAction::None;
         }
 
         if self.selected_board.is_some() {
@@ -731,21 +730,21 @@ impl LeaderboardPage {
                     return AppAction::None;
                 }
 
-                if self.selected_board.is_some() {
-                    if let Some(index) = crate::pages::components::hit_test::row_at(
+                if self.selected_board.is_some()
+                    && let Some(index) = crate::pages::components::hit_test::row_at(
                         page.songs,
                         position,
                         self.song_scroll_offset,
                         self.songs.len(),
                         1,
-                    ) {
-                        self.selected = index;
-                        if activate {
-                            return AppAction::PlaySong {
-                                songs: self.songs.clone(),
-                                index,
-                            };
-                        }
+                    )
+                {
+                    self.selected = index;
+                    if activate {
+                        return AppAction::PlaySong {
+                            songs: self.songs.clone(),
+                            index,
+                        };
                     }
                 }
             }
@@ -1151,13 +1150,13 @@ impl LeaderboardPage {
             {
                 self.select_source(index);
             }
-            self.source_selector
-                .as_mut()
-                .map(|selector| selector.close());
-        } else if !selector.is_open() {
-            self.source_selector
-                .as_mut()
-                .map(|selector| selector.close());
+            if let Some(selector) = self.source_selector.as_mut() {
+                selector.close()
+            }
+        } else if !selector.is_open()
+            && let Some(selector) = self.source_selector.as_mut()
+        {
+            selector.close()
         }
     }
 

@@ -30,8 +30,6 @@ const MAX_DECODED_EDGE: u32 = 640;
 /// CPU 开销与瞬时大块分配；容量固定，不会无限增长。
 const DECODED_COVER_CACHE_CAP: usize = 8;
 
-/// 等待终端应答能力查询的超时上限
-
 /// 主线程发给解码线程的请求
 struct DecodeJob {
     path: String,

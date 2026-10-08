@@ -55,6 +55,9 @@ pub enum ApplicationCommand {
 }
 
 #[derive(Debug, Clone)]
+// PlaybackStarted 内联 SongInfo 是最大变体：事件只是经通道短暂流转的
+// 短命对象，装箱要波及所有构造与匹配点，尺寸收益不值得。
+#[allow(clippy::large_enum_variant)]
 pub enum ApplicationEvent {
     StateChanged(Box<crate::ApplicationState>),
     SearchStarted {

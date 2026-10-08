@@ -436,11 +436,10 @@ impl SyncOverlay {
                 }));
                 lines.push(Line::from(format!("进度  {done}/{total}")));
                 let width = inner.width.saturating_sub(4) as usize;
-                let filled = if total == 0 {
-                    0
-                } else {
-                    width.saturating_mul(done.min(total)) / total
-                };
+                let filled = width
+                    .saturating_mul(done.min(total))
+                    .checked_div(total)
+                    .unwrap_or_default();
                 lines.push(Line::from(format!(
                     "[{}{}]",
                     "#".repeat(filled),

@@ -484,10 +484,10 @@ impl MainPage {
         }
         let layout = self.compute_layout(area, ctx);
         if layout.wide {
-            if let Some(geometry) = layout.cover_geometry {
-                if layout.cover.height > 0 {
-                    self.render_cover(layout.cover, buf, ctx, geometry);
-                }
+            if let Some(geometry) = layout.cover_geometry
+                && layout.cover.height > 0
+            {
+                self.render_cover(layout.cover, buf, ctx, geometry);
             }
             super::components::lyric::render(layout.lyric, buf, ctx);
             self.render_queue(layout.queue, buf, ctx);
@@ -676,12 +676,12 @@ impl MainPage {
                 // Resize 会话期间其它鼠标事件不能穿透到队列，避免拖动时误触。
                 _ => return AppAction::None,
             }
-        } else if matches!(event.kind, MouseEventKind::Down(MouseButton::Left)) {
-            if let Some(target) = self.resize_target_at(event, &layout) {
-                let committed = self.committed_ratio(target);
-                self.splitter.begin(target, committed);
-                return AppAction::None;
-            }
+        } else if matches!(event.kind, MouseEventKind::Down(MouseButton::Left))
+            && let Some(target) = self.resize_target_at(event, &layout)
+        {
+            let committed = self.committed_ratio(target);
+            self.splitter.begin(target, committed);
+            return AppAction::None;
         }
 
         let queue_inner = panel_inner(layout.queue);

@@ -174,6 +174,34 @@ pub async fn sweep_in(dir: &Path, limit: usize, grace: Duration) {
     }
 }
 
+/// 缓存统计：`(文件数, 总字节)`；目录不存在时为 `(0, 0)`。
+pub fn cache_stats() -> (usize, u64) {
+    let dir = cache_dir();
+    let mut files = 0usize;
+    let mut bytes = 0u64;
+    for entry in walkdir::WalkDir::new(&dir)
+        .into_iter()
+        .filter_map(Result::ok)
+    {
+        if entry.file_type().is_file() {
+            files += 1;
+            bytes += entry.metadata().map(|m| m.len()).unwrap_or(0);
+        }
+    }
+    (files, bytes)
+}
+
+/// 清空缓存目录，返回 `(删除的文件数, 释放的字节)`。
+///
+/// 先统计再删除：删除失败时统计仍可用于日志；目录不存在视为已清理。
+pub fn clear_cache() -> std::io::Result<(usize, u64)> {
+    let stats = cache_stats();
+    if stats.0 > 0 {
+        std::fs::remove_dir_all(cache_dir())?;
+    }
+    Ok(stats)
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
@@ -345,32 +373,4 @@ mod tests {
         let file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
         file.set_modified(time).unwrap();
     }
-}
-
-/// 缓存统计：`(文件数, 总字节)`；目录不存在时为 `(0, 0)`。
-pub fn cache_stats() -> (usize, u64) {
-    let dir = cache_dir();
-    let mut files = 0usize;
-    let mut bytes = 0u64;
-    for entry in walkdir::WalkDir::new(&dir)
-        .into_iter()
-        .filter_map(Result::ok)
-    {
-        if entry.file_type().is_file() {
-            files += 1;
-            bytes += entry.metadata().map(|m| m.len()).unwrap_or(0);
-        }
-    }
-    (files, bytes)
-}
-
-/// 清空缓存目录，返回 `(删除的文件数, 释放的字节)`。
-///
-/// 先统计再删除：删除失败时统计仍可用于日志；目录不存在视为已清理。
-pub fn clear_cache() -> std::io::Result<(usize, u64)> {
-    let stats = cache_stats();
-    if stats.0 > 0 {
-        std::fs::remove_dir_all(cache_dir())?;
-    }
-    Ok(stats)
 }

@@ -28,10 +28,9 @@ mod visualizer;
 mod theme;
 mod tmux;
 
-use media_controls::{persist_volume, toggle_or_start_current};
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use media_controls::{current_media_snapshot, execute_media_command, start_media_controls};
-
+use media_controls::{persist_volume, toggle_or_start_current};
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -2044,7 +2043,7 @@ fn run_app(
                     continue;
                 }
                 AppAction::PushLocalPlaylist { playlist_id } => {
-                    let local = ctx.storage.custom_playlist(&playlist_id).map(|playlist| {
+                    let local = ctx.storage.custom_playlist(playlist_id).map(|playlist| {
                         crate::sync::LocalPushCollection {
                             name: playlist.name.clone(),
                             songs: playlist.songs.clone(),
@@ -4256,8 +4255,8 @@ fn run_app(
             } else if ui_areas.content.contains(position) {
                 // 表头左键拖动非分隔线区域 → 调整列顺序；分隔线仍交给页面自己的
                 // ColumnResizeState 处理，因此“拖边界改宽”和“拖表头换列”不冲突。
-                if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
-                    if let Some((header, _)) = table_header_and_samples(
+                if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
+                    && let Some((header, _)) = table_header_and_samples(
                         active_tab,
                         ui_areas.content,
                         &ctx,
@@ -4268,37 +4267,35 @@ fn run_app(
                         &search_page,
                         &history_filter,
                         &local_filter,
-                    ) && header.y == mouse.row
-                        && mouse.column >= header.x
-                        && mouse.column < header.right()
-                        && let Some(page_key) = column_page_key(active_tab)
-                    {
-                        // 用表头自身的宽度与起点：整块内容区宽度在主页面上包含
-                        // 左侧封面/歌词栏，会让边界判定错位，拖边界变成换列。
-                        let width = header.width;
-                        let columns = {
-                            let config = ctx.config.read().unwrap_or_else(|e| e.into_inner());
-                            pages::components::song_table::load_columns_for_page(
-                                &config.ui.table_columns,
-                                page_key,
-                                width,
-                            )
-                        };
-                        let local_x = mouse.column.saturating_sub(header.x);
-                        let is_boundary =
-                            pages::components::song_table::find_boundary(&columns, width, local_x)
-                                .is_some();
-                        if !is_boundary {
-                            if let Some(column) = column_at_x(&columns, width, local_x) {
-                                column_reorder = Some(ColumnReorderState {
-                                    page_key: page_key.to_string(),
-                                    column_key: column.key.clone(),
-                                    header,
-                                });
-                                needs_render = true;
-                                continue;
-                            }
-                        }
+                    )
+                    && header.y == mouse.row
+                    && mouse.column >= header.x
+                    && mouse.column < header.right()
+                    && let Some(page_key) = column_page_key(active_tab)
+                {
+                    // 用表头自身的宽度与起点：整块内容区宽度在主页面上包含
+                    // 左侧封面/歌词栏，会让边界判定错位，拖边界变成换列。
+                    let width = header.width;
+                    let columns = {
+                        let config = ctx.config.read().unwrap_or_else(|e| e.into_inner());
+                        pages::components::song_table::load_columns_for_page(
+                            &config.ui.table_columns,
+                            page_key,
+                            width,
+                        )
+                    };
+                    let local_x = mouse.column.saturating_sub(header.x);
+                    let is_boundary =
+                        pages::components::song_table::find_boundary(&columns, width, local_x)
+                            .is_some();
+                    if !is_boundary && let Some(column) = column_at_x(&columns, width, local_x) {
+                        column_reorder = Some(ColumnReorderState {
+                            page_key: page_key.to_string(),
+                            column_key: column.key.clone(),
+                            header,
+                        });
+                        needs_render = true;
+                        continue;
                     }
                 }
 

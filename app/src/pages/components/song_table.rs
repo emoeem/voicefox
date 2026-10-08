@@ -407,10 +407,11 @@ pub fn find_boundary(
     let layout = compute_layout(columns, total_width);
     for (i, rc) in layout.iter().enumerate() {
         let boundary_x = rc.start_x.saturating_add(rc.width);
-        if i < layout.len() - 1 {
-            if local_x >= boundary_x.saturating_sub(1) && local_x <= boundary_x.saturating_add(1) {
-                return Some(i);
-            }
+        if i < layout.len() - 1
+            && local_x >= boundary_x.saturating_sub(1)
+            && local_x <= boundary_x.saturating_add(1)
+        {
+            return Some(i);
         }
     }
     None

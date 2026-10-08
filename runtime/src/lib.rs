@@ -198,10 +198,10 @@ pub fn load_config() -> anyhow::Result<(Config, PathBuf)> {
     Ok((toml::from_str(&text).unwrap_or_default(), p))
 }
 fn expand_home(v: &str) -> PathBuf {
-    if let Some(r) = v.strip_prefix("~/") {
-        if let Some(h) = dirs::home_dir() {
-            return h.join(r);
-        }
+    if let Some(r) = v.strip_prefix("~/")
+        && let Some(h) = dirs::home_dir()
+    {
+        return h.join(r);
     }
     PathBuf::from(v)
 }
