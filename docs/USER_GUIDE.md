@@ -25,7 +25,7 @@ voicefox 是 Rust + ratatui + libmpv 构建的终端音乐播放器。当前 `vo
 - 列表循环、单曲循环、随机、顺序、播完停止。
 - A-B 循环、淡入、淡出、无缝切换。
 - 睡眠定时器：`t` 打开菜单选择 15~120 分钟，到点自动淡出并暂停播放；启用后底栏显示倒计时，选「关闭」取消。
-- 频谱可视化：`w` 开关柱状频谱（叠加在内容区，不阻塞操作）。采集系统输出监视流（cava 同款口径），需要 `pw-record`（PipeWire）或 `parec`（pulseaudio-utils）；`[ui] visualizer = "bars"` 可默认开启。
+- 频谱可视化：`w` 开关柱状频谱（叠加在内容区，不阻塞操作；无声音时显示待机基线）。采集系统输出监视流（cava 同款口径），需要 `parec`（pulseaudio-utils，PipeWire 桌面的 pipewire-pulse 同样提供）或 `pw-record`（PipeWire，兜底）；`[ui] visualizer = "bars"` 可默认开启。
 - 在线播放失败时支持跨音源/解析器回退。
 
 ## 歌词与下载

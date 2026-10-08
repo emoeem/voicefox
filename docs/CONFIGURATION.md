@@ -164,7 +164,7 @@ save_lyric = true            # 保存 .lrc 并内嵌歌词
 | `show_cover` | `true` | 显示封面 |
 | `cover_protocol` | `"auto"` | `auto` / `kitty` / `sixel` / `iterm2` / `halfblocks` |
 | `max_fps` | `20` | 渲染帧率上限 1-60 |
-| `visualizer` | `"off"` | 频谱可视化：`off` / `bars`。`bars` 采集系统输出监视流画柱状频谱（Linux，需要 pw-record 或 parec），`w` 键运行时切换 |
+| `visualizer` | `"off"` | 频谱可视化：`off` / `bars`。`bars` 采集系统输出监视流画柱状频谱（Linux，需要 parec（pulseaudio-utils / pipewire-pulse）或 pw-record），`w` 键运行时切换 |
 | `status_bar_items` | 全部字段 | 状态栏内容与顺序，见下表 |
 
 `status_bar_items` 支持以下字段：

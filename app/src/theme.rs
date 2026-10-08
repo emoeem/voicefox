@@ -55,7 +55,7 @@ fn library_theme(value: &str) -> Option<ThemeName> {
 /// 两个颜色按比例混合：`t = 0` 全取 `a`，`t = 1` 全取 `b`。
 ///
 /// 非 RGB 颜色（终端默认色 / ANSI 名）无法参与混合，原样返回 `a`。
-fn blend(a: Color, b: Color, t: f32) -> Color {
+pub(crate) fn blend(a: Color, b: Color, t: f32) -> Color {
     match (a, b) {
         (Color::Rgb(ar, ag, ab), Color::Rgb(br, bg, bb)) => {
             let mix = |x: u8, y: u8| {

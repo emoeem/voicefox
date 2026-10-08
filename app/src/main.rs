@@ -1564,6 +1564,26 @@ fn open_external_url(url: &str) {
 /// 两次自动重传封面之间的最小间隔，client-attached hook 可能连续触发，需要防抖
 const COVER_REDRAW_THROTTLE: Duration = Duration::from_secs(2);
 
+/// 启动频谱可视化采集；失败时记录日志并给出 TUI 提示，返回 None。
+/// 启动初始化（配置里默认开启）与按 w 切换共用这一条路径。
+fn start_visualizer(ctx: &AppContext) -> Option<visualizer::Visualizer> {
+    match visualizer::Visualizer::start() {
+        Ok(handle) => Some(handle),
+        Err(error) => {
+            tracing::warn!("visualizer unavailable: {error:#}");
+            ctx.notify(Notification::warning(format!("频谱可视化启动失败: {error:#}")).tui_only());
+            None
+        }
+    }
+}
+
+/// 把可视化开关落盘到 `[ui] visualizer`（off / bars）。写盘失败由调用方提示。
+fn persist_visualizer_mode(ctx: &AppContext, mode: &str) -> anyhow::Result<()> {
+    let mut config = ctx.config.write().unwrap_or_else(|e| e.into_inner());
+    config.ui.visualizer = mode.to_string();
+    crate::config::loader::save(&config, &ctx.config_path)
+}
+
 #[allow(unused_assignments)]
 fn run_app(
     terminal: &mut DefaultTerminal,
@@ -1681,26 +1701,19 @@ fn run_app(
     // 下载面板浮层（Ctrl+o 开关）
     let mut downloads_panel = pages::downloads::DownloadsPanel::new();
     // 频谱可视化：Some 即开启（绘制并持续采集），None 即关闭。按 w 切换。
-    let mut visualizer: Option<visualizer::Visualizer> = if ctx
+    let visualizer_enabled = ctx
         .config
         .read()
         .unwrap_or_else(|e| e.into_inner())
         .ui
-        .visualizer_enabled()
-    {
-        match visualizer::Visualizer::start() {
-            Ok(handle) => Some(handle),
-            Err(error) => {
-                tracing::warn!("visualizer unavailable: {error:#}");
-                ctx.notify(
-                    Notification::warning(format!("频谱可视化启动失败: {error:#}")).tui_only(),
-                );
-                None
-            }
-        }
+        .visualizer_enabled();
+    let mut visualizer: Option<visualizer::Visualizer> = if visualizer_enabled {
+        start_visualizer(&ctx)
     } else {
         None
     };
+    // 频谱叠加层的调色板缓存：主题不变时跨帧复用渐变（见 render.rs）。
+    let mut visualizer_palette = visualizer::PaletteCache::default();
     // 底栏高度拖拽会话：拖动中只改内存，松开才落盘（行数真值始终在 config 里）。
     let mut status_bar_resizing = false;
     let mut qr_poll_deadline: Instant = Instant::now();
@@ -2663,6 +2676,7 @@ fn run_app(
                 &mut sync_overlay,
                 &mut help_page,
                 &mut downloads_panel,
+                &mut visualizer_palette,
                 visualizer.as_ref(),
             )?;
             needs_render = false;
@@ -3227,29 +3241,23 @@ fn run_app(
                     // 频谱可视化：w 开关，状态落盘到 [ui] visualizer。
                     Action::GlobalVisualizer if !text_input_active => {
                         let enabling = visualizer.is_none();
-                        if enabling {
-                            match visualizer::Visualizer::start() {
-                                Ok(handle) => visualizer = Some(handle),
-                                Err(error) => {
-                                    ctx.notify(Notification::error(format!(
-                                        "频谱可视化启动失败: {error:#}"
-                                    )));
-                                }
-                            }
+                        visualizer = if enabling {
+                            start_visualizer(&ctx)
                         } else {
-                            visualizer = None;
+                            None
+                        };
+                        if !enabling {
+                            // 关闭频谱后必须让封面重新传图：开启期间每帧频谱都会
+                            // 覆盖封面图片行首那格（图形协议把整行转义序列塞在
+                            // 首列），kitty 会自动撤掉 placement，而协议状态仍记着
+                            // "已发送"不会重发，不重传则封面区域留空。
+                            retransmit_cover(terminal, &mut main_page)?;
                         }
                         if visualizer.is_some() == enabling {
                             let mode = if enabling { "bars" } else { "off" };
-                            let save_result = {
-                                let mut config =
-                                    ctx.config.write().unwrap_or_else(|e| e.into_inner());
-                                config.ui.visualizer = mode.to_string();
-                                crate::config::loader::save(&config, &ctx.config_path)
-                            };
                             let message =
                                 format!("频谱可视化: {}", if enabling { "开启" } else { "关闭" });
-                            match save_result {
+                            match persist_visualizer_mode(&ctx, mode) {
                                 Ok(()) => ctx.notify(Notification::info(message)),
                                 Err(error) => ctx.notify(Notification::warning(format!(
                                     "{message}，但保存失败: {error}"
@@ -4536,6 +4544,7 @@ fn run_app(
                 &mut sync_overlay,
                 &mut help_page,
                 &mut downloads_panel,
+                &mut visualizer_palette,
                 visualizer.as_ref(),
             )?;
             needs_render = false;
@@ -4569,6 +4578,7 @@ fn draw_app(
     sync_overlay: &mut Option<pages::sync_overlay::SyncOverlay>,
     help_page: &mut Option<pages::help::HelpPage>,
     downloads_panel: &mut pages::downloads::DownloadsPanel,
+    visualizer_palette: &mut visualizer::PaletteCache,
     visualizer: Option<&visualizer::Visualizer>,
 ) -> anyhow::Result<()> {
     terminal.draw(|frame| {
@@ -4959,6 +4969,7 @@ fn draw_app(
                 main_chunks[2],
                 frame.buffer_mut(),
                 ctx,
+                visualizer_palette.palette(ctx),
                 &snapshot.data,
                 &snapshot.peaks,
             );
