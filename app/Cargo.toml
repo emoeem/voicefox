@@ -51,6 +51,12 @@ zbus = { version = "5", default-features = false, features = ["tokio"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 souvlaki = { version = "0.8", default-features = false }
+objc2 = "0.6"
+objc2-core-foundation = { version = "0.3", default-features = false, features = [
+    "std",
+    "CFDate",
+    "CFRunLoop",
+] }
 
 [target.'cfg(windows)'.dependencies]
 winrt-toast = "0.1.1"

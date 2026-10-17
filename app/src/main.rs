@@ -2709,6 +2709,12 @@ fn run_app(
             needs_render = false;
         }
 
+        // macOS Now Playing 的回调投递在主队列，主线程只能在这里顺手处理。
+        #[cfg(target_os = "macos")]
+        if media_handle.is_some() {
+            nowplaying::pump_main_run_loop();
+        }
+
         // === 2. 事件驱动：轮询终端事件 ===
         // 轮询超时不能长于一帧：50ms 会让实际刷新率钳在 ~20fps，
         // max_fps 配置形同虚设。

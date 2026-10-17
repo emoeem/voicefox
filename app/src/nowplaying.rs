@@ -5,11 +5,19 @@
 //! Linux MPRIS / Windows SMTC 共用；这里只做协议翻译 —— 在专属线程上构造
 //! `MediaControls` 并循环应用最新快照。
 //!
-//! 注意：souvlaki 的 macOS 后端要求进程存在 AppKit 运行环境。终端直跑
-//! （非 .app bundle）时控件通常仍可用，但系统可能不显示应用名。
+//! 注意：MPRemoteCommandCenter 的回调投递在主队列，必须有人处理主 run loop；
+//! souvlaki 的所有接口却无条件返回 `Ok`，没人处理时只会静默失效。voicefox
+//! 的主线程跑的是 TUI 主循环，因此由主循环每轮调用 [`pump_main_run_loop`]
+//! 非阻塞地处理一次主 run loop / 主队列。
+//!
+//! 刻意不初始化 `NSApplication`：那会让进程登记为 GUI 应用，而没有 AppKit
+//! 事件循环处理退出等 Apple Event 时，「退出」请求与注销都会被卡住。
 
 use std::time::Duration;
 
+use objc2::MainThreadMarker;
+use objc2::rc::autoreleasepool;
+use objc2_core_foundation::{CFRunLoop, kCFRunLoopDefaultMode};
 use souvlaki::{MediaControls, MediaMetadata, MediaPlayback, MediaPosition, PlatformConfig};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tracing::warn;
@@ -65,15 +73,19 @@ fn run_worker(
             latest = Some(snapshot);
         }
         if let Some(snapshot) = latest {
-            let metadata_changed = applied
-                .as_ref()
-                .is_none_or(|previous| previous.metadata_changed(&snapshot));
-            if metadata_changed {
-                apply_metadata(&mut controls, &snapshot);
-            }
-            if applied.as_ref() != Some(&snapshot) {
-                apply_playback(&mut controls, &snapshot);
-            }
+            // souvlaki 每次更新都会创建 autoreleased 的 NSDictionary，而本线程
+            // 永不退出，必须逐轮排空 pool，否则对象会一直积累。
+            autoreleasepool(|_| {
+                let metadata_changed = applied
+                    .as_ref()
+                    .is_none_or(|previous| previous.metadata_changed(&snapshot));
+                if metadata_changed {
+                    apply_metadata(&mut controls, &snapshot);
+                }
+                if applied.as_ref() != Some(&snapshot) {
+                    apply_playback(&mut controls, &snapshot);
+                }
+            });
             applied = Some(snapshot);
         }
         std::thread::sleep(PUMP_INTERVAL);
@@ -111,4 +123,20 @@ fn apply_playback(controls: &mut MediaControls, snapshot: &MediaSnapshot) {
 
 fn position(snapshot: &MediaSnapshot) -> Duration {
     Duration::from_micros(snapshot.position_micros.max(0) as u64)
+}
+
+/// 非阻塞地处理一次主 run loop（含主队列），由主线程的 TUI 主循环每轮调用。
+/// 媒体键回调的延迟因此不超过主循环的一轮。
+pub fn pump_main_run_loop() {
+    debug_assert!(
+        MainThreadMarker::new().is_some(),
+        "main run loop must be pumped from the main thread"
+    );
+    // seconds = 0：只处理已就绪的源后立即返回，不阻塞 TUI。
+    // 没有 -[NSApplication run] 就没有逐轮的 autorelease pool，需自行包裹，
+    // 否则回调中产生的 autoreleased 对象会一直积累。
+    autoreleasepool(|_| {
+        // SAFETY: kCFRunLoopDefaultMode 是 CoreFoundation 导出的常量，进程内始终有效。
+        CFRunLoop::run_in_mode(unsafe { kCFRunLoopDefaultMode }, 0.0, false);
+    });
 }
