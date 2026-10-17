@@ -2,9 +2,14 @@
 
 use lx_core::events::Notification;
 
-#[cfg(windows)]
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "macos")]
+pub use macos::run_if_helper;
+
+#[cfg(any(windows, target_os = "macos"))]
 type DesktopSender = std::sync::mpsc::Sender<Notification>;
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 type DesktopSender = tokio::sync::mpsc::UnboundedSender<Notification>;
 
 #[derive(Clone)]
@@ -14,9 +19,9 @@ pub struct DesktopNotifier {
 
 impl DesktopNotifier {
     pub fn new() -> Self {
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         let (tx, rx) = std::sync::mpsc::channel();
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "macos")))]
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         spawn_desktop_worker(rx);
         Self { tx }
@@ -294,7 +299,17 @@ fn windows_info_flags() -> u32 {
     NIIF_USER | NIIF_LARGE_ICON | NIIF_RESPECT_QUIET_TIME
 }
 
-#[cfg(all(not(target_os = "linux"), not(windows)))]
+#[cfg(target_os = "macos")]
+fn spawn_desktop_worker(rx: std::sync::mpsc::Receiver<Notification>) {
+    if let Err(error) = std::thread::Builder::new()
+        .name("desktop-notification".to_string())
+        .spawn(move || macos::run_worker(rx))
+    {
+        tracing::warn!("desktop notification worker failed to start: {error}");
+    }
+}
+
+#[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
 fn spawn_desktop_worker(mut rx: tokio::sync::mpsc::UnboundedReceiver<Notification>) {
     tokio::spawn(async move { while rx.recv().await.is_some() {} });
 }
@@ -343,7 +358,7 @@ async fn send_linux_notification(
         .await
 }
 
-#[cfg(any(target_os = "linux", windows, test))]
+#[cfg(any(target_os = "linux", windows, target_os = "macos", test))]
 fn notification_title(notification: &Notification) -> String {
     notification
         .title
@@ -351,7 +366,7 @@ fn notification_title(notification: &Notification) -> String {
         .unwrap_or_else(|| level_title(notification))
 }
 
-#[cfg(any(target_os = "linux", windows, test))]
+#[cfg(any(target_os = "linux", windows, target_os = "macos", test))]
 fn level_title(notification: &Notification) -> String {
     use lx_core::events::NotificationLevel;
 

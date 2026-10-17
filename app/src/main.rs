@@ -1407,6 +1407,10 @@ fn execute_song_menu_action(
 }
 
 fn main() -> anyhow::Result<()> {
+    // 通知 helper 与主程序共用二进制，必须先于 CLI 解析分流。
+    #[cfg(target_os = "macos")]
+    notification::run_if_helper();
+
     tmux::prepare_ratatui_image_environment();
 
     // 解析 CLI

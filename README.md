@@ -69,13 +69,24 @@ Release 提供包含 `voicefox.exe` 与 `libmpv-2.dll` 的压缩包。
 
 ### Linux
 
+Release 提供仅包含 `voicefox` 可执行文件的压缩包。
+
 需要 `libmpv`：Arch 可 `sudo pacman -S mpv`，Debian/Ubuntu 可 `sudo apt install libmpv-dev`。
 
 ### macOS
 
+Release 提供仅包含 `voicefox` 可执行文件的压缩包。
+
+如通过浏览器下载，确保在校验文件完整性后去除 `com.apple.quarantine` 属性：
+
+```bash
+xattr -d com.apple.quarantine /path/to/voicefox
+```
+
+需要 `libmpv`，可通过 brew 安装：
+
 ```bash
 brew install mpv
-cargo build --release
 ```
 
 ## 从源码构建
