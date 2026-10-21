@@ -37,7 +37,7 @@ ratatui-image = { version = "11", default-features = false, features = [
 ] }
 
 # HTTP
-reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", features = ["json"] }
 
 # Crypto
 md-5 = "0.10"
