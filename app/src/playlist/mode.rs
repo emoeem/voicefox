@@ -58,7 +58,7 @@ impl PlayMode {
         }
     }
 
-    /// 计算下一首索引
+    /// 计算下一首索引。随机模式的顺序由调度器决定，此处返回 None。
     pub fn next_index(&self, current: usize, total: usize) -> Option<usize> {
         if total == 0 {
             return None;
@@ -73,63 +73,29 @@ impl PlayMode {
                 }
             }
             PlayMode::SingleLoop => Some(current),
-            PlayMode::Random => {
-                let seed = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .subsec_nanos() as usize;
-                let mut next = seed % total;
-                if total > 1 && next == current {
-                    next = (next + 1) % total;
-                }
-                Some(next)
-            }
-            PlayMode::None => None,
+            PlayMode::Random | PlayMode::None => None,
         }
     }
 
-    /// 计算上一首索引
-    pub fn prev_index(&self, current: usize, total: usize) -> Option<usize> {
-        if total == 0 {
-            return None;
-        }
-        match self {
-            PlayMode::ListLoop | PlayMode::List => Some((current + total - 1) % total),
-            PlayMode::SingleLoop => Some(current),
-            PlayMode::Random => {
-                let seed = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .subsec_nanos() as usize;
-                let mut previous = seed % total;
-                if total > 1 && previous == current {
-                    previous = (previous + total - 1) % total;
-                }
-                Some(previous)
-            }
-            PlayMode::None => None,
-        }
-    }
-
-    /// 用户主动切换下一首。单曲循环只约束自然播放结束，不拦截手动切歌。
+    /// 用户主动切换下一首。单曲循环只约束自然播放结束，不拦截手动切歌。随机模式返回 None。
     pub fn manual_next_index(&self, current: usize, total: usize) -> Option<usize> {
         if total == 0 {
             return None;
         }
         match self {
-            PlayMode::Random => self.next_index(current, total),
+            PlayMode::Random => None,
             PlayMode::ListLoop | PlayMode::SingleLoop => Some((current + 1) % total),
             PlayMode::List | PlayMode::None => (current + 1 < total).then_some(current + 1),
         }
     }
 
-    /// 用户主动切换上一首。
+    /// 用户主动切换上一首。随机模式返回 None。
     pub fn manual_prev_index(&self, current: usize, total: usize) -> Option<usize> {
         if total == 0 {
             return None;
         }
         match self {
-            PlayMode::Random => self.prev_index(current, total),
+            PlayMode::Random => None,
             PlayMode::ListLoop | PlayMode::SingleLoop => Some((current + total - 1) % total),
             PlayMode::List | PlayMode::None => current.checked_sub(1),
         }

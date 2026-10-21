@@ -4734,6 +4734,7 @@ dependencies = [
  "objc2-user-notifications",
  "palette",
  "qrcode",
+ "rand 0.8.7",
  "ratatui",
  "ratatui-image",
  "ratatui-themes",

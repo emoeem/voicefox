@@ -193,6 +193,11 @@ impl AppContext {
             tokio::runtime::Handle::current(),
         ));
         let storage = Arc::new(Storage::new());
+        if let Some(state) = storage.load_shuffle_state()
+            && !playlist.restore_shuffle(state)
+        {
+            tracing::warn!("shuffle state version mismatch, starting from an empty state");
+        }
         storage.trim_history(config.player.history_limit);
 
         let player_state = player.state_watcher();
@@ -336,6 +341,13 @@ impl AppContext {
     }
 
     pub fn persist_playback_session(&self) -> Result<(), String> {
+        // 随机播放状态是跨队列的全局状态，不受"记住播放状态"开关约束
+        if let Some((revision, state)) = self.playlist.shuffle_state_for_save() {
+            match self.storage.save_shuffle_state(&state) {
+                Ok(()) => self.playlist.mark_shuffle_saved(revision),
+                Err(error) => tracing::warn!("save shuffle state failed: {error}"),
+            }
+        }
         if !self
             .config
             .read()

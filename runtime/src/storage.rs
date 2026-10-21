@@ -1078,6 +1078,26 @@ impl Storage {
         }
     }
 
+    /// 读取随机播放调度器状态。文件不存在时返回 None，解析失败时隔离该文件后返回 None。
+    pub fn load_shuffle_state<T: DeserializeOwned>(&self) -> Option<T> {
+        let path = self.data_dir.join("shuffle_state.json");
+        let json = fs::read_to_string(&path).ok()?;
+        match serde_json::from_str(&json) {
+            Ok(state) => Some(state),
+            Err(error) => {
+                tracing::warn!("随机播放状态解析失败，已隔离该文件: {error}");
+                Self::quarantine_corrupt_file(&path, &error.to_string());
+                None
+            }
+        }
+    }
+
+    pub fn save_shuffle_state<T: Serialize>(&self, state: &T) -> Result<(), String> {
+        let path = self.data_dir.join("shuffle_state.json");
+        let json = serde_json::to_vec(state).map_err(|error| error.to_string())?;
+        save_atomic_relaxed(&path, &json)
+    }
+
     /// 把解析失败的数据文件改名保留现场，避免随后一次保存用空数据覆盖原文件。
     fn quarantine_corrupt_file(path: &Path, reason: &str) {
         let timestamp = std::time::SystemTime::now()
@@ -1840,6 +1860,25 @@ mod tests {
             .filter_map(Result::ok)
             .any(|entry| entry.file_name().to_string_lossy().contains(".corrupt-"));
         assert!(quarantined, "应当留下 .corrupt-* 现场文件");
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn shuffle_state_round_trips_and_corrupt_files_are_quarantined() {
+        let data_dir = temp_dir("shuffle-state");
+        let storage = storage_at(&data_dir);
+        assert!(storage.load_shuffle_state::<Vec<u64>>().is_none());
+
+        storage.save_shuffle_state(&vec![1_u64, 2, 3]).unwrap();
+        assert_eq!(
+            storage.load_shuffle_state::<Vec<u64>>(),
+            Some(vec![1, 2, 3])
+        );
+
+        let path = data_dir.join("shuffle_state.json");
+        std::fs::write(&path, b"{ this is not json").unwrap();
+        assert!(storage.load_shuffle_state::<Vec<u64>>().is_none());
+        assert!(!path.exists());
         let _ = std::fs::remove_dir_all(data_dir);
     }
 

@@ -79,7 +79,7 @@ pub fn is_local_file_song(song: &SongInfo) -> bool {
 ///
 /// 覆盖全部已接入内置实现的平台；脚本侧的平台标记以各家 user API 的
 /// 惯用写法为准，`SourceId::as_str` 之外列的是常见别名。
-fn builtin_source_for_js(song: &SongInfo) -> Option<SourceId> {
+pub fn builtin_source_for_js(song: &SongInfo) -> Option<SourceId> {
     if song.source != SourceId::Local {
         return None;
     }

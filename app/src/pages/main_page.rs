@@ -846,12 +846,19 @@ impl MainPage {
             ctx.cover_service.clear();
             ctx.lyric_service.clear();
             *ctx.current_song.write().unwrap_or_else(|e| e.into_inner()) = None;
-            AppAction::None
-        } else {
-            AppAction::PlaySong {
-                songs: remaining.to_vec(),
-                index: next,
+            return AppAction::None;
+        }
+        // 随机模式下由调度器选出接替的歌，其余模式播放原位置的下一首
+        if ctx.playlist.mode() == crate::playlist::mode::PlayMode::Random {
+            drop(remaining);
+            if let Some((songs, index)) = ctx.playlist.next_manual_entry_arc() {
+                return AppAction::PlayFromQueue { songs, index };
             }
+            return AppAction::None;
+        }
+        AppAction::PlaySong {
+            songs: remaining.to_vec(),
+            index: next,
         }
     }
 

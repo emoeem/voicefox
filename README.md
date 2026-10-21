@@ -16,7 +16,7 @@ voicefox 将多音源音乐搜索、在线播放、本地音乐库、歌词、�
 - 本地音乐扫描、标签、封面、歌词、CUE 分轨与文件诊断
 - 收藏、历史、自建歌单、排行榜、热门歌单
 - Kitty / Sixel / iTerm2 封面协议与 Unicode fallback
-- Linux D-Bus/MPRIS、Windows SMTC 媒体键与桌面提示路径
+- Linux D-Bus/MPRIS、Windows SMTC、macOS Now Playing 媒体键与桌面提示路径
 - lx-music 兼容 JS 自定义音源
 - 可配置快捷键与运行时帮助
 - 跨音源歌单/收藏同步：Diff 预览、双向增量、持久化歌单映射与未匹配提示

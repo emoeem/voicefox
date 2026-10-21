@@ -19,6 +19,7 @@ lx-lyric = { path = "../lyric" }
 voicefox-runtime = { path = "../runtime", default-features = false }
 
 tokio.workspace = true
+rand.workspace = true
 ratatui.workspace = true
 realfft.workspace = true
 ratatui-themes.workspace = true

@@ -67,6 +67,14 @@ pub enum AppAction {
         songs: Arc<Vec<SongInfo>>,
         index: usize,
     },
+    /// 队列中的 `replaced` 在开始播放前展开为分 P 后继续播放。
+    /// `index` 处的歌接替 `replaced` 已登记的这次播放，不算新的点歌。
+    PlayExpandedFromQueue {
+        songs: Vec<SongInfo>,
+        index: usize,
+        replaced: Box<SongInfo>,
+        after_failure: bool,
+    },
     /// Resolve a search-result Bilibili video before playback; multi-part videos open a picker.
     ResolveBiliParts {
         songs: Vec<SongInfo>,
