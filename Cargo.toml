@@ -29,12 +29,17 @@ realfft = "3"
 ratatui-themes = "0.3"
 crossterm = "0.29"
 unicode-width = "0.2"
-image = { version = "0.25", default-features = false, features = ["default-formats"] }
-palette = "0.7"
-ratatui-image = { version = "11", default-features = false, features = [
-    "image-defaults",
-    "crossterm",
+image = { version = "0.25", default-features = false, features = [
+    "jpeg",
+    "png",
+    "webp",
+    "gif",
+    "bmp",
+    "tiff",
+    "qoi",
 ] }
+palette = "0.7"
+ratatui-image = { version = "11", default-features = false, features = ["crossterm"] }
 
 # HTTP
 reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
