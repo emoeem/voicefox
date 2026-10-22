@@ -77,6 +77,7 @@ accent_follow_cover = "strong"
 aggregate_search = true
 show_cover = true
 cover_protocol = "auto"     # auto / kitty / sixel / iterm2 / halfblocks
+                           # auto 在启动时向终端查询支持的图形协议
                            # 设置页「界面」分类里选中「封面协议」按 Enter，或按 Shift+P 循环切换
 max_fps = 20                # 1-60，越小越省电
 # 底部状态栏高度：1（默认）..6。把 status_bar_items 全开、想一眼看到所有

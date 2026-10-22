@@ -39,6 +39,15 @@ fn is_passthrough_from(tmux_present: bool, term: Option<&str>, term_program: Opt
         || term_program == Some("tmux")
 }
 
+/// 经 passthrough 发出的查询能否得到外层终端的应答
+///
+/// allow-passthrough 选项需要 tmux 3.3 及以上，且 session 须有已连接的 client。
+pub fn passthrough_available() -> bool {
+    tmux(&["show", "-pvA", "allow-passthrough"])
+        && tmux_output(&["display", "-p", "#{session_attached}"])
+            .is_some_and(|attached| attached.trim().parse::<u32>().is_ok_and(|count| count > 0))
+}
+
 pub struct AttachWatcher {
     session: String,
     hook: String,
@@ -147,6 +156,20 @@ fn tmux(args: &[&str]) -> bool {
         .stderr(Stdio::null())
         .status()
         .is_ok_and(|status| status.success())
+}
+
+/// 执行一条 tmux 命令，返回成功时的标准输出
+fn tmux_output(args: &[&str]) -> Option<String> {
+    let output = Command::new("tmux")
+        .args(args)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 #[cfg(test)]

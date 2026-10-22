@@ -50,6 +50,8 @@ enum Done {
 
 pub struct CoverRenderer {
     picker: Picker,
+    /// 字号是否来自终端应答
+    queried_font_size: bool,
     enabled: bool,
     /// 最新的解码请求；新请求会覆盖尚未开始的旧请求
     decode_pending: Arc<Mutex<Option<DecodeJob>>>,
@@ -70,59 +72,25 @@ pub struct CoverRenderer {
 }
 
 impl CoverRenderer {
-    /// 按配置创建渲染器；仅在启用封面且协议为 auto 时探测终端
+    /// 按配置创建渲染器，仅在启用封面且协议为 auto 时探测终端
     ///
     /// 自动探测会发送查询序列并直接读取 stdin，只能在事件循环启动前调用一次。
     pub fn detect(cover_protocol: &str, cover_enabled: bool) -> Self {
-        let configured = parse_protocol(cover_protocol);
-        let picker = match (configured, cover_enabled) {
-            (Some(protocol), _) => {
-                let corrected = corrected_protocol(
-                    protocol,
-                    kitty_signal(
-                        std::env::var("KITTY_WINDOW_ID").ok().as_deref(),
-                        std::env::var("TERM").ok().as_deref(),
-                    ),
-                );
-                if corrected != protocol {
+        let (picker, queried_font_size) = match (parse_protocol(cover_protocol), cover_enabled) {
+            (Some(protocol), _) => (picker_for_protocol(protocol), false),
+            (None, false) => (Picker::halfblocks(), false),
+            (None, true) => {
+                if !is_auto(cover_protocol) {
                     tracing::warn!(
-                        "ui.cover_protocol = {} 在本终端不被支持，已改用 {}",
-                        protocol_label(protocol),
-                        protocol_label(corrected)
+                        "unknown ui.cover_protocol {cover_protocol:?}, falling back to auto"
                     );
                 }
-                picker_for_protocol(corrected)
+                query_picker()
             }
-            (None, false) => Picker::halfblocks(),
-            (None, true) => match protocol_from_env(
-                std::env::var("KITTY_WINDOW_ID").ok().as_deref(),
-                std::env::var("TERM").ok().as_deref(),
-                std::env::var("TERM_PROGRAM").ok().as_deref(),
-                // tmux 用 $TMUX、screen 用 $STY：它们会吞掉或**原样打印**图形序列
-                std::env::var("TMUX")
-                    .ok()
-                    .or_else(|| std::env::var("STY").ok())
-                    .as_deref(),
-            ) {
-                Some(protocol) => picker_for_protocol(protocol),
-                None => {
-                    // 环境无法**正向确认**终端支持图像协议 → 保守用半格。
-                    //
-                    // 这里刻意不再调用 `Picker::from_query_stdio*`：它要发查询并直接读 stdin，
-                    // 对回显/中转极其敏感——0.3.19 及之前曾在 auto 分支发过查询，实测
-                    // （120x36 裸 pty, TERM=xterm-256color）会得出 kitty，
-                    // 强制 sixel 时单个封面载荷达 227157 字节、98.8% 是可打印 ASCII ——
-                    // 一旦选中的协议终端其实不支持，这些字节会被当文本打印、刷满整屏。
-                    // 误判的代价是"满屏花屏"，保守的代价只是封面用半格渲染，因此不确定就保守。
-                    tracing::info!(
-                        "cover protocol auto → halfblocks（终端未被正向识别；需要图像可显式设 ui.cover_protocol）"
-                    );
-                    Picker::halfblocks()
-                }
-            },
         };
 
         let mut renderer = Self::spawn(picker);
+        renderer.queried_font_size = queried_font_size;
         // 记录 ioctl 的基准读数
         renderer.refresh_font_size();
         tracing::info!(
@@ -147,6 +115,7 @@ impl CoverRenderer {
 
         Self {
             protocol: ThreadProtocol::new(encode_tx, None),
+            queried_font_size: false,
             picker,
             enabled,
             decode_pending,
@@ -231,9 +200,8 @@ impl CoverRenderer {
             {
                 return false;
             }
-            // 第一次读取时保留 Picker 查询到的字号
-            // capabilities 非空说明字号来自终端应答，ratatui-image 未文档化此关系
-            None if !self.picker.capabilities().is_empty() => return false,
+            // 第一次读取时保留终端应答的字号
+            None if self.queried_font_size => return false,
             _ => {}
         }
         tracing::debug!("cell size is now {font_size:?}");
@@ -400,6 +368,31 @@ fn picker_for_protocol(protocol: ProtocolType) -> Picker {
     picker
 }
 
+/// 向终端查询图形能力并构造 Picker，同时返回字号是否来自终端应答
+fn query_picker() -> (Picker, bool) {
+    // tmux 中的查询经 passthrough 发给外层终端，外层终端无法应答时跳过查询以免等满时限
+    if crate::tmux::is_passthrough() && !crate::tmux::passthrough_available() {
+        tracing::info!("tmux passthrough unavailable, skip cover protocol query");
+        return (Picker::halfblocks(), false);
+    }
+    let (picker, queried_font_size) = match super::probe::query() {
+        Some(result) => {
+            // 在本进程重建 Picker，tmux 包装由构造时的环境检测决定
+            #[allow(deprecated)]
+            let mut picker = Picker::from_fontsize(result.font_size);
+            picker.set_protocol_type(result.protocol);
+            (picker, result.queried_font_size)
+        }
+        None => (Picker::halfblocks(), false),
+    };
+    if picker.protocol_type() == ProtocolType::Halfblocks {
+        tracing::info!(
+            "no graphics protocol detected, set ui.cover_protocol to kitty / sixel / iterm2 to force one"
+        );
+    }
+    (picker, queried_font_size)
+}
+
 fn decode(path: &str) -> Option<image::DynamicImage> {
     match image::ImageReader::open(path)
         .and_then(|reader| reader.with_guessed_format())
@@ -441,50 +434,17 @@ fn shrink(image: image::DynamicImage) -> image::DynamicImage {
     image.resize(MAX_DECODED_EDGE, MAX_DECODED_EDGE, FilterType::Triangle)
 }
 
-/// 解析配置里的 ui.cover_protocol，None 表示由终端探测决定
-/// 环境是否明确是 kitty 终端。
-fn kitty_signal(kitty_window_id: Option<&str>, term: Option<&str>) -> bool {
-    kitty_window_id.is_some_and(|value| !value.trim().is_empty())
-        || term.is_some_and(|value| value.to_ascii_lowercase().contains("kitty"))
-}
-
-/// 核对显式配置与环境是否**不可能成立**。
+/// 本终端上能画出图的封面协议
 ///
-/// kitty 终端只实现自己的 kitty 图形协议：既不支持 sixel，**也不支持 iTerm2 的
-/// `OSC 1337;File=`**（那是 iTerm2 / WezTerm 一类的扩展）。两种配错的表现不同：
-///
-/// - `sixel` 配错：整幅载荷被当文本打印（实测单个封面 227157 字节、98.8% 可打印
-///   ASCII → 满屏 `?`）；
-/// - `iterm2` 配错：kitty 直接**丢弃**该序列，封面区域什么都不画 —— 因为
-///   `has_image` 为真、占位文字被跳过，用户只看到一个空框，最难自查。
-///
-/// 这两种组合都能由环境确定"配错了"，因此纠正为 kitty 协议并告警；其它组合一律
-/// 尊重用户显式配置。
-fn corrected_protocol(protocol: ProtocolType, in_kitty: bool) -> ProtocolType {
-    match (protocol, in_kitty) {
-        (ProtocolType::Sixel | ProtocolType::Iterm2, true) => ProtocolType::Kitty,
-        (protocol, _) => protocol,
-    }
-}
-
-/// 本终端上"哪些封面协议真的能画出图"的**唯一判定点**。
-///
-/// 之前只有"发送前纠正"（[`corrected_protocol`]）：配置写错会被静默换成可用协议，
-/// 但设置页的 `Shift+P` 仍然把画不出来的选项摆在循环里，用户会一直选到空框。
-/// 现在把环境探测结果收敛成这个类型，两处都从它取答案：
-///
-/// - **运行期**：`CoverRenderer::detect` 用它决定真正使用的协议（配错则纠正 + 告警）；
-/// - **界面**：设置页的 `Shift+P` 循环按 [`Self::supported`] 跳过画不出的协议，
-///   并在行内显示"配置值与生效值不一致"的原因。
-///
-/// 注意它**不发查询、不读 stdin**（只读环境变量），因此可以随时构造。
+/// 由启动时确定的协议推出，设置页的 `Shift+P` 循环据此跳过画不出的协议，
+/// 并在行内显示生效的协议。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CoverCapabilities {
     /// 固定顺序的候选（用于循环切换与展示）
     supported: &'static [ProtocolType],
     /// 本次实际生效的协议
     active: ProtocolType,
-    /// 环境正向识别出的协议；`None` 表示认不出（半块字符兜底）。
+    /// 探测到的图形协议，`None` 表示未探测或只能用半格
     detected: Option<ProtocolType>,
 }
 
@@ -497,24 +457,20 @@ impl CoverCapabilities {
         ProtocolType::Halfblocks,
     ];
 
-    /// 只做环境探测（与 `detect` 同一口径），不做任何 IO。
-    pub fn detect(active: ProtocolType) -> Self {
-        let detected = protocol_from_env(
-            std::env::var("KITTY_WINDOW_ID")
-                .ok()
-                .or_else(|| std::env::var("KITTY_PID").ok())
-                .as_deref(),
-            std::env::var("TERM").ok().as_deref(),
-            std::env::var("TERM_PROGRAM").ok().as_deref(),
-            std::env::var("TMUX")
-                .ok()
-                .or_else(|| std::env::var("STY").ok())
-                .as_deref(),
-        );
+    /// 由启动时确定的协议推出能力，未经探测时不限制可选的协议
+    pub fn detect(active: ProtocolType, probed: bool) -> Self {
+        if !probed {
+            return Self {
+                supported: &Self::CYCLE,
+                active,
+                detected: None,
+            };
+        }
+        let detected = (active != ProtocolType::Halfblocks).then_some(active);
         Self::from_detected(detected, active)
     }
 
-    /// 纯函数版本（可测）：`detected` 为环境正向识别出的协议，`None` 表示认不出。
+    /// `detected` 为探测到的图形协议，`None` 表示只能用半格
     pub fn from_detected(detected: Option<ProtocolType>, active: ProtocolType) -> Self {
         // 认不出终端时只有 halfblocks 敢保证画得出来（不发送任何图形序列）。
         let supported: &'static [ProtocolType] = match detected {
@@ -606,49 +562,6 @@ pub fn protocol_label(protocol: ProtocolType) -> &'static str {
     }
 }
 
-/// 由环境变量**正向**识别终端支持的图像协议。
-///
-/// 只认能确定的情况：认不出来就返回 `None`，由调用方退到 `halfblocks`。
-/// 抽成纯函数是为了能测（不依赖真实环境变量）。
-fn protocol_from_env(
-    kitty_window_id: Option<&str>,
-    term: Option<&str>,
-    term_program: Option<&str>,
-    multiplexer: Option<&str>,
-) -> Option<ProtocolType> {
-    // 多路复用器优先级最高：`$TMUX`/`$STY` 会从外层终端**继承**（`KITTY_WINDOW_ID`、
-    // `TERM_PROGRAM` 因此在 tmux/ssh 里也可能"假的为真"）。图形序列要穿过 tmux 需要
-    // >=3.3 且 `allow-passthrough on`，screen 完全不支持，而这里无法确认 —— 一旦猜错，
-    // 整套载荷会被原样当文本打印（实测 kitty 协议每帧重发，6 秒即约 1MB 垃圾）。
-    // 代价对比：猜错=满屏花屏，保守=封面用半格渲染。所以有复用器就保守。
-    if multiplexer.is_some_and(|value| !value.trim().is_empty()) {
-        return None;
-    }
-    if kitty_signal(kitty_window_id, term) {
-        return Some(ProtocolType::Kitty);
-    }
-    if let Some(term) = term {
-        let term = term.to_ascii_lowercase();
-        if term.contains("kitty") {
-            return Some(ProtocolType::Kitty);
-        }
-        // foot / contour / mlterm / yaft 等以 TERM 直接声明 sixel
-        if term.contains("sixel") || term.starts_with("foot") || term.starts_with("contour") {
-            return Some(ProtocolType::Sixel);
-        }
-    }
-    match term_program
-        .unwrap_or_default()
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "iterm.app" => Some(ProtocolType::Iterm2),
-        // WezTerm 实现了 kitty 图形协议
-        "wezterm" => Some(ProtocolType::Kitty),
-        _ => None,
-    }
-}
-
 /// 把配置里的 `ui.cover_protocol` 文案解析成协议；`auto`/空/未知都返回 `None`。
 ///
 /// 公开给设置页使用：`Shift+P` 循环要先知道"现在配的是哪个"，才能在本终端
@@ -657,17 +570,19 @@ pub fn protocol_from_config(value: &str) -> Option<ProtocolType> {
     parse_protocol(value)
 }
 
-fn parse_protocol(value: &str) -> Option<ProtocolType> {
+/// 配置里的 `ui.cover_protocol` 是否表示由探测决定协议
+fn is_auto(value: &str) -> bool {
+    matches!(value.trim().to_ascii_lowercase().as_str(), "" | "auto")
+}
+
+/// 解析配置里的 `ui.cover_protocol`，`None` 表示由探测决定
+pub(super) fn parse_protocol(value: &str) -> Option<ProtocolType> {
     match value.trim().to_ascii_lowercase().as_str() {
-        "" | "auto" => None,
         "kitty" => Some(ProtocolType::Kitty),
         "sixel" | "sixels" => Some(ProtocolType::Sixel),
         "iterm2" | "iterm" => Some(ProtocolType::Iterm2),
         "halfblocks" | "blocks" => Some(ProtocolType::Halfblocks),
-        other => {
-            tracing::warn!("unknown ui.cover_protocol {other:?}, falling back to auto");
-            None
-        }
+        _ => None,
     }
 }
 
@@ -681,7 +596,7 @@ mod tests {
     use ratatui_image::FontSize;
     use ratatui_image::picker::{Picker, ProtocolType};
 
-    use super::{CoverRenderer, DecodeJob, parse_protocol, protocol_from_env, queue_decode};
+    use super::{CoverRenderer, DecodeJob, parse_protocol, queue_decode};
 
     const AREA: Rect = Rect {
         x: 0,
@@ -889,75 +804,6 @@ mod tests {
         assert_eq!(latest.id, 2);
     }
 
-    /// 协议识别必须是"正向"的：认不出来就返回 None（调用方退 halfblocks），
-    /// 绝不能猜一个终端可能不支持的协议 —— 猜错的代价是整幅载荷被当文本刷屏。
-    #[test]
-    fn protocol_detection_is_positive_only() {
-        use super::ProtocolType;
-
-        let kitty = protocol_from_env(Some("1"), None, None, None);
-        assert_eq!(
-            kitty,
-            Some(ProtocolType::Kitty),
-            "KITTY_WINDOW_ID 是确定信号"
-        );
-        assert_eq!(
-            protocol_from_env(None, Some("xterm-kitty"), None, None),
-            Some(ProtocolType::Kitty)
-        );
-        assert_eq!(
-            protocol_from_env(None, Some("foot"), None, None),
-            Some(ProtocolType::Sixel),
-            "foot 声明支持 sixel"
-        );
-        assert_eq!(
-            protocol_from_env(None, Some("xterm-256color"), Some("iTerm.app"), None),
-            Some(ProtocolType::Iterm2)
-        );
-        assert_eq!(
-            protocol_from_env(None, Some("xterm-256color"), Some("WezTerm"), None),
-            Some(ProtocolType::Kitty)
-        );
-
-        // 认不出来 → None（调用方退 halfblocks）
-        assert_eq!(
-            protocol_from_env(None, Some("xterm-256color"), None, None),
-            None
-        );
-        assert_eq!(
-            protocol_from_env(None, Some("linux"), Some("Apple_Terminal"), None),
-            None
-        );
-        assert_eq!(protocol_from_env(None, None, None, None), None);
-        assert_eq!(
-            protocol_from_env(Some("   "), Some("dumb"), Some("Unknown"), None),
-            None,
-            "空白/未知信号不能当成支持"
-        );
-
-        // 关键回归：环境变量会穿透 tmux/ssh，复用器里发图形序列会被原样打印成文本
-        assert_eq!(
-            protocol_from_env(
-                Some("1"),
-                Some("xterm-kitty"),
-                None,
-                Some("/tmp/tmux-1000/default,123,0")
-            ),
-            None,
-            "tmux 里不能发 kitty 图形（passthrough 无法确认）"
-        );
-        assert_eq!(
-            protocol_from_env(
-                None,
-                Some("xterm-256color"),
-                Some("WezTerm"),
-                Some("/tmp/screen.123")
-            ),
-            None,
-            "screen 里一律保守"
-        );
-    }
-
     /// 能力表决定 `Shift+P` 循环里出现哪些协议：画不出的不再摆给用户。
     ///
     /// 这条把"终端能力"与"设置页能选什么"钉在一起 —— 之前两者各写一套，
@@ -1010,6 +856,21 @@ mod tests {
             ProtocolType::Halfblocks
         );
         assert!(unknown.correction_note().is_none(), "halfblocks 一定能画");
+
+        // 显式配置未经探测，不限制可选协议
+        let unprobed = CoverCapabilities::detect(ProtocolType::Sixel, false);
+        assert_eq!(
+            unprobed.supported_labels(),
+            ["kitty", "sixel", "iterm2", "halfblocks"]
+        );
+        assert_eq!(
+            CoverCapabilities::detect(ProtocolType::Kitty, true).supported_labels(),
+            ["kitty", "halfblocks"]
+        );
+        assert_eq!(
+            CoverCapabilities::detect(ProtocolType::Halfblocks, true).supported_labels(),
+            ["halfblocks"]
+        );
     }
 
     /// `protocol_from_config` 是设置页循环的入口：`auto`/空/未知都要能识别。
@@ -1039,33 +900,6 @@ mod tests {
                 protocol_from_config(protocol_label(protocol)),
                 Some(protocol)
             );
-        }
-    }
-
-    /// kitty 终端既不支持 sixel，也不支持 iTerm2 协议：显式配错时必须纠正。
-    ///
-    /// sixel 配错是"整幅载荷被当文本打印"（花屏），iTerm2 配错则是 kitty 静默丢弃
-    /// 序列 —— 封面区只留一个空框，用户完全看不出是协议选错了。
-    #[test]
-    fn unsupported_protocols_are_corrected_on_kitty_terminals() {
-        use super::{ProtocolType, corrected_protocol};
-
-        for configured in [ProtocolType::Sixel, ProtocolType::Iterm2] {
-            assert_eq!(
-                corrected_protocol(configured, true),
-                ProtocolType::Kitty,
-                "kitty 下 {configured:?} 不可能成立，必须纠正"
-            );
-            assert_eq!(
-                corrected_protocol(configured, false),
-                configured,
-                "非 kitty 终端尊重显式配置"
-            );
-        }
-        // 其它组合一律不动
-        for protocol in [ProtocolType::Kitty, ProtocolType::Halfblocks] {
-            assert_eq!(corrected_protocol(protocol, true), protocol);
-            assert_eq!(corrected_protocol(protocol, false), protocol);
         }
     }
 }
