@@ -8,6 +8,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use ratatui_image::FontSize;
+use ratatui_image::picker::cap_parser::QueryStdioOptions;
 use ratatui_image::picker::{Picker, ProtocolType};
 
 use super::render::parse_protocol;
@@ -37,7 +38,15 @@ pub fn run_if_probe() {
     if std::env::args().nth(1).as_deref() != Some(PROBE_ARG) {
         return;
     }
-    let code = match Picker::from_query_stdio() {
+    let options = QueryStdioOptions {
+        blacklist_protocols: blacklisted_protocols(
+            std::env::var("TERM_PROGRAM").ok().as_deref(),
+            std::env::var("LC_TERMINAL").ok().as_deref(),
+            std::env::var("ITERM_SESSION_ID").ok().as_deref(),
+        ),
+        ..QueryStdioOptions::default()
+    };
+    let code = match Picker::from_query_stdio_with_options(options) {
         Ok(picker) => {
             let result = ProbeResult {
                 protocol: picker.protocol_type(),
@@ -55,6 +64,24 @@ pub fn run_if_probe() {
         }
     };
     std::process::exit(code);
+}
+
+/// 查询中不予采用的协议
+///
+/// iTerm 应答 kitty 查询，但对 kitty 协议的实现不完整（ratatui-image#158）。
+/// tmux 会覆盖 `TERM_PROGRAM`，此时要求 `LC_TERMINAL` 与 `ITERM_SESSION_ID` 同时符合。
+fn blacklisted_protocols(
+    term_program: Option<&str>,
+    lc_terminal: Option<&str>,
+    iterm_session_id: Option<&str>,
+) -> Vec<ProtocolType> {
+    let in_iterm = term_program == Some("iTerm.app")
+        || (lc_terminal == Some("iTerm2") && iterm_session_id.is_some_and(|id| !id.is_empty()));
+    if in_iterm {
+        vec![ProtocolType::Kitty]
+    } else {
+        Vec::new()
+    }
 }
 
 /// 启动查询子进程并等待结果，失败或超时返回 `None`
@@ -218,7 +245,20 @@ mod tests {
     use ratatui_image::FontSize;
     use ratatui_image::picker::ProtocolType;
 
-    use super::{ProbeResult, decode, encode};
+    use super::{ProbeResult, blacklisted_protocols, decode, encode};
+
+    #[test]
+    fn iterm_excludes_kitty_from_the_query() {
+        let expected = [ProtocolType::Kitty];
+        assert_eq!(
+            blacklisted_protocols(Some("iTerm.app"), None, None),
+            expected
+        );
+        assert_eq!(
+            blacklisted_protocols(Some("tmux"), Some("iTerm2"), Some("w0t0p0:1234")),
+            expected
+        );
+    }
 
     #[test]
     fn probe_results_round_trip() {
