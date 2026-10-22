@@ -9,6 +9,7 @@ mod cover;
 mod data_cache;
 mod download;
 mod fmt;
+mod instance_lock;
 mod listenbrainz;
 mod media_controls;
 mod media_session;
@@ -1433,6 +1434,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     if let Some(path) = cli.import_data.as_deref() {
+        let _lock = instance_lock::acquire(&storage::default_data_dir())?;
         let backup = storage::Storage::new()
             .import_data(path)
             .map_err(anyhow::Error::msg)?;
@@ -1441,6 +1443,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     if let Some(path) = cli.import_playlist.as_deref() {
+        let _lock = instance_lock::acquire(&storage::default_data_dir())?;
         let report = storage::Storage::new()
             .import_external_playlist(path)
             .map_err(anyhow::Error::msg)?;
@@ -1459,6 +1462,7 @@ fn main() -> anyhow::Result<()> {
         std::env::consts::OS,
         std::env::consts::ARCH
     );
+    let _instance_lock = instance_lock::acquire(&storage::default_data_dir())?;
 
     // 构建 tokio runtime（多线程）
     let rt = tokio::runtime::Runtime::new()?;
