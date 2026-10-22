@@ -50,6 +50,8 @@ enum Done {
 
 pub struct CoverRenderer {
     picker: Picker,
+    /// 启动时确定的协议
+    startup_protocol: ProtocolType,
     /// 字号是否来自终端应答
     queried_font_size: bool,
     enabled: bool,
@@ -115,6 +117,7 @@ impl CoverRenderer {
 
         Self {
             protocol: ThreadProtocol::new(encode_tx, None),
+            startup_protocol: picker.protocol_type(),
             queried_font_size: false,
             picker,
             enabled,
@@ -133,9 +136,26 @@ impl CoverRenderer {
         self.picker.font_size()
     }
 
-    /// 本次实际生效的封面协议（设置页据此显示"配置值 vs 生效值"）。
-    pub fn protocol_type(&self) -> ProtocolType {
-        self.picker.protocol_type()
+    /// 启动时是否确定了图形协议
+    pub fn graphics_available(&self) -> bool {
+        self.startup_protocol != ProtocolType::Halfblocks
+    }
+
+    /// 在启动时确定的协议与半格之间切换，返回生效协议是否变化
+    pub fn set_graphics(&mut self, enabled: bool) -> bool {
+        let protocol = if enabled {
+            self.startup_protocol
+        } else {
+            ProtocolType::Halfblocks
+        };
+        if protocol == self.picker.protocol_type() {
+            return false;
+        }
+        self.picker.set_protocol_type(protocol);
+        if let Some(path) = self.loaded.clone() {
+            self.dispatch_decode(path);
+        }
+        true
     }
 
     /// 把渲染器同步到给定的封面路径，路径变化时才向后台线程发起解码
@@ -434,140 +454,9 @@ fn shrink(image: image::DynamicImage) -> image::DynamicImage {
     image.resize(MAX_DECODED_EDGE, MAX_DECODED_EDGE, FilterType::Triangle)
 }
 
-/// 本终端上能画出图的封面协议
-///
-/// 由启动时确定的协议推出，设置页的 `Shift+P` 循环据此跳过画不出的协议，
-/// 并在行内显示生效的协议。
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct CoverCapabilities {
-    /// 固定顺序的候选（用于循环切换与展示）
-    supported: &'static [ProtocolType],
-    /// 本次实际生效的协议
-    active: ProtocolType,
-    /// 探测到的图形协议，`None` 表示未探测或只能用半格
-    detected: Option<ProtocolType>,
-}
-
-impl CoverCapabilities {
-    /// 循环切换的固定顺序；`filtered` 是"本终端支持"的子集。
-    const CYCLE: [ProtocolType; 4] = [
-        ProtocolType::Kitty,
-        ProtocolType::Sixel,
-        ProtocolType::Iterm2,
-        ProtocolType::Halfblocks,
-    ];
-
-    /// 由启动时确定的协议推出能力，未经探测时不限制可选的协议
-    pub fn detect(active: ProtocolType, probed: bool) -> Self {
-        if !probed {
-            return Self {
-                supported: &Self::CYCLE,
-                active,
-                detected: None,
-            };
-        }
-        let detected = (active != ProtocolType::Halfblocks).then_some(active);
-        Self::from_detected(detected, active)
-    }
-
-    /// `detected` 为探测到的图形协议，`None` 表示只能用半格
-    pub fn from_detected(detected: Option<ProtocolType>, active: ProtocolType) -> Self {
-        // 认不出终端时只有 halfblocks 敢保证画得出来（不发送任何图形序列）。
-        let supported: &'static [ProtocolType] = match detected {
-            Some(ProtocolType::Kitty) => &[ProtocolType::Kitty, ProtocolType::Halfblocks],
-            Some(ProtocolType::Sixel) => &[ProtocolType::Sixel, ProtocolType::Halfblocks],
-            Some(ProtocolType::Iterm2) => &[ProtocolType::Iterm2, ProtocolType::Halfblocks],
-            _ => &[ProtocolType::Halfblocks],
-        };
-        Self {
-            supported,
-            active,
-            detected,
-        }
-    }
-
-    pub fn active(&self) -> ProtocolType {
-        self.active
-    }
-
-    /// 环境探测结果（`None` = 未识别）；设置行展示"auto 生效成什么"用。
-    pub fn detected(&self) -> Option<ProtocolType> {
-        self.detected
-    }
-
-    #[cfg(test)]
-    pub fn supported(&self) -> &'static [ProtocolType] {
-        self.supported
-    }
-
-    /// 这个协议在本终端能否画出图。
-    pub fn can_render(&self, protocol: ProtocolType) -> bool {
-        self.supported.contains(&protocol)
-    }
-
-    /// 按固定顺序找到下一个**能画出来**的协议。
-    pub fn next_supported(&self, current: ProtocolType) -> ProtocolType {
-        let start = Self::CYCLE
-            .iter()
-            .position(|candidate| *candidate == current)
-            .map_or(0, |index| index + 1);
-        Self::CYCLE
-            .iter()
-            .cycle()
-            .skip(start)
-            .take(Self::CYCLE.len())
-            .find(|candidate| self.can_render(**candidate))
-            .copied()
-            // 理论上不可能走到：`supported` 至少含 Halfblocks
-            .unwrap_or(ProtocolType::Halfblocks)
-    }
-
-    /// 配置值与生效值不一致时返回原因（测试断言用；设置行改用
-    /// `cover_protocol_display` 的"生效协议优先"格式）。
-    #[cfg(test)]
-    pub fn correction_note(&self) -> Option<String> {
-        (!self.can_render(self.active)).then(|| {
-            let names: Vec<&str> = self
-                .supported()
-                .iter()
-                .copied()
-                .map(protocol_label)
-                .collect();
-            format!(
-                "本终端不支持该协议，已改用 {}；可选 {}",
-                protocol_label(self.active),
-                names.join(" / ")
-            )
-        })
-    }
-
-    /// 能力表的展示文案（仅测试断言用）。
-    #[cfg(test)]
-    pub fn supported_labels(&self) -> Vec<&'static str> {
-        self.supported()
-            .iter()
-            .copied()
-            .map(protocol_label)
-            .collect()
-    }
-}
-
-/// 协议的中文短名（设置行展示用）。
-pub fn protocol_label(protocol: ProtocolType) -> &'static str {
-    match protocol {
-        ProtocolType::Kitty => "kitty",
-        ProtocolType::Sixel => "sixel",
-        ProtocolType::Iterm2 => "iterm2",
-        ProtocolType::Halfblocks => "halfblocks",
-    }
-}
-
-/// 把配置里的 `ui.cover_protocol` 文案解析成协议；`auto`/空/未知都返回 `None`。
-///
-/// 公开给设置页使用：`Shift+P` 循环要先知道"现在配的是哪个"，才能在本终端
-/// 支持的子集里找下一个。
-pub fn protocol_from_config(value: &str) -> Option<ProtocolType> {
-    parse_protocol(value)
+/// 配置是否要求图形协议，`halfblocks` 之外的取值都视为要求
+pub fn graphics_requested(cover_protocol: &str) -> bool {
+    parse_protocol(cover_protocol) != Some(ProtocolType::Halfblocks)
 }
 
 /// 配置里的 `ui.cover_protocol` 是否表示由探测决定协议
@@ -804,102 +693,41 @@ mod tests {
         assert_eq!(latest.id, 2);
     }
 
-    /// 能力表决定 `Shift+P` 循环里出现哪些协议：画不出的不再摆给用户。
-    ///
-    /// 这条把"终端能力"与"设置页能选什么"钉在一起 —— 之前两者各写一套，
-    /// kitty 上仍能循环到 sixel / iterm2，选完只会得到一个空框。
     #[test]
-    fn capabilities_drive_the_protocol_cycle() {
-        use super::{CoverCapabilities, ProtocolType};
+    fn only_halfblocks_opts_out_of_graphics() {
+        use super::graphics_requested;
 
-        // kitty 终端：只认自己的协议 + 保底半格
-        let kitty =
-            CoverCapabilities::from_detected(Some(ProtocolType::Kitty), ProtocolType::Kitty);
-        assert_eq!(kitty.supported_labels(), ["kitty", "halfblocks"]);
-        assert!(kitty.can_render(ProtocolType::Kitty));
-        assert!(!kitty.can_render(ProtocolType::Sixel));
-        assert!(!kitty.can_render(ProtocolType::Iterm2));
-        assert_eq!(
-            kitty.next_supported(ProtocolType::Kitty),
-            ProtocolType::Halfblocks,
-            "kitty 下应跳过 sixel / iterm2 直接到 halfblocks"
-        );
-        assert_eq!(
-            kitty.next_supported(ProtocolType::Halfblocks),
-            ProtocolType::Kitty,
-            "循环要能绕回来"
-        );
-        // 配错时给出可读原因（含"可选哪些"）
-        let corrected =
-            CoverCapabilities::from_detected(Some(ProtocolType::Kitty), ProtocolType::Iterm2);
-        assert!(!corrected.can_render(ProtocolType::Iterm2));
-        let note = corrected.correction_note().expect("配错必须有说明");
-        assert!(note.contains("iterm2") && note.contains("kitty"), "{note}");
-        // 配置与生效一致时不该有噪声
-        assert!(kitty.correction_note().is_none());
-
-        // iTerm2 终端：iterm2 有效，kitty 协议无效
-        let iterm =
-            CoverCapabilities::from_detected(Some(ProtocolType::Iterm2), ProtocolType::Iterm2);
-        assert_eq!(iterm.supported_labels(), ["iterm2", "halfblocks"]);
-        assert_eq!(
-            iterm.next_supported(ProtocolType::Iterm2),
-            ProtocolType::Halfblocks
-        );
-        assert!(!iterm.can_render(ProtocolType::Sixel));
-
-        // 认不出终端：只有 halfblocks 敢保证画得出来
-        let unknown = CoverCapabilities::from_detected(None, ProtocolType::Halfblocks);
-        assert_eq!(unknown.supported_labels(), ["halfblocks"]);
-        assert_eq!(
-            unknown.next_supported(ProtocolType::Halfblocks),
-            ProtocolType::Halfblocks
-        );
-        assert!(unknown.correction_note().is_none(), "halfblocks 一定能画");
-
-        // 显式配置未经探测，不限制可选协议
-        let unprobed = CoverCapabilities::detect(ProtocolType::Sixel, false);
-        assert_eq!(
-            unprobed.supported_labels(),
-            ["kitty", "sixel", "iterm2", "halfblocks"]
-        );
-        assert_eq!(
-            CoverCapabilities::detect(ProtocolType::Kitty, true).supported_labels(),
-            ["kitty", "halfblocks"]
-        );
-        assert_eq!(
-            CoverCapabilities::detect(ProtocolType::Halfblocks, true).supported_labels(),
-            ["halfblocks"]
-        );
+        for value in ["auto", "", "kitty", "Sixel", "iterm2", "nonsense"] {
+            assert!(graphics_requested(value), "{value:?}");
+        }
+        assert!(!graphics_requested("halfblocks"));
+        assert!(!graphics_requested(" Blocks "));
     }
 
-    /// `protocol_from_config` 是设置页循环的入口：`auto`/空/未知都要能识别。
     #[test]
-    fn protocol_config_parsing_round_trips() {
-        use super::{ProtocolType, protocol_from_config, protocol_label};
+    fn disabling_graphics_switches_to_halfblocks_and_back() {
+        let blue = write_image("graphics-toggle", [0, 0, 255]);
+        let mut renderer = kitty_renderer();
+        assert!(renderer.graphics_available());
+        renderer.sync(Some(&blue));
+        settle(&mut renderer);
 
-        assert_eq!(protocol_from_config("kitty"), Some(ProtocolType::Kitty));
-        assert_eq!(protocol_from_config("Iterm2"), Some(ProtocolType::Iterm2));
-        assert_eq!(protocol_from_config("sixel"), Some(ProtocolType::Sixel));
-        assert_eq!(
-            protocol_from_config("halfblocks"),
-            Some(ProtocolType::Halfblocks)
-        );
-        assert_eq!(protocol_from_config("auto"), None);
-        assert_eq!(protocol_from_config(""), None);
-        assert_eq!(protocol_from_config("nonsense"), None);
+        let before = renderer.request_id;
+        assert!(renderer.set_graphics(false));
+        assert_eq!(renderer.picker.protocol_type(), ProtocolType::Halfblocks);
+        assert!(renderer.request_id > before, "切换协议后应重新解码");
+        assert!(!renderer.set_graphics(false));
 
-        // 循环写回配置用的是 label，必须能被解析回来
-        for protocol in [
-            ProtocolType::Kitty,
-            ProtocolType::Sixel,
-            ProtocolType::Iterm2,
-            ProtocolType::Halfblocks,
-        ] {
-            assert_eq!(
-                protocol_from_config(protocol_label(protocol)),
-                Some(protocol)
-            );
-        }
+        assert!(renderer.set_graphics(true));
+        assert_eq!(renderer.picker.protocol_type(), ProtocolType::Kitty);
+        settle(&mut renderer);
+    }
+
+    #[test]
+    fn graphics_cannot_be_enabled_without_a_startup_protocol() {
+        let mut renderer = renderer();
+        assert!(!renderer.graphics_available());
+        assert!(!renderer.set_graphics(true));
+        assert_eq!(renderer.picker.protocol_type(), ProtocolType::Halfblocks);
     }
 }

@@ -939,9 +939,14 @@ impl MainPage {
         MP_PAGE_KEY
     }
 
-    /// 本次实际生效的封面协议（启动时注入设置页，供 `Shift+P` 循环判断）。
-    pub fn cover_protocol(&self) -> ratatui_image::picker::ProtocolType {
-        self.cover.protocol_type()
+    /// 启动时是否确定了封面图形协议
+    pub fn cover_graphics_available(&self) -> bool {
+        self.cover.graphics_available()
+    }
+
+    /// 在图形协议与半格之间切换封面，返回生效协议是否变化
+    pub fn set_cover_graphics(&mut self, enabled: bool) -> bool {
+        self.cover.set_graphics(enabled)
     }
 
     /// 把三处分栏比例恢复成内置默认值（封面/歌词分栏下次布局重新自适应）。

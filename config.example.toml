@@ -55,8 +55,7 @@ timeout = 15                # HTTP 超时秒数
 #   gruvbox-dark / gruvbox-light / tokyo-night / solarized-dark / solarized-light /
 #   monokai-pro / rose-pine / kanagawa / everforest / cyberpunk / midnight-commander
 # 也可以在设置页「界面」分类第一行「界面主题」点击/Enter 打开主题菜单，
-# 或按 p 循环切换（立刻生效并落盘，无需重启）。注意：P 是「账号与扫码」面板，
-# Shift+P 是「封面协议」的循环键。
+# 或按 p 循环切换（立刻生效并落盘，无需重启）。注意：P 是「账号与扫码」面板。
 #
 # 设置页本身只保留分类 / 导航 / 激活键（←/→ 换分类、↑/↓ 选行、Enter 激活、
 # Esc 返回），其余设置项都在分类里选中后按 Enter 操作，没有逐行字母快捷键。
@@ -78,7 +77,8 @@ aggregate_search = true
 show_cover = true
 cover_protocol = "auto"     # auto / kitty / sixel / iterm2 / halfblocks
                            # auto 在启动时向终端查询支持的图形协议
-                           # 设置页「界面」分类里选中「封面协议」按 Enter，或按 Shift+P 循环切换
+                           # 设置页「界面 → 高清封面」在取值为 halfblocks 时显示关闭，其余显示开启
+                           # 切换时关闭写入 halfblocks，开启写入 auto
 max_fps = 20                # 1-60，越小越省电
 # 底部状态栏高度：1（默认）..6。把 status_bar_items 全开、想一眼看到所有
 # 可点击控件时调大；一行放不下的控件会自动收进状态栏的「⋯ 更多」入口。

@@ -141,7 +141,7 @@ enum SettingsRowKind {
 struct SettingsRowMeta {
     id: SettingsRowId,
     label: String,
-    /// 键位列显示文案：删掉逐行快捷键后一律是 `Enter`（封面协议那行显示真实组合键）。
+    /// 键位列显示文案：删掉逐行快捷键后一律是 `Enter`。
     key: String,
     category: SettingsCategory,
     kind: SettingsRowKind,
@@ -221,9 +221,9 @@ enum SettingsRowDirectAction {
     ToggleAggregateSearch,
     ToggleWrapNavigation,
     ToggleShowCover,
+    ToggleCoverGraphics,
     ToggleRememberPlaybackState,
     CycleNetworkTimeout,
-    CycleCoverProtocol,
     CycleMaxFps,
     CyclePageStep,
     CycleAccentFollowCover,
@@ -435,25 +435,6 @@ impl SettingsRows {
         self.push(category, kind, label, key, plan, line)
     }
 
-    /// 键位列需要显示**真实组合键**的行。
-    ///
-    /// 只有「封面协议」用它：`Shift+P` 是设置页刻意保留的页面级组合键
-    /// （见 `COVER_PROTOCOL_ROW_KEY`），键位列必须把真正生效的键写出来。
-    #[allow(clippy::too_many_arguments)]
-    fn value_with_key_hint(
-        &mut self,
-        category: SettingsCategory,
-        kind: SettingsRowKind,
-        label: &str,
-        plan: RowPlan,
-        key_hint: &str,
-        value: &str,
-        palette: RowPalette,
-    ) -> SettingsRowId {
-        let line = setting_value_line(label, value, key_hint, palette.accent, palette.muted);
-        self.push(category, kind, label, key_hint, plan, line)
-    }
-
     /// 当前分类的可见行（显示顺序 = 构造顺序）。
     fn rows_in(&self, category: SettingsCategory) -> Vec<&SettingsRow> {
         self.rows
@@ -600,8 +581,8 @@ impl SettingsCategory {
 }
 
 pub struct SettingsPage {
-    /// 本终端能用哪些封面协议（启动时探测一次，`Shift+P` 循环据它跳过画不出的项）。
-    cover_capabilities: crate::cover::CoverCapabilities,
+    /// 启动时是否确定了封面图形协议
+    cover_graphics_available: bool,
     /// 输入中的 JS 源 URL 或本地路径
     pub input_url: String,
     /// 是否在输入模式
@@ -793,7 +774,6 @@ fn build_settings_rows(
     config: &lx_core::model::config::Config,
     inputs: &RowInputs,
     palette: RowPalette,
-    cover_capabilities: crate::cover::CoverCapabilities,
 ) {
     use SettingsCategory as C;
     use SettingsRowDirectAction as D;
@@ -805,7 +785,7 @@ fn build_settings_rows(
     //   输入浮层、一次性动作），执行时复用既有 `AppAction` / 写配置分支。
     //
     // 这里**没有**"按键回灌"这一档：行内快捷键已全部删除，键位列一律显示
-    // `Enter`（唯一例外是刻意保留的页面级组合键，见 `COVER_PROTOCOL_ROW_KEY`）。
+    // `Enter`。
 
     // ── 界面 ──
     // 主题入口放第一行：这是"我要换主题"时第一个该看到的东西。
@@ -861,15 +841,11 @@ fn build_settings_rows(
         &format!("{} 秒", config.network.timeout),
         palette,
     );
-    // 「封面协议」是唯一保留页面级组合键的设置行：裸 `P` 被「账号与扫码」占用，
-    // 真正生效的是 `Shift+P`，因此键位列必须显示它（见 `is_cover_protocol_key`）。
-    rows.value_with_key_hint(
+    rows.toggle(
         C::Interface,
-        K::Enum,
-        "封面协议",
-        RowPlan::Direct(D::CycleCoverProtocol),
-        COVER_PROTOCOL_ROW_KEY,
-        &cover_protocol_display(&config.ui.cover_protocol, cover_capabilities),
+        "高清封面",
+        RowPlan::Direct(D::ToggleCoverGraphics),
+        crate::cover::graphics_requested(&config.ui.cover_protocol),
         palette,
     );
     rows.value(
@@ -1423,12 +1399,12 @@ impl SettingsPage {
     /// 判断按键是否由设置页独占。
     ///
     /// 精简之后设置页只吃三类键：分类 / 光标导航键、`Enter` / `Space` 激活键、
-    /// 以及少数几个刻意保留的页面级键（`p` / `P` / `Shift+P` 与内嵌列表的
+    /// 以及少数几个刻意保留的页面级键（`p` / `P` 与内嵌列表的
     /// 命令行操作键）。**清单之外一键不吃**，因此不会出现"按键没反应但也不传
     /// 下去"的死键（见 `owns_char_key`）。
     /// 设置页是否吃这个字符键（`consumes_key` 与 `handle_input` 共用同一条口径）。
     ///
-    /// - `p` / `P`：主题循环 / 账号面板（`Shift+P` 是封面协议，都在 `p`/`P` 上）；
+    /// - `p` / `P`：主题循环 / 账号面板；
     /// - 内嵌管理列表的命令行操作键：只有**对应列表拿到焦点**时才吃，
     ///   否则会把它们从全局快捷键那里抢走却什么也不做。
     fn owns_char_key(&self, character: char) -> bool {
@@ -1497,10 +1473,7 @@ impl SettingsPage {
 
     pub fn new() -> Self {
         Self {
-            cover_capabilities: crate::cover::CoverCapabilities::from_detected(
-                None,
-                crate::cover::ProtocolType::Halfblocks,
-            ),
+            cover_graphics_available: false,
             input_url: String::new(),
             input_mode: false,
             status_msg: None,
@@ -1548,9 +1521,9 @@ impl SettingsPage {
         }
     }
 
-    /// 注入启动时探测到的封面协议能力（`Ctrl+G` 之外的封面入口都据它判断）。
-    pub fn set_cover_capabilities(&mut self, capabilities: crate::cover::CoverCapabilities) {
-        self.cover_capabilities = capabilities;
+    /// 注入启动时是否确定了封面图形协议
+    pub fn set_cover_graphics_available(&mut self, available: bool) {
+        self.cover_graphics_available = available;
     }
 
     /// 扫码登录入口列表。
@@ -1665,12 +1638,6 @@ impl SettingsPage {
                     self.set_category(SettingsCategory::Accounts);
                 }
                 return AppAction::None;
-            }
-
-            // 「封面协议」的循环键：`Shift+P`（裸 `P` 已被上面的账号面板入口占用，
-            // 两个键的分工见 `is_cover_protocol_key` / `is_accounts_panel_key`）。
-            if is_cover_protocol_key(&key) {
-                return self.apply_direct_action(SettingsRowDirectAction::CycleCoverProtocol, ctx);
             }
 
             // 界面主题（p = palette）：在 `voicefox`（默认）与主题库的具名主题之间
@@ -2001,19 +1968,20 @@ impl SettingsPage {
                 lx_source::configure_network(&proxy, timeout);
                 AppAction::None
             }
-            D::CycleCoverProtocol => {
-                // 只在本终端**画得出来**的协议之间循环：kitty 下不再把
-                // sixel / iterm2 摆给用户选（选了也只会得到空框）。
-                let capabilities = self.cover_capabilities;
-                self.update_config(ctx, |config| {
-                    let current = crate::cover::protocol_from_config(&config.ui.cover_protocol)
-                        .unwrap_or(capabilities.active());
+            D::ToggleCoverGraphics => {
+                let enabled = {
+                    let mut config = ctx.config.write().unwrap_or_else(|e| e.into_inner());
+                    let enabled = !crate::cover::graphics_requested(&config.ui.cover_protocol);
                     config.ui.cover_protocol =
-                        crate::cover::protocol_label(capabilities.next_supported(current))
-                            .to_string();
-                });
-                if self.status_msg.as_deref() == Some("设置已保存") {
-                    self.set_status("封面协议已保存，下次启动生效".to_string());
+                        if enabled { "auto" } else { "halfblocks" }.to_string();
+                    self.set_saved_status(crate::config::loader::save(&config, &ctx.config_path));
+                    enabled
+                };
+                if enabled
+                    && !self.cover_graphics_available
+                    && self.status_msg.as_deref() == Some("设置已保存")
+                {
+                    self.set_status("高清封面已开启（写入 auto），下次启动时探测终端".to_string());
                 }
                 AppAction::None
             }
@@ -3611,13 +3579,7 @@ impl SettingsPage {
         let mut inputs = RowInputs::from_context(ctx);
         inputs.cover_cache_label = self.cover_cache_label.clone();
         inputs.remote_cache_label = self.remote_cache_label.clone();
-        build_settings_rows(
-            &mut rows,
-            &config,
-            &inputs,
-            palette,
-            self.cover_capabilities,
-        );
+        build_settings_rows(&mut rows, &config, &inputs, palette);
 
         // 2. 布局：整个设置页只有一个面板 ——
         //    分类栏（宽屏）/ 分类列表（窄屏）+ 该分类的内容。
@@ -4519,9 +4481,8 @@ const LABEL_COLUMN_WIDTH: usize = 12;
 
 /// 组装一行设置项：按键提示、标签与取值分别占固定宽度的列。
 ///
-/// 键位列只在**这一行有专属快捷键**时才写出来（当前只有「封面协议」的
-/// `Shift+P`）：每行都印一遍 `[Enter]` 只是噪声，"Enter 激活"这条共性已经写在
-/// 面板标题里（见 `SettingsPage::render`）。
+/// 键位列只在**这一行有专属快捷键**时才写出来：每行都印一遍 `[Enter]` 只是
+/// 噪声，"Enter 激活"这条共性已经写在面板标题里（见 `SettingsPage::render`）。
 fn setting_row(label: &str, value: Span<'static>, key: &str, muted: Color) -> Line<'static> {
     Line::from(vec![
         Span::styled(
@@ -4538,7 +4499,7 @@ fn setting_row(label: &str, value: Span<'static>, key: &str, muted: Color) -> Li
 ///
 /// 删掉逐行快捷键之后，绝大多数行的激活键就是 `Enter`（`RowPlan::key_hint`
 /// 原样返回 `Enter`），键位列对它只留一个安静的圆点，不再逐行重复广告同一个键；
-/// 只有刻意保留的页面级组合键会走到这里做缩写（`Shift+P` → `S+P`）。
+/// 只有专属组合键会走到这里做缩写（`Shift+P` → `S+P`）。
 /// 空键位（只读说明行）显示为 `-`。
 fn compact_key_label(key: &str) -> String {
     if key.is_empty() {
@@ -4612,13 +4573,6 @@ fn setting_action_line(
 
 // ── 设置行的纯逻辑（不依赖 AppContext，便于回归测试）────────────────────
 
-/// 「封面协议」这一行的键位列文案：**真正生效**的组合键。
-///
-/// 裸 `P` 归「账号与扫码」面板（见 `is_accounts_panel_key`），封面协议只能靠
-/// `Shift+P`。键位列以前写的是 `P`，用户照着按下去只会跳到账号分类 ——
-/// 于是"封面协议根本改不了"。这里把显示与生效绑到同一个常量上。
-const COVER_PROTOCOL_ROW_KEY: &str = "Shift+P";
-
 /// `P` 与 `p` 在设置页的分工（纯函数，便于回归测试）。
 ///
 /// - `P`（裸 `'P'`）→ 进入「账号与扫码」分类；已经在该分类里时改为发起
@@ -4627,18 +4581,14 @@ const COVER_PROTOCOL_ROW_KEY: &str = "Shift+P";
 ///
 /// 上一版把 `p` 一起吃掉，KEYBINDINGS 里写的"设置页按 `p` 换主题"实际按不出来。
 ///
-/// 必须保持"只认无修饰的 `'P'`"：`Shift+P`（`Char('P')` + SHIFT，或
-/// `Char('p')` + SHIFT）是「封面协议」的循环键，抢过来会让那一行变成死键。
+/// 终端可能把 `P` 报成裸 `Char('P')`、`Char('P')` + SHIFT 或 `Char('p')` + SHIFT，
+/// 三种都要认。
 fn is_accounts_panel_key(key: &KeyEvent) -> bool {
-    key.modifiers.is_empty() && key.code == KeyCode::Char('P')
-}
-
-/// 「封面协议」这一行真正生效的键（与 `COVER_PROTOCOL_ROW_KEY` 同一件事）。
-///
-/// 终端可能把 `Shift+P` 报成 `Char('P')` + SHIFT，也可能报成 `Char('p')` + SHIFT，
-/// 两种都要认；裸 `P`（账号面板）与裸 `p`（主题循环）都不属于它。
-fn is_cover_protocol_key(key: &KeyEvent) -> bool {
-    key.modifiers == KeyModifiers::SHIFT && matches!(key.code, KeyCode::Char('P' | 'p'))
+    matches!(
+        (key.modifiers, key.code),
+        (KeyModifiers::NONE | KeyModifiers::SHIFT, KeyCode::Char('P'))
+            | (KeyModifiers::SHIFT, KeyCode::Char('p'))
+    )
 }
 
 /// Enter / `Space` 都能激活的行。
@@ -5455,37 +5405,6 @@ fn next_network_timeout(timeout: u64) -> u64 {
     }
 }
 
-/// 封面协议行的显示值：**生效协议放最前**。
-///
-/// 此前以配置值开头——旧版 Shift+P 会把 iterm2 写进配置、运行期又纠正成
-/// kitty 渲染，行首的 "iterm2" 让 kitty 用户误以为探测错了终端。现在：
-///
-/// - `auto` 且探测成功 → `auto（生效 kitty）`；
-/// - `auto` 未识别 → `auto（未识别终端，生效 halfblocks）`；
-/// - 配置值与生效值不一致 → `kitty（配置 iterm2 在本终端画不出，已纠正）`；
-/// - 一致 → 原样显示配置值。
-fn cover_protocol_display(
-    configured: &str,
-    capabilities: crate::cover::CoverCapabilities,
-) -> String {
-    let active = crate::cover::protocol_label(capabilities.active());
-    match crate::cover::protocol_from_config(configured) {
-        None => match capabilities.detected() {
-            Some(detected) if detected == capabilities.active() => {
-                format!("auto（生效 {active}）")
-            }
-            _ => format!("auto（未识别终端，生效 {active}）"),
-        },
-        Some(configured_protocol) if configured_protocol == capabilities.active() => {
-            configured.to_string()
-        }
-        Some(configured_protocol) => format!(
-            "{active}（配置 {} 在本终端画不出，已纠正）",
-            crate::cover::protocol_label(configured_protocol)
-        ),
-    }
-}
-
 fn next_fps(fps: u32) -> u32 {
     match fps {
         0..=10 => 20,
@@ -5575,7 +5494,7 @@ const STATUS_BAR_CHECKBOX_WIDTH: u16 = 5;
 ///
 /// 逐行快捷键已全部删除：设置项只能靠 `Enter` / `Space` / 鼠标激活。
 /// 剩下的只有：
-/// - `p`（主题循环）/ `P`（账号与扫码；`Shift+P` 是封面协议，见 `is_cover_protocol_key`）；
+/// - `p`（主题循环）/ `P`（账号与扫码）；
 /// - 内嵌管理列表的命令行操作键（`a`/`d`/`h` JS 音源，`a`/`d`/`r` 本地目录），
 ///   只有**对应列表获得焦点**时才生效 —— 见 `owns_char_key` 与 `embedded_command`。
 ///
@@ -5975,23 +5894,22 @@ mod tests {
 
     use super::{
         CATEGORY_SIDEBAR_WIDTH, CATEGORY_SIDEBAR_WIDTH_MAX, CATEGORY_SIDEBAR_WIDTH_MIN,
-        COVER_PROTOCOL_ROW_KEY, EMBEDDED_MIN_HEIGHT, EMBEDDED_RATIO_DEFAULT, EMBEDDED_RATIO_MAX,
-        EMBEDDED_RATIO_MIN, EmbeddedCommand, EmbeddedHits, EnumMenu, JS_SOURCE_COMMANDS,
-        KEY_COLUMN_WIDTH, LABEL_COLUMN_WIDTH, LOCAL_PATH_COMMANDS, LYRIC_OFFSET_CHOICES,
-        NarrowPane, ROWS_MIN_HEIGHT, RowInputs, RowPalette, RowPlan, SETTING_ROW_DEFAULT_SOURCE,
-        SETTING_ROW_EQUALIZER, SETTING_ROW_LYRIC_OFFSET, SETTING_ROW_SOURCE_ENABLED,
-        SETTING_ROW_SOURCE_POLICY, SETTING_ROW_SOURCE_POLICY_PLATFORM, SETTING_ROW_STATUS_BAR_ITEM,
-        SETTING_ROW_THEME, SETTINGS_CATEGORIES, SETTINGS_CATEGORIES_RATIO_KEY,
-        SETTINGS_EMBEDDED_RATIO_KEY, SETTINGS_PAGE_CHAR_KEYS, STATUS_BAR_CHECKBOX_WIDTH,
-        SettingsCategory, SettingsEnumPicker, SettingsFocus, SettingsMouseDispatch, SettingsPage,
-        SettingsResizeTarget, SettingsRowDirectAction, SettingsRowHit, SettingsRowId,
-        SettingsRowKind, SettingsRowMeta, SettingsRows, apply_setting_choice, build_settings_rows,
-        categories_width_limits, category_hit_at, category_row_ids, category_sidebar_visible,
-        choice_refusal_message, columns_from_value, command_row_layout, compact_key_label,
-        cover_protocol_display, embedded_command, embedded_height, embedded_items,
-        embedded_list_for, embedded_needed_rows, embedded_needed_rows_for,
-        embedded_ratio_from_pointer, ensure_row_cursor, enum_menu, enum_menu_label,
-        is_accounts_panel_key, is_cover_protocol_key, key_label, list_owns_direction_keys,
+        EMBEDDED_MIN_HEIGHT, EMBEDDED_RATIO_DEFAULT, EMBEDDED_RATIO_MAX, EMBEDDED_RATIO_MIN,
+        EmbeddedCommand, EmbeddedHits, EnumMenu, JS_SOURCE_COMMANDS, KEY_COLUMN_WIDTH,
+        LABEL_COLUMN_WIDTH, LOCAL_PATH_COMMANDS, LYRIC_OFFSET_CHOICES, NarrowPane, ROWS_MIN_HEIGHT,
+        RowInputs, RowPalette, RowPlan, SETTING_ROW_DEFAULT_SOURCE, SETTING_ROW_EQUALIZER,
+        SETTING_ROW_LYRIC_OFFSET, SETTING_ROW_SOURCE_ENABLED, SETTING_ROW_SOURCE_POLICY,
+        SETTING_ROW_SOURCE_POLICY_PLATFORM, SETTING_ROW_STATUS_BAR_ITEM, SETTING_ROW_THEME,
+        SETTINGS_CATEGORIES, SETTINGS_CATEGORIES_RATIO_KEY, SETTINGS_EMBEDDED_RATIO_KEY,
+        SETTINGS_PAGE_CHAR_KEYS, STATUS_BAR_CHECKBOX_WIDTH, SettingsCategory, SettingsEnumPicker,
+        SettingsFocus, SettingsMouseDispatch, SettingsPage, SettingsResizeTarget,
+        SettingsRowDirectAction, SettingsRowHit, SettingsRowId, SettingsRowKind, SettingsRowMeta,
+        SettingsRows, apply_setting_choice, build_settings_rows, categories_width_limits,
+        category_hit_at, category_row_ids, category_sidebar_visible, choice_refusal_message,
+        columns_from_value, command_row_layout, compact_key_label, embedded_command,
+        embedded_height, embedded_items, embedded_list_for, embedded_needed_rows,
+        embedded_needed_rows_for, embedded_ratio_from_pointer, ensure_row_cursor, enum_menu,
+        enum_menu_label, is_accounts_panel_key, key_label, list_owns_direction_keys,
         navigate_row_cursor, next_page_step, panel_inner, plan_row_activation, qr_login_action,
         quality_by_label, render_command_row, render_embedded_row, render_setting_categories,
         render_setting_rows, reorder_status_bar_items, row_activates_with_space, row_hit_at,
@@ -7076,16 +6994,7 @@ mod tests {
     /// 而是直接检查用户真正看到的那张表。
     fn real_settings_rows(config: &Config) -> SettingsRows {
         let mut rows = SettingsRows::new();
-        build_settings_rows(
-            &mut rows,
-            config,
-            &test_row_inputs(),
-            test_palette(),
-            crate::cover::CoverCapabilities::from_detected(
-                None,
-                crate::cover::ProtocolType::Halfblocks,
-            ),
-        );
+        build_settings_rows(&mut rows, config, &test_row_inputs(), test_palette());
         rows
     }
 
@@ -7138,30 +7047,6 @@ mod tests {
         assert_eq!(AccentFollowCover::Off.next(), AccentFollowCover::Subtle);
         assert_eq!(AccentFollowCover::Subtle.next(), AccentFollowCover::Strong);
         assert_eq!(AccentFollowCover::Strong.next(), AccentFollowCover::Off);
-    }
-
-    #[test]
-    fn cover_protocol_row_leads_with_the_active_protocol() {
-        use crate::cover::{CoverCapabilities, ProtocolType};
-        let kitty =
-            CoverCapabilities::from_detected(Some(ProtocolType::Kitty), ProtocolType::Kitty);
-        let corrected =
-            CoverCapabilities::from_detected(Some(ProtocolType::Kitty), ProtocolType::Kitty);
-        let unknown = CoverCapabilities::from_detected(None, ProtocolType::Halfblocks);
-
-        // auto：生效协议亮出来。
-        assert_eq!(cover_protocol_display("auto", kitty), "auto（生效 kitty）");
-        assert_eq!(
-            cover_protocol_display("auto", unknown),
-            "auto（未识别终端，生效 halfblocks）"
-        );
-        // 配置与生效一致：原样显示。
-        assert_eq!(cover_protocol_display("kitty", kitty), "kitty");
-        // 旧配置残留 iterm2：行首是生效协议，配置值退居括号说明。
-        assert_eq!(
-            cover_protocol_display("iterm2", corrected),
-            "kitty（配置 iterm2 在本终端画不出，已纠正）"
-        );
     }
 
     /// **真实行集**里每一行都属于 `SETTINGS_CATEGORIES` 里的**恰好一个**分类。
@@ -7303,7 +7188,7 @@ mod tests {
                     "封面显示",
                     "保留播放状态",
                     "网络超时",
-                    "封面协议",
+                    "高清封面",
                     "最大 FPS",
                     "切歌通知",
                     "状态栏字段",
@@ -7547,7 +7432,7 @@ mod tests {
             "设置页吃掉的字符键清单（多一个都算死键）"
         );
 
-        // `p` / `P`：任何焦点下都归设置页（主题循环 / 账号面板 / Shift+P 封面协议）
+        // `p` / `P`：任何焦点下都归设置页（主题循环 / 账号面板）
         for focus in [
             SettingsFocus::Options,
             SettingsFocus::JsSources,
@@ -8183,7 +8068,7 @@ mod tests {
                 "{focus:?} 下 {character} 仍然由设置页独占"
             );
         }
-        // `Shift+P`（封面协议）也要独占
+        // `Shift+P`（账号面板）也要独占
         let mut page = SettingsPage::new();
         page.focus = SettingsFocus::Options;
         assert!(page.consumes_key(
@@ -9077,78 +8962,10 @@ mod tests {
         );
     }
 
-    /// 「封面协议」行的键位列必须显示**真正生效**的组合键 `Shift+P`。
-    ///
-    /// 上一版这一行显示 `P`：裸 `P` 实际被「账号与扫码」面板占用，用户照着键位
-    /// 列按下去只会跳到账号分类 —— "封面协议根本改不了"。这条把"显示出来的键"
-    /// 与"真的会触发封面协议的键"绑在一起断言。
-    #[test]
-    fn the_cover_protocol_row_advertises_the_key_that_really_cycles_it() {
-        // 显示成项目既有的组合键风格（`compact_key_label` 把 Shift+ 缩写成 S+）
-        assert_eq!(COVER_PROTOCOL_ROW_KEY, "Shift+P");
-        assert_eq!(compact_key_label(COVER_PROTOCOL_ROW_KEY), "S+P");
-        assert!(
-            UnicodeWidthStr::width(
-                format!("[{}]", compact_key_label(COVER_PROTOCOL_ROW_KEY)).as_str()
-            ) <= KEY_COLUMN_WIDTH,
-            "键位列宽度必须放得下这个组合键"
-        );
-
-        // 键位列显示的键 == 真正生效的键：终端对 Shift+P 的两种报法都要能触发
-        for shown in [
-            KeyEvent::new(KeyCode::Char('P'), KeyModifiers::SHIFT),
-            KeyEvent::new(KeyCode::Char('p'), KeyModifiers::SHIFT),
-        ] {
-            assert!(
-                is_cover_protocol_key(&shown),
-                "键位列显示的键必须真的循环封面协议"
-            );
-            assert!(
-                !is_accounts_panel_key(&shown),
-                "显示出来的键不能是「账号与扫码」面板的入口键"
-            );
-        }
-
-        // 真实行集里的「封面协议」行：键位列确实写着这个组合键，
-        // 而激活计划是直接动作（不再是"回灌按键"）。
-        let rows = real_settings_rows(&Config::default());
-        let cover = rows
-            .metas()
-            .into_iter()
-            .find(|meta| meta.label == "封面协议")
-            .expect("真实行集里必须有「封面协议」");
-        assert_eq!(cover.key, COVER_PROTOCOL_ROW_KEY);
-        assert_eq!(cover.category, SettingsCategory::Interface);
-        assert_eq!(
-            plan_row_activation(&cover),
-            RowPlan::Direct(SettingsRowDirectAction::CycleCoverProtocol),
-            "这一行的激活计划必须直接循环封面协议"
-        );
-
-        // 反向：账号面板键与主题循环键都不归封面协议
-        assert!(!is_cover_protocol_key(&KeyEvent::new(
-            KeyCode::Char('P'),
-            KeyModifiers::NONE
-        )));
-        assert!(!is_cover_protocol_key(&KeyEvent::new(
-            KeyCode::Char('p'),
-            KeyModifiers::NONE
-        )));
-        assert!(!is_cover_protocol_key(&KeyEvent::new(
-            KeyCode::Char('p'),
-            KeyModifiers::CONTROL
-        )));
-        // 终端对 Shift+P 的两种报法都要认
-        assert!(is_cover_protocol_key(&KeyEvent::new(
-            KeyCode::Char('p'),
-            KeyModifiers::SHIFT
-        )));
-    }
-
     /// `P` = 账号与扫码面板，裸 `p` = 界面主题循环。
     ///
     /// 上一版 `p` 也被账号面板吃掉，KEYBINDINGS 里写的"设置页按 `p` 换主题"
-    /// 实际按不出来；这条把它们的分工钉死，同时保住 `Shift+P`（封面协议循环）。
+    /// 实际按不出来；这条把它们的分工钉死。
     #[test]
     fn p_cycles_the_theme_while_shift_p_opens_the_accounts_panel() {
         let none = KeyModifiers::NONE;
@@ -9159,9 +8976,8 @@ mod tests {
 
         assert!(!is_accounts_panel_key(&p), "裸 p 必须是主题循环");
         assert!(is_accounts_panel_key(&upper), "裸 P = 账号与扫码");
-        // Shift+P 是「封面协议」的循环键：不能被账号面板抢走，否则那一行成死键
-        assert!(!is_accounts_panel_key(&upper_shift), "Shift+P 归封面协议");
-        assert!(!is_accounts_panel_key(&lower_shift), "Shift+p 归封面协议");
+        assert!(is_accounts_panel_key(&upper_shift), "Shift+P = 账号与扫码");
+        assert!(is_accounts_panel_key(&lower_shift), "Shift+p = 账号与扫码");
         assert!(
             !is_accounts_panel_key(&KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL)),
             "组合键不归账号面板"
@@ -9435,7 +9251,7 @@ mod tests {
     ///
     /// `RowPlan` 已经没有 `Key` 变体 —— "计划是 `Key(_)`"在类型上就不可能。
     /// 这条把结论钉在**真实行集**上，并额外断言键位列不再广告任何已删除的键
-    /// （只剩 `Enter`，唯一例外是刻意保留的 `Shift+P` 封面协议行）。
+    /// （只剩 `Enter`）。
     #[test]
     fn no_real_settings_row_depends_on_a_per_row_shortcut() {
         let rows = real_settings_rows(&Config::default());
@@ -9449,12 +9265,6 @@ mod tests {
                 "「{}」的激活计划里不该有按键回灌",
                 meta.label
             );
-            if meta.key == COVER_PROTOCOL_ROW_KEY {
-                // 唯一保留的页面级组合键：显示 `S+P`，真的按得出来
-                assert_eq!(compact_key_label(&meta.key), "S+P");
-                assert_eq!(meta.label, "封面协议");
-                continue;
-            }
             assert_eq!(
                 compact_key_label(&meta.key),
                 "",

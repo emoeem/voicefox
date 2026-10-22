@@ -166,7 +166,7 @@ save_lyric = true            # 保存 .lrc 并内嵌歌词
 | `accent_follow_cover` | `"strong"` | 界面强调色跟随专辑封面主色：`off` / `subtle` / `strong`（也接受 `true`=`strong`、`false`=`off`；灰调封面自动回落主题色）。设置页「界面 → 封面主色跟随」可循环切换 |
 | `aggregate_search` | `true` | 聚合搜索所有已启用音源 |
 | `show_cover` | `true` | 显示封面 |
-| `cover_protocol` | `"auto"` | `auto` / `kitty` / `sixel` / `iterm2` / `halfblocks`。`auto` 在启动时向终端查询支持的图形协议，`halfblocks` 不发送任何图形序列 |
+| `cover_protocol` | `"auto"` | `auto` / `kitty` / `sixel` / `iterm2` / `halfblocks`。`auto` 在启动时向终端查询支持的图形协议，`halfblocks` 不发送任何图形序列。设置页「界面 → 高清封面」在取值为 `halfblocks` 时显示关闭、其余取值显示开启，切换时关闭写入 `halfblocks`、开启写入 `auto`，因此经开关切换会覆盖显式指定的协议 |
 | `max_fps` | `20` | 渲染帧率上限 1-60 |
 | `visualizer` | `"off"` | 频谱可视化：`off` / `bars`。`bars` 采集系统输出监视流画柱状频谱（Linux，需要 parec（pulseaudio-utils / pipewire-pulse）或 pw-record），`w` 键运行时切换 |
 | `status_bar_items` | 全部字段 | 状态栏内容与顺序，见下表 |

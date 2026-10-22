@@ -1668,19 +1668,15 @@ fn run_app(
         let config = ctx.config.read().unwrap_or_else(|e| e.into_inner());
         (config.ui.cover_protocol.clone(), config.ui.show_cover)
     };
+    let mut cover_graphics = cover::graphics_requested(&cover_protocol);
     let mut main_page = pages::main_page::MainPage::new(cover::CoverRenderer::detect(
         &cover_protocol,
         cover_enabled,
     ));
-    // 设置页的 `Shift+P` 循环据启动时确定的协议跳过本终端画不出的协议
-    let cover_probed = cover_enabled && cover::protocol_from_config(&cover_protocol).is_none();
     settings_page
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .set_cover_capabilities(cover::CoverCapabilities::detect(
-            main_page.cover_protocol(),
-            cover_probed,
-        ));
+        .set_cover_graphics_available(main_page.cover_graphics_available());
     let mut leaderboard =
         pages::leaderboard::LeaderboardPage::new(ctx.source_manager.leaderboard_sources());
     let mut playlists = pages::playlists::PlaylistsPage::new(ctx.source_manager.playlist_sources());
@@ -1969,6 +1965,23 @@ fn run_app(
                 main_page.release_cover_image();
             }
             cover_enabled = cover_requested;
+            needs_render = true;
+        }
+
+        let graphics_requested = cover::graphics_requested(
+            &ctx.config
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .ui
+                .cover_protocol,
+        );
+        if graphics_requested != cover_graphics {
+            if main_page.set_cover_graphics(graphics_requested) {
+                // 全量重绘以覆盖终端里残留的图形
+                let size = terminal.size()?;
+                terminal.resize(Rect::new(0, 0, size.width, size.height))?;
+            }
+            cover_graphics = graphics_requested;
             needs_render = true;
         }
 
