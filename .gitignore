@@ -12,3 +12,6 @@ flutter/build/
 
 # 本地 agent 的计划/工作文件
 .zcode/
+
+# 本地 agent 工具状态
+.mimosa/
