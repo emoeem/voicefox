@@ -1804,7 +1804,7 @@ fn run_app(
     let default_source = ctx
         .config
         .read()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .source
         .default
         .as_str()
@@ -1966,7 +1966,7 @@ fn run_app(
                 let cover_url = ctx
                     .current_song
                     .read()
-                    .unwrap()
+                    .unwrap_or_else(|e| e.into_inner())
                     .as_ref()
                     .and_then(|song| song.cover_url.clone());
                 let cover_service = Arc::clone(&ctx.cover_service);
@@ -3092,7 +3092,7 @@ fn run_app(
                 && !text_input_active
                 && settings_page
                     .lock()
-                    .unwrap()
+                    .unwrap_or_else(|e| e.into_inner())
                     .consumes_key(&key, &kb_resolver);
 
             if !text_input_active
@@ -4440,12 +4440,10 @@ fn run_app(
 
                 let action = match active_tab {
                     NavTab::Main => main_page.handle_mouse(mouse, ui_areas.content, &ctx, activate),
-                    NavTab::Search => {
-                        search_page
-                            .lock()
-                            .unwrap()
-                            .handle_mouse(mouse, ui_areas.content, activate)
-                    }
+                    NavTab::Search => search_page
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .handle_mouse(mouse, ui_areas.content, activate),
                     NavTab::Leaderboard => {
                         leaderboard.handle_mouse(mouse, ui_areas.content, activate, &ctx)
                     }
@@ -5397,7 +5395,7 @@ fn execute_action(
                     Ok(Ok(parts)) if !parts.is_empty() => {
                         if let Some(action) = search_page
                             .lock()
-                            .unwrap()
+                            .unwrap_or_else(|e| e.into_inner())
                             .complete_bili_part_request(request_id, songs, index, parts)
                         {
                             let _ = tx.send(action);
@@ -5406,7 +5404,7 @@ fn execute_action(
                     Ok(Ok(_)) => {
                         if search_page
                             .lock()
-                            .unwrap()
+                            .unwrap_or_else(|e| e.into_inner())
                             .fail_bili_part_request(request_id)
                         {
                             let _ = tx.send(AppAction::ShowNotification(
@@ -5417,7 +5415,7 @@ fn execute_action(
                     Ok(Err(error)) => {
                         if search_page
                             .lock()
-                            .unwrap()
+                            .unwrap_or_else(|e| e.into_inner())
                             .fail_bili_part_request(request_id)
                         {
                             let _ = tx.send(AppAction::ShowNotification(
@@ -5428,7 +5426,7 @@ fn execute_action(
                     Err(_) => {
                         if search_page
                             .lock()
-                            .unwrap()
+                            .unwrap_or_else(|e| e.into_inner())
                             .fail_bili_part_request(request_id)
                         {
                             let _ = tx.send(AppAction::ShowNotification(
@@ -5560,7 +5558,7 @@ fn execute_action(
                 let failed = ctx
                     .current_song
                     .read()
-                    .unwrap()
+                    .unwrap_or_else(|e| e.into_inner())
                     .as_ref()
                     .map(|song| format!("{} - {}", song.name, song.singer))
                     .unwrap_or_else(|| "当前歌曲".to_string());
@@ -5582,7 +5580,7 @@ fn execute_action(
             let default_source = ctx
                 .config
                 .read()
-                .unwrap()
+                .unwrap_or_else(|e| e.into_inner())
                 .source
                 .default
                 .as_str()
@@ -6448,7 +6446,7 @@ async fn resolve_playable_song(
     } = request;
     let next_js_source_index = js_source_index
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .and_then(|index| index.checked_add(1));
     let retrying_next_js_source = next_js_source_index.is_some();
     if play_request_id.load(Ordering::SeqCst) != request_id {

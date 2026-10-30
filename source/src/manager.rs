@@ -245,7 +245,7 @@ impl SourceManager {
     fn js_sources(&self) -> Vec<Arc<dyn MusicSource>> {
         self.js_sources
             .read()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .sources
             .iter()
             .map(|entry| Arc::clone(&entry.source))
@@ -255,7 +255,7 @@ impl SourceManager {
     pub fn js_source_names(&self) -> Vec<String> {
         self.js_sources
             .read()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .sources
             .iter()
             .map(|entry| entry.source.name().to_string())
@@ -265,7 +265,7 @@ impl SourceManager {
     pub fn js_source_name(&self, index: usize) -> Option<String> {
         self.js_sources
             .read()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .sources
             .get(index)
             .map(|entry| entry.source.name().to_string())
@@ -274,7 +274,7 @@ impl SourceManager {
     pub fn js_source_name_for_origin(&self, origin: &str) -> Option<String> {
         self.js_sources
             .read()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .sources
             .iter()
             .find(|entry| entry.origin == origin)

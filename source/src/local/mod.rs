@@ -340,7 +340,7 @@ impl LocalSource {
     pub fn all_songs(&self) -> Vec<SongInfo> {
         self.songs
             .read()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .values()
             .flat_map(|songs| songs.iter().map(|s| s.song.clone()))
             .collect()

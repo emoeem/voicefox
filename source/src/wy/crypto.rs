@@ -14,7 +14,9 @@ use aes::cipher::{BlockEncrypt, KeyInit};
 pub fn eapi(url: &str, data: &serde_json::Value) -> String {
     use md5::Digest;
 
-    let text = serde_json::to_string(data).unwrap();
+    // data 实际只会是 string-key 的 JSON Value，序列化不会失败；防御性兜底
+    // 而不是在每条网易云请求的加密热路径上留 panic 点。
+    let text = serde_json::to_string(data).unwrap_or_default();
     let message = format!("nobody{}use{}md5forencrypt", url, text);
     let digest = format!("{:x}", md5::Md5::digest(message.as_bytes()));
     let data_str = format!("{}-36cd479b6b5-{}-36cd479b6b5-{}", url, text, digest);
