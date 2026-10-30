@@ -218,6 +218,10 @@ struct SourceProbe {
 
 pub struct DownloadEngine {
     client: reqwest::Client,
+    /// 控制请求（探测、取元数据、小文件）与流式下载的「响应头等待」和
+    /// 「字节停滞」上限。不设为 client 级整体 timeout：那会覆盖整个响应体
+    /// 读取，慢速网络下大文件下载总时长一超就被掐断。
+    request_timeout: Duration,
     options: DownloadOptions,
 }
 
@@ -227,9 +231,8 @@ impl DownloadEngine {
     }
 
     pub fn new(proxy_url: &str, timeout_secs: u64, options: DownloadOptions) -> Self {
-        let timeout = Duration::from_secs(timeout_secs.clamp(1, 600));
+        let request_timeout = Duration::from_secs(timeout_secs.clamp(1, 600));
         let mut builder = reqwest::Client::builder()
-            .timeout(timeout)
             .connect_timeout(Duration::from_secs(timeout_secs.clamp(1, 30)))
             .pool_idle_timeout(Duration::from_secs(120))
             .pool_max_idle_per_host(16)
@@ -242,6 +245,7 @@ impl DownloadEngine {
         }
         Self {
             client: builder.build().unwrap_or_default(),
+            request_timeout,
             options,
         }
     }
@@ -254,6 +258,7 @@ impl DownloadEngine {
         limit: u64,
     ) -> Result<Vec<u8>, DownloadError> {
         let mut response = apply_headers(self.client.get(url), headers)
+            .timeout(self.request_timeout)
             .send()
             .await
             .map_err(|error| DownloadError::Network(error.to_string()))?;
@@ -404,7 +409,10 @@ impl DownloadEngine {
 
     /// 探测源能力：优先 HEAD，失败再用 `Range: bytes=0-0` 兜底。
     async fn probe(&self, url: &str, headers: &[(String, String)]) -> SourceProbe {
-        if let Ok(response) = apply_headers(self.client.head(url), headers).send().await
+        if let Ok(response) = apply_headers(self.client.head(url), headers)
+            .timeout(self.request_timeout)
+            .send()
+            .await
             && response.status().is_success()
         {
             let headers = response.headers().clone();
@@ -421,6 +429,7 @@ impl DownloadEngine {
         // 却能从 Content-Range 同时确认总长度与分片能力。
         match apply_headers(self.client.get(url), headers)
             .header(RANGE, "bytes=0-0")
+            .timeout(self.request_timeout)
             .send()
             .await
         {
@@ -483,10 +492,16 @@ impl DownloadEngine {
         dest: &Path,
         progress: &Arc<DownloadProgress>,
     ) -> Result<u64, DownloadError> {
-        let mut response = apply_headers(self.client.get(url), &req.headers)
-            .send()
-            .await
-            .map_err(|error| DownloadError::Network(error.to_string()))?;
+        // 响应头等待受 request_timeout 约束；字节流本体不设整体超时（大文件
+        // 下载总时长不可预估），改用逐 chunk 停滞检测：超过 request_timeout
+        // 没有新数据才算失败。
+        let mut response = tokio::time::timeout(
+            self.request_timeout,
+            apply_headers(self.client.get(url), &req.headers).send(),
+        )
+        .await
+        .map_err(|_| DownloadError::Network("等待下载响应超时".to_string()))?
+        .map_err(|error| DownloadError::Network(error.to_string()))?;
         let status = response.status();
         if !status.is_success() {
             return Err(DownloadError::Http {
@@ -501,10 +516,15 @@ impl DownloadEngine {
         let mut written: u64 = 0;
         loop {
             progress.check_cancelled()?;
-            let chunk = response
-                .chunk()
-                .await
-                .map_err(|error| DownloadError::Network(error.to_string()))?;
+            let chunk = match tokio::time::timeout(self.request_timeout, response.chunk()).await {
+                Ok(result) => result.map_err(|error| DownloadError::Network(error.to_string()))?,
+                Err(_) => {
+                    return Err(DownloadError::Network(format!(
+                        "下载停滞：超过 {} 秒没有收到新数据",
+                        self.request_timeout.as_secs()
+                    )));
+                }
+            };
             let Some(chunk) = chunk else { break };
             file.write_all(&chunk)
                 .await
@@ -598,6 +618,7 @@ impl DownloadEngine {
                 Arc::clone(&file),
                 Arc::clone(progress),
                 attempts,
+                self.request_timeout,
             ));
         }
 
@@ -643,6 +664,7 @@ async fn download_part(
     file: Arc<std::fs::File>,
     progress: Arc<DownloadProgress>,
     attempts: u32,
+    request_timeout: std::time::Duration,
 ) -> Result<(), DownloadError> {
     let expected = end - start + 1;
     let mut last_error = DownloadError::Other("分片下载失败".to_string());
@@ -653,7 +675,16 @@ async fn download_part(
         progress.check_cancelled()?;
         let request =
             apply_headers(client.get(&url), &headers).header(RANGE, format!("bytes={start}-{end}"));
-        match part_attempt(&progress, file.as_ref(), request, start, expected).await {
+        match part_attempt(
+            &progress,
+            file.as_ref(),
+            request,
+            start,
+            expected,
+            request_timeout,
+        )
+        .await
+        {
             Ok(()) => return Ok(()),
             // 音源声称支持 Range 却返回整份内容：立即回退单连接，不重试。
             Err(error @ DownloadError::RangesUnsupported) => return Err(error),
@@ -673,10 +704,11 @@ async fn part_attempt(
     request: reqwest::RequestBuilder,
     start: u64,
     expected: u64,
+    request_timeout: std::time::Duration,
 ) -> Result<(), DownloadError> {
-    let mut response = request
-        .send()
+    let mut response = tokio::time::timeout(request_timeout, request.send())
         .await
+        .map_err(|_| DownloadError::Network("等待分片响应超时".to_string()))?
         .map_err(|error| DownloadError::Network(error.to_string()))?;
     let status = response.status();
     if !status.is_success() {
@@ -694,10 +726,16 @@ async fn part_attempt(
         if let Err(error) = progress.check_cancelled() {
             break Err(error);
         }
-        let chunk = match response.chunk().await {
-            Ok(Some(chunk)) => chunk,
-            Ok(None) => break Ok(()),
-            Err(error) => break Err(DownloadError::Network(error.to_string())),
+        let chunk = match tokio::time::timeout(request_timeout, response.chunk()).await {
+            Ok(Ok(Some(chunk))) => chunk,
+            Ok(Ok(None)) => break Ok(()),
+            Ok(Err(error)) => break Err(DownloadError::Network(error.to_string())),
+            Err(_) => {
+                break Err(DownloadError::Network(format!(
+                    "分片下载停滞：超过 {} 秒没有收到新数据",
+                    request_timeout.as_secs()
+                )));
+            }
         };
         if let Err(error) = write_at(file, offset, &chunk) {
             break Err(DownloadError::Io(error));

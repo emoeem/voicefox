@@ -2997,10 +2997,14 @@ fn run_app(
                 needs_render = true;
                 continue;
             }
+            // README/KEYBINDINGS 承诺 ? / F1，帮助浮层自身滚动用 j/k/g/G，
+            // 这三个键在输入态之外不冲突；`\` 保留为隐藏别名（避免破坏存量习惯）。
             if !text_input_active
                 && matches!(
                     (key.modifiers, key.code),
                     (KeyModifiers::NONE, KeyCode::Char('\\'))
+                        | (KeyModifiers::NONE, KeyCode::Char('?'))
+                        | (KeyModifiers::NONE, KeyCode::F(1))
                 )
             {
                 let config = ctx.config.read().unwrap_or_else(|e| e.into_inner());
