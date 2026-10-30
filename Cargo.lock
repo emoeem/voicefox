@@ -2001,7 +2001,7 @@ dependencies = [
 
 [[package]]
 name = "lx-core"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2015,7 +2015,7 @@ dependencies = [
 
 [[package]]
 name = "lx-lyric"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2028,7 +2028,7 @@ dependencies = [
 
 [[package]]
 name = "lx-player"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "anyhow",
  "libmpv2",
@@ -2039,7 +2039,7 @@ dependencies = [
 
 [[package]]
 name = "lx-source"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "aes",
  "anyhow",
@@ -2073,7 +2073,7 @@ dependencies = [
 
 [[package]]
 name = "lx-test"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "lx-core",
  "lx-player",
@@ -4303,7 +4303,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "voicefox-app"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "anyhow",
  "base64",
@@ -4355,7 +4355,7 @@ dependencies = [
 
 [[package]]
 name = "voicefox-application"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4370,7 +4370,7 @@ dependencies = [
 
 [[package]]
 name = "voicefox-ffi"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "async-trait",
  "flutter_rust_bridge",
@@ -4382,7 +4382,7 @@ dependencies = [
 
 [[package]]
 name = "voicefox-runtime"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "anyhow",
  "async-trait",
