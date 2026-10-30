@@ -1,12 +1,12 @@
 {
-    "version": "0.8.0",
+    "version": "0.8.1",
     "description": "终端里的音乐播放器 — Rust TUI 版 lx-music-desktop",
     "homepage": "https://github.com/emoeem/voicefox",
     "license": "MIT",
     "architecture": {
         "64bit": {
-            "url": "https://github.com/emoeem/voicefox/releases/download/v0.8.0/voicefox-windows-x86_64.zip",
-            "hash": "e845b32ea572d7685966bd9131128ae0b0ec42d85af8e74e459969eba5a7f89d"
+            "url": "https://github.com/emoeem/voicefox/releases/download/v0.8.1/voicefox-windows-x86_64.zip",
+            "hash": "273743d8ca5a616a48330e2e238c1dbe543a12264177e75f511b9958c5a0f7f3"
         }
     },
     "bin": "voicefox.exe",
