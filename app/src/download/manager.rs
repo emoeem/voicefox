@@ -322,6 +322,27 @@ impl DownloadManager {
         tasks.iter().filter(|task| task.state.is_active()).count()
     }
 
+    /// 状态栏下载指示用的轻量摘要：锁内算好 (活动数, 平均百分比)，
+    /// 不做任务视图深克隆——底栏每帧调用，snapshot() 的全量字符串克隆
+    /// 在任务记录堆积后是每帧固定开销。
+    pub fn progress_summary(&self) -> Option<(usize, Option<u32>)> {
+        let tasks = self.tasks.lock().unwrap_or_else(|error| error.into_inner());
+        let active: Vec<_> = tasks.iter().filter(|task| task.state.is_active()).collect();
+        if active.is_empty() {
+            return None;
+        }
+        let ratios: Vec<f64> = active
+            .iter()
+            .filter_map(|task| task.progress.snapshot().ratio())
+            .collect();
+        let percent = if ratios.is_empty() {
+            None
+        } else {
+            Some(((ratios.iter().sum::<f64>() / ratios.len() as f64) * 100.0).round() as u32)
+        };
+        Some((active.len(), percent))
+    }
+
     /// 取消任务；已完成的任务只是从列表中移除。
     pub fn cancel(&self, id: u64) {
         let mut tasks = self.tasks.lock().unwrap_or_else(|error| error.into_inner());

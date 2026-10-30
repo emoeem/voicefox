@@ -1,7 +1,28 @@
+use std::future::Future;
 use std::sync::{
     Arc, RwLock,
     atomic::{AtomicU64, Ordering},
 };
+
+/// fire-and-forget spawn：任务 panic 时向用户发一条通知而不是静默消失。
+///
+/// 各任务内部的业务 Err 分支自己发 Notification；这里兜住 panic 那条路——
+/// 此前歌词/搜索任务 panic 只有全局 hook 的一条日志，用户只看到功能静默失效。
+fn spawn_reported<F>(events: broadcast::Sender<ApplicationEvent>, what: &'static str, future: F)
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    let task = tokio::spawn(future);
+    tokio::spawn(async move {
+        if let Err(join_error) = task.await
+            && join_error.is_panic()
+        {
+            let _ = events.send(ApplicationEvent::Notification {
+                message: format!("{what}处理异常退出，请重试"),
+            });
+        }
+    });
+}
 
 use lx_core::model::source::PlayerState;
 use lx_core::traits::player::PlayerBackend;
@@ -191,7 +212,7 @@ impl ApplicationService {
                 let lyrics = self.lyrics.clone();
                 let events = self.events.clone();
                 let state = Arc::clone(&self.state);
-                tokio::spawn(async move {
+                spawn_reported(events.clone(), "歌词加载", async move {
                     match lyrics.load(&song, generation).await {
                         Ok(value) => {
                             state.write().unwrap_or_else(|e| e.into_inner()).lyrics = Some(value);
@@ -246,7 +267,7 @@ impl ApplicationService {
         let search = self.search.clone();
         let events = self.events.clone();
         let state = Arc::clone(&self.state);
-        tokio::spawn(async move {
+        spawn_reported(events.clone(), "搜索", async move {
             match search.search(&keyword, page, source).await {
                 Ok((items, has_more)) => {
                     let mut current = state.write().unwrap_or_else(|e| e.into_inner());
@@ -397,7 +418,7 @@ impl ApplicationService {
                 let lyrics = self.lyrics.clone();
                 let events = self.events.clone();
                 let state = Arc::clone(&self.state);
-                tokio::spawn(async move {
+                spawn_reported(events.clone(), "歌词加载", async move {
                     match lyrics.load(&resolved_song, generation).await {
                         Ok(value) => {
                             state.write().unwrap_or_else(|e| e.into_inner()).lyrics = Some(value);

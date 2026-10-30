@@ -758,24 +758,12 @@ fn policy_suffix(policy: SourcePolicy, platform_name: Option<&str>) -> String {
 
 /// 状态栏上的下载进度摘要；没有进行中的任务时返回 `None`。
 fn download_indicator(ctx: &AppContext) -> Option<String> {
-    let tasks = ctx.downloads.snapshot();
-    let active: Vec<_> = tasks.iter().filter(|task| task.state.is_active()).collect();
-    if active.is_empty() {
-        return None;
-    }
-    let ratios: Vec<f64> = active
-        .iter()
-        .filter_map(|task| task.progress.ratio())
-        .collect();
-    let percent = if ratios.is_empty() {
-        None
-    } else {
-        let average = ratios.iter().sum::<f64>() / ratios.len() as f64;
-        Some((average * 100.0).round() as u32)
-    };
+    // 轻量摘要（锁内算好，零克隆）：底栏每帧走到这里，snapshot() 的全量
+    // 任务视图深克隆在下载记录堆积后是每帧固定开销。
+    let (active, percent) = ctx.downloads.progress_summary()?;
     Some(match percent {
-        Some(percent) => format!("下载 {} 项 {percent}%", active.len()),
-        None => format!("下载 {} 项", active.len()),
+        Some(percent) => format!("下载 {active} 项 {percent}%"),
+        None => format!("下载 {active} 项"),
     })
 }
 

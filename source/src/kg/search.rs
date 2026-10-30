@@ -117,6 +117,12 @@ pub async fn search(keyword: &str, page: u32, limit: u32) -> Result<SearchResult
         .await
         .map_err(|e| SearchError::Network(e.to_string()))?;
 
+    // 频控/网关错误返回的是 HTML 而不是 JSON：先看状态码，把 4xx/5xx 归类为
+    // Network（可重试），而不是让它落进 Parse 误导调用方。
+    if !resp.status().is_success() {
+        return Err(SearchError::Network(format!("HTTP {}", resp.status())));
+    }
+
     let text = resp
         .text()
         .await

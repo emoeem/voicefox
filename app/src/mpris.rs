@@ -39,9 +39,18 @@ pub async fn start() -> anyhow::Result<(
         .build()
         .await?;
 
-    tokio::spawn(async move {
+    let update_task = tokio::spawn(async move {
         if let Err(error) = run_updates(connection, update_rx).await {
             tracing::warn!("MPRIS update service stopped: {error}");
+        }
+    });
+    // panic 不能像 Err 一样走上面的日志分支：单独 await JoinHandle 记一笔，
+    // 否则媒体键静默失灵只剩全局 hook 的一条日志。
+    tokio::spawn(async move {
+        if let Err(join_error) = update_task.await
+            && join_error.is_panic()
+        {
+            tracing::warn!("MPRIS update service panicked: {join_error}");
         }
     });
 
@@ -170,8 +179,12 @@ impl MprisPlayer {
     #[zbus(property)]
     fn metadata(&self) -> HashMap<String, Value<'static>> {
         let mut values = HashMap::new();
-        let track_path = OwnedObjectPath::try_from(self.state.track_path.clone())
-            .unwrap_or_else(|_| OwnedObjectPath::try_from("/").unwrap());
+        // "/" 是 MPRIS 规范里的合法 trackid 占位；展开常量避免在 zbus 错误
+        // 路径里再埋一个 unwrap。
+        let track_path =
+            OwnedObjectPath::try_from(self.state.track_path.clone()).unwrap_or_else(|_| {
+                OwnedObjectPath::try_from("/").expect("static \"/\" is a valid object path")
+            });
         values.insert("mpris:trackid".to_string(), Value::new(track_path));
         if self.state.duration_micros > 0 {
             values.insert(

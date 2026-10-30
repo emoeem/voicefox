@@ -416,8 +416,11 @@ impl MainPage {
                 }
                 Action::ListActivate => {
                     if self.selected < len {
-                        let (songs, _) = ctx.playlist.snapshot();
-                        return AppAction::PlaySong {
+                        // 队列内播放走 Arc 共享：snapshot() 的全量深克隆在万首
+                        // 队列下每次 Enter/双击都是一次 O(n) 拷贝（playlist
+                        // manager 的注释也明确 snapshot 仅供低频路径）。
+                        let (songs, _) = ctx.playlist.snapshot_arc();
+                        return AppAction::PlayFromQueue {
                             songs,
                             index: self.selected,
                         };
@@ -460,8 +463,8 @@ impl MainPage {
                 self.selected = (self.selected + ctx.page_step()).min(len.saturating_sub(1));
             }
             _ if super::is_song_activation_key(key) && self.selected < len => {
-                let (songs, _) = ctx.playlist.snapshot();
-                return AppAction::PlaySong {
+                let (songs, _) = ctx.playlist.snapshot_arc();
+                return AppAction::PlayFromQueue {
                     songs,
                     index: self.selected,
                 };
