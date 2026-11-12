@@ -31,7 +31,7 @@ pub async fn download_and_cache(client: &reqwest::Client, url: &str) -> Result<C
     }
 
     // 本地文件直接返回路径
-    if url.starts_with('/') || url.starts_with("file://") {
+    if is_local_path(url) {
         let path = url.strip_prefix("file://").unwrap_or(url);
         if !tokio::fs::try_exists(path).await.unwrap_or(false) {
             return Err("封面文件不存在".to_string());
@@ -100,6 +100,18 @@ pub async fn download_and_cache(client: &reqwest::Client, url: &str) -> Result<C
         path: cache_path.to_string_lossy().to_string(),
         aspect,
     })
+}
+
+/// 判断封面地址是否指向本地文件。
+fn is_local_path(url: &str) -> bool {
+    if url.starts_with("file://") {
+        return true;
+    }
+    // 绝对路径的形式随平台而异，需要 is_absolute 判断。
+    // 但以 `//` 开头的地址是省略协议的远程地址，在 windows 上会被解析成 UNC 路径，
+    // 需要先行排除。本地音乐的 cover_url 指向缓存目录，而后者绝大多数情况下不在
+    // UNC 路径上，因此排除是安全的。
+    !url.starts_with("//") && std::path::Path::new(url).is_absolute()
 }
 
 /// 完整解码图片并取像素宽高比，失败返回 None（同步实现走共享缓存模块）。
@@ -178,7 +190,22 @@ fn cover_referer(url: &str) -> Option<&'static str> {
 }
 #[cfg(test)]
 mod tests {
-    use super::{is_usable_remote_url, validate_remote_url};
+    use super::{is_local_path, is_usable_remote_url, validate_remote_url};
+
+    #[test]
+    fn local_paths_are_told_apart_from_remote_urls() {
+        assert!(is_local_path("file:///tmp/cover.jpg"));
+        #[cfg(unix)]
+        assert!(is_local_path("/tmp/cover.jpg"));
+        #[cfg(windows)]
+        {
+            assert!(is_local_path(r"C:\Users\me\cover.jpg"));
+            assert!(is_local_path(r"\\server\share\cover.jpg"));
+        }
+        assert!(!is_local_path("//y.gtimg.cn/music/x.jpg"));
+        assert!(!is_local_path("https://p1.music.126.net/x.jpg"));
+        assert!(!is_local_path("cover.jpg"));
+    }
 
     #[test]
     fn truncated_cover_urls_are_rejected_with_a_reason() {
