@@ -1,0 +1,13 @@
+{
+  "derivation_note": "musid-dli Playlist wire shape (pinned by musid-dli models/playlist.rs legacy+round-trip tests). Values modeled on musid-dli tests/fixtures/netease/playlist_detail_v3.json metadata and the 2026-11-16 live smoke note (trackCount 145). tracks deliberately empty: voicefox pages playlist tracks via get_playlist_detail/playlist_tracks, the Track list is not carried across this boundary (docs/MUSID_DLI_ADAPTER.md §2.7). Reconstructed, not captured.",
+  "id": { "provider": "netease", "id": "1" },
+  "title": "热歌榜",
+  "description": "每天更新的热门歌单",
+  "artwork_url": "https://cover.example/1.jpg",
+  "track_count": 145,
+  "tracks": [],
+  "play_count": 7,
+  "creator": "creator",
+  "link": "https://music.163.com/playlist?id=1",
+  "extra": { "hot": "1" }
+}

@@ -340,8 +340,8 @@ mod tests {
         for index in 0..6 {
             let path = dir.join(format!("{index}.jpg"));
             store_bytes(&path, &png_bytes(2, 2)).unwrap();
-            let old =
-                std::time::SystemTime::now() - std::time::Duration::from_secs(600 - index as u64);
+            let old = std::time::SystemTime::now()
+                - std::time::Duration::from_secs(600 + (5 - index) as u64 * 60);
             set_mtime(&path, old);
         }
 

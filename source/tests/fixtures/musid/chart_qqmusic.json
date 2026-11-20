@@ -1,0 +1,7 @@
+{
+  "derivation_note": "musid-dli Chart wire shape (pinned by models/chart.rs round-trip test); updated_description is the M3 slot carrying voicefox LeaderboardInfo.update. Values follow the models/chart.rs unit tests (qqmusic id 4, title 巅峰榜). Reconstructed, not captured; shape provenance in docs/MUSID_DLI_ADAPTER.md §7.",
+  "id": { "provider": "qqmusic", "id": "4" },
+  "title": "巅峰榜",
+  "description": "QQ 音乐巅峰榜",
+  "updated_description": "每日更新"
+}

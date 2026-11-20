@@ -1,0 +1,10 @@
+{
+  "derivation_note": "musid-dli PlaylistCategory wire shape (pinned by musid-dli models/playlist.rs tests). Group/count/hot shape follows musid-dli tests/fixtures/netease/playlist_catalogue.json (语种/风格 grouping, 热歌 category); provider kuwo filled because voicefox PlaylistCategory.source has no 'undeclared' state (docs/MUSID_DLI_ADAPTER.md §2.7). Reconstructed, not captured.",
+  "id": "10000",
+  "name": "热歌",
+  "provider": "kuwo",
+  "group": "hot",
+  "count": 30,
+  "hot": true,
+  "extra": {}
+}

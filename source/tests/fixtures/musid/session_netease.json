@@ -1,0 +1,10 @@
+{
+  "derivation_note": "musid-dli ProviderSession wire shape (musid-dli src/session.rs; serde defaults keep old files loadable). All values are dummy test data, never real credentials; the type's Debug never prints secret values. Mapping contract: docs/MUSID_DLI_ADAPTER.md §2.9 (cookies direct, tokens to extra with 'token:' prefix, display_name to user_name, user_id direct, expires_at/updated_at/region to extra keys).",
+  "cookies": { "MUSIC_U": "dummy-cookie-value" },
+  "tokens": { "refresh": "dummy-refresh-token" },
+  "user_id": "42",
+  "display_name": "测试账号",
+  "expires_at": 1800000000,
+  "updated_at": 1799990000,
+  "region": "CN"
+}

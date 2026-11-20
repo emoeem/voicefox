@@ -1,0 +1,12 @@
+{
+  "derivation_note": "musid-dli Track wire shape (pinned by musid-dli models/track.rs legacy+round-trip tests). Sample values from musid-dli tests/fixtures/netease/song_detail_legacy.json songs[0] and its unit-test pins (source_netease.rs song_link_detail_fixture_parses_legacy_field_names): id 789, title 老接口, artists 周杰伦/费玉清, album 老专辑 (id 42), duration 258000ms, artwork https://p, qualities High+Lossless+HiRes (maxBrLevel hires, plLevel lossless), extra pl_level=lossless. Reconstructed, not captured; shape provenance in docs/MUSID_DLI_ADAPTER.md §7.",
+  "id": { "provider": "netease", "id": "789" },
+  "title": "老接口",
+  "artists": ["周杰伦", "费玉清"],
+  "album": "老专辑",
+  "album_id": "42",
+  "duration": { "secs": 258, "nanos": 0 },
+  "artwork_url": "https://p",
+  "available_qualities": ["High", "Lossless", "HiRes"],
+  "extra": { "pl_level": "lossless" }
+}

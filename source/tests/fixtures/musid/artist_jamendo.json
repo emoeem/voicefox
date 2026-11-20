@@ -1,0 +1,6 @@
+{
+  "derivation_note": "musid-dli Artist wire shape (models/artist.rs). Values from musid-dli tests/fixtures/jamendo/track_parse.json item (artistId 508325, artist LoveRecycle). Reconstructed, not captured; shape provenance in docs/MUSID_DLI_ADAPTER.md §7.",
+  "id": { "provider": "jamendo", "id": "508325" },
+  "name": "LoveRecycle",
+  "artwork_url": null
+}

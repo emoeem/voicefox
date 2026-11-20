@@ -36,6 +36,18 @@ notify.workspace = true
 cue-rw.workspace = true
 tracing.workspace = true
 
+# musid-dli 适配层（V0）：纯模型映射 + fixture 测试，不接业务路径。
+# 仅 feature `musid-dli-adapter` 启用时进入依赖图；默认构建无此边。
+# `=0.2.0` 精确 pin：V0 映射断言对模型 serde wire 形状敏感，禁 semver 漂移。
+# `default-features = false`：模型层不需要 lofty/walkdir/cue-rw/tempfile。
+musid-dli = { version = "=0.2.0", optional = true, default-features = false }
+
+[features]
+musid-dli-adapter = ["dep:musid-dli"]
+# 歌词往返映射变体（仅测试）：额外启用 musid-dli 的 lyrics-conversions
+# （含 lyrics-helper，default-features=false），默认 adapter feature 不背它。
+musid-dli-adapter-lyrics = ["musid-dli-adapter", "musid-dli/lyrics-conversions"]
+
 [dev-dependencies]
 # 仅测试目标需要：用虚拟时间验证"每源超时"而不用真的等 8 秒。
 tokio = { workspace = true, features = ["test-util"] }

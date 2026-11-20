@@ -1,0 +1,25 @@
+{
+  "derivation_note": "musid-dli StreamInfo wire shape incl. M3 fields (pinned by musid-dli models/stream.rs legacy+round-trip tests). Values from musid-dli tests/fixtures/netease/song_enhance_player_url_v1.json data[0] and its unit-test pins (fixture_stream_response_pins_md5_checksum_algorithm): m801 CDN URL, content_length 8523134, lowercased md5 digest, quality High (exhigh tier), format Mp3 (encodeType mp3), size_is_advisory false, expires_at_unix None. Fallback slots are placeholder CDN URLs exercising the adapter merge contract (legacy first, trim, drop empties, keep-first dedup, structured metadata preserved). Reconstructed, not captured; shape provenance in docs/MUSID_DLI_ADAPTER.md §7.",
+  "url": "http://m801.music.126.net/20260101120000/9e2c8a42b0e1f3a7c5d6081112aab3cc/jdymusic/186016.mp3",
+  "quality": "High",
+  "format": "Mp3",
+  "duration": { "secs": 258, "nanos": 0 },
+  "content_length": 8523134,
+  "checksum": "0123456789abcdef0123456789abcdef",
+  "checksum_algorithm": "md5",
+  "headers": [["Referer", "https://music.163.com"]],
+  "fallback_urls": [
+    "http://m701.music.126.net/20260101120000/9e2c8a42b0e1f3a7c5d6081112aab3cc/jdymusic/186016.mp3",
+    "  http://m804.music.126.net/20260101120000/9e2c8a42b0e1f3a7c5d6081112aab3cc/jdymusic/186016.mp3  ",
+    " "
+  ],
+  "fallback_endpoints": [
+    {
+      "url": "http://m810.music.126.net/20260101120000/9e2c8a42b0e1f3a7c5d6081112aab3cc/jdymusic/186016.flac",
+      "headers": [["User-Agent", "voicefox"]],
+      "content_length": 24567890,
+      "quality": "Lossless"
+    }
+  ],
+  "size_is_advisory": false
+}
