@@ -10,8 +10,8 @@ env:
   CARGO_TERM_COLOR: always
   # audio-only 的 libmpv 构建，随 sha256 一同固定
   # 升级时同时改这两行：https://github.com/Uyanide/mpv-winbuild-audio/releases
-  LIBMPV_TAG: v0.41.0-4
-  LIBMPV_SHA256: ad4cc685cffb2866d249e76f10616bb2e827671dabcf05ee0cffc940efd2b0fa
+  LIBMPV_TAG: v0.42.0-1
+  LIBMPV_SHA256: 1da3d28d5b4c68fdb9ad7ef5c70f151e1e78da07d3fdea50394d7cb38b30c475
 
 jobs:
   # ── Lint：fmt + clippy 零警告门禁 ──
