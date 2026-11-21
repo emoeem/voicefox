@@ -23,6 +23,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      - name: Rust build cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Rust build cache
+        uses: Swatinem/rust-cache@v2
+
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -37,11 +43,19 @@ jobs:
       - name: Clippy (zero warnings)
         run: cargo clippy --workspace --all-targets -- -D warnings -A clippy::double_must_use
 
+      # V5（docs/MUSID_DLI_ADAPTER.md §15）：adapter 全特性编译过 lint——
+      # default 只带 joox 子 feature，netease/qqmusic 等九个子 feature 的
+      # 装配分支与 musid cfg 代码由本步覆盖（与 musid-stack job 的测试步
+      # 互补：lint 是零警告口径，测试是行为口径）。
+      - name: Clippy (adapter feature, zero warnings)
+        run: cargo clippy -p lx-source --features musid-dli-adapter --all-targets -- -D warnings -A clippy::double_must_use
+
   # ── musid-dli 双栈（V1，opt-in feature 门；docs/MUSID_DLI_ADAPTER.md §11）──
   # 覆盖全部 musid cfg 代码（manager 双栈路径 / adapter_musid / parity /
-  # musid_bootstrap）与 musid_dual_stack / musid_parity 集成测试；默认构建
-  # 零 musid 边由 tree 门锁死。§0 登记的 cover_cache flaky 与既有 workspace
-  # 测试 job 同口径（release/全量下未复现）。
+  # musid_bootstrap）与 musid_dual_stack / musid_parity 集成测试；默认树
+  # 「恰带 joox 适配边」由 tree 门锁死（V4-s1 §14.1，--no-default-features
+  # 保持零 musid）。§0 登记的 cover_cache flaky 与既有 workspace 测试 job
+  # 同口径（release/全量下未复现）。
   musid-stack:
     name: musid dual-stack (adapter features)
     runs-on: ubuntu-24.04
@@ -49,6 +63,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+
+      - name: Rust build cache
+        uses: Swatinem/rust-cache@v2
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -59,13 +76,25 @@ jobs:
       - name: Clippy (lyrics variant, zero warnings)
         run: cargo clippy -p lx-source --all-targets --features musid-dli-adapter-lyrics -- -D warnings -A clippy::double_must_use
 
-      - name: Default build carries no musid-dli edge
+      # V4-s1（docs/MUSID_DLI_ADAPTER.md §14.1）起的新不变式：default 树携
+      # 带且仅携带 joox 适配边（legacy joox 已删，适配面是唯一实现）；
+      # --no-default-features 保持零 musid 边（opt-out 不变）。
+      - name: Default build carries exactly the joox adapter edge
         run: |
-          if cargo tree -p lx-source -e normal | grep -q musid-dli; then
-            echo "default feature tree must not contain musid-dli" >&2
+          if ! cargo tree -p lx-source -e normal | grep -q musid-dli; then
+            echo "default feature tree must carry musid-dli (joox adapter is the sole joox implementation)" >&2
             exit 1
           fi
-          echo "no musid-dli edge in the default feature tree"
+          enabled_sources=$(cargo tree -p lx-source -e features -i musid-dli | grep -oE 'musid-dli feature "source-[a-z-]+"' | sort -u)
+          if [ "$enabled_sources" != 'musid-dli feature "source-joox"' ]; then
+            echo "default tree must enable only musid-dli/source-joox, got: $enabled_sources" >&2
+            exit 1
+          fi
+          if cargo tree -p lx-source --no-default-features -e normal | grep -q musid-dli; then
+            echo "--no-default-features must stay free of musid-dli" >&2
+            exit 1
+          fi
+          echo "default carries exactly the joox adapter edge; opt-out tree stays musid-free"
 
       - name: Tests (adapter feature)
         run: cargo test -p lx-source --features musid-dli-adapter
@@ -157,6 +186,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      - name: Rust build cache
+        uses: Swatinem/rust-cache@v2
+
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -185,12 +217,22 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      - name: Rust build cache
+        uses: Swatinem/rust-cache@v2
+
       - name: Install MinGW toolchain
         uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
           update: true
           install: mingw-w64-x86_64-toolchain
+          # V5（docs/MUSID_DLI_ADAPTER.md §15）：CI 注解 [msystem-mingw64]
+          # 「MINGW64 is deprecated. Migrate to UCRT64 or CLANG64」——迁移到
+          # UCRT64 涉及 libmpv DLL 的 ABI/导入表校验与全部 mingw64 路径绑定
+          # （sha256 固定的音频构建包按 MINGW64 ABI 出包），非平凡变更，按
+          # 注解自带的确认口径显式抑制并延后；真实迁移需重验 import table
+          # 检查与三平台打包。
+          suppress-deprecation-warnings: msystem-mingw64
 
       - name: Install MinGW and libmpv
         shell: pwsh
@@ -377,6 +419,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+
+      - name: Rust build cache
+        uses: Swatinem/rust-cache@v2
 
       - name: Install dependencies
         env:

@@ -1858,3 +1858,27 @@ parity 计数对 joox 静默（迁移监控语义已随 legacy 死亡终结，�
 - `cargo clippy -p lx-source --all-targets -- -D warnings`（default）与
   `--features musid-dli-adapter --all-targets`：均 0 错误；
 - `cargo fmt --all -- --check`：clean。
+
+### 14.2 V5 前置：CI 覆盖面（2026-11-22，随 V4-s1 后提交）
+
+- lint job 新增「Clippy (adapter feature, zero warnings)」步：
+  `cargo clippy -p lx-source --features musid-dli-adapter --all-targets
+  -- -D warnings`——default 只带 joox 子 feature（V4-s1 flip），其余九个
+  子 feature 的装配分支与 musid cfg 代码由本步以零警告口径覆盖（与
+  musid-stack job 的测试步互补）。`double_must_use` 例外沿用（core/
+  src/lib.rs 的登记：async-trait 宏展开，源码层面消除不掉）。
+- 全部五个 job（lint/musid-stack/三平台构建）加 Swatinem/rust-cache@v2。
+
+## 15. V5 CI 完整回归（2026-11-22）
+
+- **rust-cache**：五个 job 全部加 Swatinem/rust-cache@v2（checkout 后
+  一步），依赖缓存跨 run 复用。
+- **lint 覆盖 adapter 特性**：见 §14.2。
+- **MINGW64 弃用注解**：Windows job 的 msys2/setup-msys2 注解
+  `[msystem-mingw64] MINGW64 is deprecated. Migrate to UCRT64 or
+  CLANG64`——真实迁移涉及 libmpv DLL 的 ABI/导入表校验与全部 mingw64
+  路径绑定（sha256 固定的音频构建包按 MINGW64 ABI 出包），**非平凡
+  变更**，按注解自带的确认口径 `suppress-deprecation-warnings:
+  msystem-mingw64` 显式抑制并延后；真实迁移需重验 import table 检查与
+  三平台打包（诚实登记：这是抑制而非修复，延后理由如上）。
+- 验证：提交后的 CI run 全绿（run id 见提交说明与 F0 报告）。
