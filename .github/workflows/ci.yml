@@ -119,37 +119,37 @@ jobs:
           done
 
       - name: Tests (jamendo slice sub-feature, real provider)
-        run: cargo test -p lx-source --features musid-dli-adapter-jamendo
+        run: cargo test -p lx-source --features musid-dli-adapter-jamendo --test musid_jamendo_slice
 
       - name: Tests (fivesing slice sub-feature, real provider)
-        run: cargo test -p lx-source --features musid-dli-adapter-fivesing
+        run: cargo test -p lx-source --features musid-dli-adapter-fivesing --test musid_fivesing_slice
 
       - name: Tests (apple slice sub-feature, real provider)
-        run: cargo test -p lx-source --features musid-dli-adapter-apple
+        run: cargo test -p lx-source --features musid-dli-adapter-apple --test musid_apple_slice
 
       - name: Tests (bilibili slice sub-feature, real provider)
-        run: cargo test -p lx-source --features musid-dli-adapter-bilibili
+        run: cargo test -p lx-source --features musid-dli-adapter-bilibili --test musid_bilibili_slice
 
       - name: Tests (migu slice sub-feature, real provider)
-        run: cargo test -p lx-source --features musid-dli-adapter-migu
+        run: cargo test -p lx-source --features musid-dli-adapter-migu --test musid_migu_slice
 
       - name: Tests (kuwo slice sub-feature, real provider)
-        run: cargo test -p lx-source --features musid-dli-adapter-kuwo
+        run: cargo test -p lx-source --features musid-dli-adapter-kuwo --test musid_kuwo_slice
 
       - name: Tests (kugou slice sub-feature, real provider)
-        run: cargo test -p lx-source --features musid-dli-adapter-kugou
+        run: cargo test -p lx-source --features musid-dli-adapter-kugou --test musid_kugou_slice
 
       - name: Tests (qqmusic slice sub-feature, real provider)
-        run: cargo test -p lx-source --features musid-dli-adapter-qqmusic
+        run: cargo test -p lx-source --features musid-dli-adapter-qqmusic --test musid_qqmusic_slice
 
       - name: Tests (netease slice sub-feature, real provider)
-        run: cargo test -p lx-source --features musid-dli-adapter-netease
+        run: cargo test -p lx-source --features musid-dli-adapter-netease --test musid_netease_slice
 
       - name: Tests (qianqian slice sub-feature, real provider)
-        run: cargo test -p lx-source --features musid-dli-adapter-qianqian
+        run: cargo test -p lx-source --features musid-dli-adapter-qianqian --test musid_qianqian_slice
 
       - name: Tests (joox slice sub-feature, real provider)
-        run: cargo test -p lx-source --features musid-dli-adapter-joox
+        run: cargo test -p lx-source --features musid-dli-adapter-joox --test musid_joox_slice
 
       # 已落地切片歌词面的指纹 parity（fivesing/apple/kugou/kuwo）与歌词面
       # stub 路由用例（qianqian/joox）+ 全量 Migrated 账面组合（切片 1-11
@@ -157,6 +157,12 @@ jobs:
       # 下才编译。
       - name: Tests (all migrated slices + lyrics conversions combo)
         run: cargo test -p lx-source --features musid-dli-adapter-fivesing,musid-dli-adapter-jamendo,musid-dli-adapter-apple,musid-dli-adapter-bilibili,musid-dli-adapter-migu,musid-dli-adapter-kuwo,musid-dli-adapter-kugou,musid-dli-adapter-qqmusic,musid-dli-adapter-netease,musid-dli-adapter-qianqian,musid-dli-adapter-joox,musid-dli-adapter-lyrics
+
+      # js_user_api（JS 引擎子进程端到端）独立步：这些测试此前随每个逐源
+      # 步重复运行（11× flake 暴露面）；其 Node 子进程偶发即退（exit 0）是
+      # runner 环境抖动，与 musid 无关——收窄后单次运行。
+      - name: Tests (js user api, JS engine subprocess)
+        run: cargo test -p lx-source --test js_user_api
 
       # V3 本地库对账（docs/MUSID_DLI_ADAPTER.md §13.1）：musid local_scan /
       # read_lyrics 与 voicefox 本仓实现的运行期语料对账 + 本地歌词读委托
