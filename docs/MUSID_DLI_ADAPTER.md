@@ -1,12 +1,17 @@
-# musid-dli 适配层设计（V0 / V1）
+# musid-dli 适配层设计（V0 - V5）
 
 > 状态：**V0 已落地**（2026-11-20；映射函数 + fixture 测试）→ **V1 双栈接入
 > 已落地**（2026-11-21；opt-in 四面路由 + 回退计数 + parity 对账，§11）→
-> **V2 逐源迁移已完成全表**（2026-11-21；逐源路由注册表 + 能力缺失回落
-> 规则 + parity fixture 方案，§12；切片 1-11 已落地 = jamendo / fivesing /
-> apple / bilibili / migu / kuwo / kugou（v2-batch-1）+ qqmusic / netease /
-> qianqian / joox（v2-batch-2，§12.7），登记项 soda / youtube-music 不迁
-> （§12.4 末两行））。
+> **V2 逐源迁移已完成全表**（2026-11-21；§12；切片 1-11 = jamendo /
+> fivesing / apple / bilibili / migu / kuwo / kugou（v2-batch-1）+ qqmusic /
+> netease / qianqian / joox（v2-batch-2，§12.7），登记项 soda /
+> youtube-music 不迁）→ **V3 本地库/歌词缓存/封面接入**（2026-11-22；
+> §13.1/13.2/13.3 三切片，全部 feature 门控 + 对账测试）→ **V4 legacy 删除
+> 进行中**（2026-11-22；§14：joox（八面全删）与 qianqian（十面全删）的
+> legacy 实现已注销、适配面升 lx-source default 的唯一实现，其余 10 源
+> 缺口账本 §14.0）→ **V5 CI 强化已落地**（2026-11-22；§14.2/§15：rust-cache
+> 五 job + adapter 特性 clippy 步 + MINGW64 抑制）。最终验收 run
+> 44933775046 六 job 全绿。
 >
 > V0 落地物：
 > - 映射代码 `source/src/adapter_musid.rs`，由 `source/src/lib.rs` 在
