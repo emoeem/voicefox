@@ -155,8 +155,11 @@ jobs:
       # stub 路由用例（qianqian/joox）+ 全量 Migrated 账面组合（切片 1-11
       # 共 11 源）的账面/构建零脱节断言都在 musid-dli-adapter-lyrics 组合
       # 下才编译。
+      # 全量组合步收窄到 musid 测试目标（musid_dual_stack 的账面/构建零脱节
+      # 断言与歌词 stub 路由用例在此组合下才编译）：js_user_api 不再随组合
+      # 步全量暴露——其 Node 子进程在重组合构建下 flake 频发（已单步单次）。
       - name: Tests (all migrated slices + lyrics conversions combo)
-        run: cargo test -p lx-source --features musid-dli-adapter-fivesing,musid-dli-adapter-jamendo,musid-dli-adapter-apple,musid-dli-adapter-bilibili,musid-dli-adapter-migu,musid-dli-adapter-kuwo,musid-dli-adapter-kugou,musid-dli-adapter-qqmusic,musid-dli-adapter-netease,musid-dli-adapter-qianqian,musid-dli-adapter-joox,musid-dli-adapter-lyrics
+        run: cargo test -p lx-source --features musid-dli-adapter-fivesing,musid-dli-adapter-jamendo,musid-dli-adapter-apple,musid-dli-adapter-bilibili,musid-dli-adapter-migu,musid-dli-adapter-kuwo,musid-dli-adapter-kugou,musid-dli-adapter-qqmusic,musid-dli-adapter-netease,musid-dli-adapter-qianqian,musid-dli-adapter-joox,musid-dli-adapter-lyrics --test musid_dual_stack --test musid_parity
 
       # js_user_api（JS 引擎子进程端到端）独立步：这些测试此前随每个逐源
       # 步重复运行（11× flake 暴露面）；其 Node 子进程偶发即退（exit 0）是
