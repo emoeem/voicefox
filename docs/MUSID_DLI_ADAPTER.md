@@ -1582,3 +1582,72 @@ ParityMatch/Mismatch 噪声。
   musid-dli-adapter-qianqian,musid-dli-adapter-joox --tests` 与
   歌词变体、默认基线、fmt/tree 门：结果见交付记录（外层门禁复跑口径
   与 §12.5/§12.6 相同）。
+
+---
+
+## 13. V3 本地库 / 歌词 / 封面接入（2026-11-21 起；逐切片）
+
+原则（master plan §13.5 + §13.3）：voicefox 逐步**使用** musid-dli 的通用
+元数据、CUE、Artwork、Lyrics 能力；数据库、索引 schema、Watcher 调度、
+UI、进度与用户操作仍由 voicefox 管理；SourceManager 策略不动。每个切片
+以 parity 对账测试为证据（迁移前后对比扫描结果、曲目数量、CUE 轨、标签、
+歌词），musid-dli 0.2.0 从 crates.io 引入，子 feature 门控，默认树零变化。
+
+### 13.1 切片 s1：本地扫描对账 + 本地歌词读委托（musid-dli-adapter-local）
+
+**feature**：`musid-dli-adapter-local = ["musid-dli-adapter", "musid-dli/local"]`
+（source/Cargo.toml）。musid `local` 面带来 local_scan 扫描核心、
+`local::read_lyrics` 歌词读（L17/L18 全量）、tag_write 标签写（L16 全量）。
+
+**委托（唯一的行为接线）**：`LocalSource::read_local_lyric`
+（`source/src/local/mod.rs`）在 feature 下整体委托
+`musid_dli::local::read_lyrics`——该实现是 voicefox 原函数的逐字移植
+（外挂 `.lrc`（小写扩展名）优先、UTF-8 失败降级 GB18030、非空白外挂胜出、
+否则内嵌 `ItemKey::Lyrics` 兜底；LOCAL_LIBRARY_PARITY.md L17/L18 行）。
+feature 关闭时保留本仓实现（`read_text_file` 同步门控，`encoding_rs`
+在 scanner.rs CUE 解码与 kw/lyric.rs 另有使用，依赖面不受影响）。
+`get_lyric` 的 spawn_blocking 包装与空歌词语义（`LyricData::default`）不变。
+
+**对账（比较测试，不改本仓实现）**：`source/tests/musid_local_parity.rs`
+挂 `musid-dli-adapter-local` 门，运行期合成语料（44100 Hz mono 16-bit PCM
+WAV stub + CUE sheet + 外挂歌词，无真实用户目录），11 用例：
+
+1. `plain_scan_metadata_specs_and_fingerprints_match`：条目配对逐字段
+   （标题/艺术家/专辑回填 L15、时长、实测规格 AudioProperties ↔ AudioSpec
+   四字段、指纹 size）、无标签文件的「未知艺术家/未知专辑 + 文件名干」
+   回填、统计（parsed/reused/discovered/failed）。
+2. `cue_sheet_tracks_match_field_by_field`：1 整轨 + 2 分轨（引用音频
+   两侧同口径保留整轨条目）；分轨 id ↔ container_track 形状
+   `{cue}#NN`、cue_file/cue_track/cue_start_ms extras、INDEX 01 起点、
+   轨时长（下一 INDEX 01 - 本轨）、TITLE/PERFORMER/sheet TITLE 落位；
+   键法对应：voicefox `LocalSong.file_path`（CUE 路径，复用键）↔ musid
+   `source_path`，voicefox `SongInfo.file_path`（音频）↔ musid `play_path`。
+3. `incremental_reuse_accounting_matches`：普通音频上双侧复用记账一致
+   （voicefox 2/2、musid stats.reused 2/2、条目级 reused 位全真）。
+   已知键法差异（LOCAL_LIBRARY_PARITY.md §2，不断言相等）：voicefox 复用
+   键 = 来源文件（单 FILE sheet 的分轨共享音频路径键组成 Vec），musid =
+   source_path（CUE 路径）。
+4. `duplicate_group_keys_match`：同元数据两文件的归一化键逐字节一致
+   （空白折叠 + 小写 + `\u{1f}` 连接 + 精确时长，L12）。
+5. `corrupt_file_lands_in_both_ledgers_without_blocking`：损坏文件进双侧
+   台账且不挡好文件（L8）。
+6. 歌词四用例：外挂 UTF-8 优先 / 外挂 GB18030 降级（encoding_rs 编码
+   构造）/ 内嵌兜底（musid tag_write 写入后双侧同文）/ 双缺两侧空。
+7. `voicefox_local_get_lyric_equals_musid_read_lyrics` +
+   `voicefox_local_get_lyric_empty_for_bare_file`：委托 pin（trait 入口
+   `LocalSource::get_lyric` 与 musid 直读同源同文，双缺空串）。
+
+**门禁实跑（2026-11-21，本会话）**：
+- `cargo test -p lx-source --features musid-dli-adapter-local --test
+  musid_local_parity`：**11 通过 / 0 失败**；
+- `cargo clippy -p lx-source --features musid-dli-adapter-local
+  --all-targets -- -D warnings`：exit 0；
+- `cargo fmt --all -- --check`：clean；
+- 默认树回归 `cargo test -p lx-source --lib --release`：**218 通过 /
+  0 失败 / 2 忽略**（feature 关闭分支编译，零行为变化）。
+
+**CI**：musid-stack job 新增「Tests (V3 local library parity slice)」步
+（`.github/workflows/ci.yml`）。
+
+**范围留待后续切片**：歌词缓存（§13.2，LyricsCache 文档域接入 musid 歌词
+槽）、本地封面（§13.3，`local_cover::read_cover` 外挂封面回落）。

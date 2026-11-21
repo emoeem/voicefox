@@ -128,6 +128,12 @@ jobs:
       - name: Tests (all migrated slices + lyrics conversions combo)
         run: cargo test -p lx-source --features musid-dli-adapter-fivesing,musid-dli-adapter-jamendo,musid-dli-adapter-apple,musid-dli-adapter-bilibili,musid-dli-adapter-migu,musid-dli-adapter-kuwo,musid-dli-adapter-kugou,musid-dli-adapter-qqmusic,musid-dli-adapter-netease,musid-dli-adapter-qianqian,musid-dli-adapter-joox,musid-dli-adapter-lyrics
 
+      # V3 本地库对账（docs/MUSID_DLI_ADAPTER.md §13.1）：musid local_scan /
+      # read_lyrics 与 voicefox 本仓实现的运行期语料对账 + 本地歌词读委托
+      # （musid-dli-adapter-local 下 LocalSource::read_local_lyric 走 musid）。
+      - name: Tests (V3 local library parity slice)
+        run: cargo test -p lx-source --features musid-dli-adapter-local --test musid_local_parity
+
       - name: Default baseline
         run: cargo test -p lx-source
 

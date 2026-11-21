@@ -82,6 +82,14 @@ musid-dli-adapter-reg-soda = ["musid-dli-adapter"]
 # UnmappedProvider 拒绝路径的登记断言。若 voicefox 未来引入 ytm 源，属
 # 新源接入（扩 SourceId + 命名表 + 评估 rustypipe 依赖），不在迁移序列。
 musid-dli-adapter-reg-ytm = ["musid-dli-adapter"]
+# V3 切片 s1（docs/MUSID_DLI_ADAPTER.md §13.1）：本地库能力接入——musid-dli
+# `local` 面（本地扫描核心 local_scan / 歌词读 read_lyrics / 标签写
+# tag_write）。本地源歌词读委托 musid `local::read_lyrics`（parity L17/L18
+# 全量，逐字移植已由 LOCAL_LIBRARY_PARITY.md 记录），扫描/诊断面由
+# source/tests/musid_local_parity.rs 双栈对账（对比迁移前后，master plan
+# §13.5）；voicefox 库状态/索引 schema/Watcher 调度/UI 全部留在本仓
+# （§13.3 SourceManager 边界）。
+musid-dli-adapter-local = ["musid-dli-adapter", "musid-dli/local"]
 
 [dev-dependencies]
 # 仅测试目标需要：用虚拟时间验证"每源超时"而不用真的等 8 秒。

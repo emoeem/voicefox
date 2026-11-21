@@ -819,6 +819,18 @@ fn expand_path(value: &str) -> PathBuf {
     PathBuf::from(value)
 }
 
+/// 本地歌词读（外挂 .lrc 优先，UTF-8 失败降级 GB18030，其次内嵌标签）。
+/// V3 s1 起（docs/MUSID_DLI_ADAPTER.md §13.1）：`musid-dli-adapter-local`
+/// 开启时委托 musid-dli `local::read_lyrics`——该实现是本函数的逐字移植
+/// （parity L17/L18 全量，LOCAL_LIBRARY_PARITY.md），两侧语义由
+/// `source/tests/musid_local_parity.rs` 四用例对账钉住；feature 关闭时
+/// 保留本仓实现，默认树零变化。
+#[cfg(feature = "musid-dli-adapter-local")]
+fn read_local_lyric(audio_path: &Path) -> Option<String> {
+    musid_dli::local::read_lyrics(audio_path)
+}
+
+#[cfg(not(feature = "musid-dli-adapter-local"))]
 fn read_local_lyric(audio_path: &Path) -> Option<String> {
     let lrc_path = audio_path.with_extension("lrc");
     if let Some(content) = read_text_file(&lrc_path)
@@ -830,6 +842,7 @@ fn read_local_lyric(audio_path: &Path) -> Option<String> {
 }
 
 /// 读取文本文件。UTF-8 解析失败时降级用 GB18030 解码，兼容 GBK 编码的外挂歌词。
+#[cfg(not(feature = "musid-dli-adapter-local"))]
 fn read_text_file(path: &Path) -> Option<String> {
     let bytes = std::fs::read(path).ok()?;
     match String::from_utf8(bytes) {
