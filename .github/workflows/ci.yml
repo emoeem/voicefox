@@ -88,37 +88,37 @@ jobs:
             cargo check -p lx-source --features "musid-dli-adapter-$feature"
           done
 
-      - name: Tests (jamendo slice sub-feature: real provider)
+      - name: Tests (jamendo slice sub-feature, real provider)
         run: cargo test -p lx-source --features musid-dli-adapter-jamendo
 
-      - name: Tests (fivesing slice sub-feature: real provider)
+      - name: Tests (fivesing slice sub-feature, real provider)
         run: cargo test -p lx-source --features musid-dli-adapter-fivesing
 
-      - name: Tests (apple slice sub-feature: real provider)
+      - name: Tests (apple slice sub-feature, real provider)
         run: cargo test -p lx-source --features musid-dli-adapter-apple
 
-      - name: Tests (bilibili slice sub-feature: real provider)
+      - name: Tests (bilibili slice sub-feature, real provider)
         run: cargo test -p lx-source --features musid-dli-adapter-bilibili
 
-      - name: Tests (migu slice sub-feature: real provider)
+      - name: Tests (migu slice sub-feature, real provider)
         run: cargo test -p lx-source --features musid-dli-adapter-migu
 
-      - name: Tests (kuwo slice sub-feature: real provider)
+      - name: Tests (kuwo slice sub-feature, real provider)
         run: cargo test -p lx-source --features musid-dli-adapter-kuwo
 
-      - name: Tests (kugou slice sub-feature: real provider)
+      - name: Tests (kugou slice sub-feature, real provider)
         run: cargo test -p lx-source --features musid-dli-adapter-kugou
 
-      - name: Tests (qqmusic slice sub-feature: real provider)
+      - name: Tests (qqmusic slice sub-feature, real provider)
         run: cargo test -p lx-source --features musid-dli-adapter-qqmusic
 
-      - name: Tests (netease slice sub-feature: real provider)
+      - name: Tests (netease slice sub-feature, real provider)
         run: cargo test -p lx-source --features musid-dli-adapter-netease
 
-      - name: Tests (qianqian slice sub-feature: real provider)
+      - name: Tests (qianqian slice sub-feature, real provider)
         run: cargo test -p lx-source --features musid-dli-adapter-qianqian
 
-      - name: Tests (joox slice sub-feature: real provider)
+      - name: Tests (joox slice sub-feature, real provider)
         run: cargo test -p lx-source --features musid-dli-adapter-joox
 
       # 已落地切片歌词面的指纹 parity（fivesing/apple/kugou/kuwo）与歌词面
