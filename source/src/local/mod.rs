@@ -689,28 +689,39 @@ impl MusicSource for LocalSource {
         page: u32,
         limit: u32,
     ) -> Result<SearchResult, SearchError> {
-        let all = self.all_songs();
+        // 优化轮 P2-5：持读锁借阅过滤 + 只克隆当前页（原实现每次搜索把
+        // 整库 SongInfo 克隆一遍）。keyword 为空时同样走分页克隆，不整库。
         let keyword = keyword.to_lowercase();
-
-        let matching: Vec<SongInfo> = if keyword.is_empty() {
-            all
-        } else {
-            all.into_iter()
-                .filter(|s| {
-                    s.name.to_lowercase().contains(&keyword)
-                        || s.singer.to_lowercase().contains(&keyword)
-                        || s.album_name.to_lowercase().contains(&keyword)
-                })
-                .collect()
-        };
-        let total = matching.len();
         let limit = limit.max(1) as usize;
         let start = page.saturating_sub(1) as usize * limit;
-        let items = matching.into_iter().skip(start).take(limit).collect();
+
+        let songs = self.songs.read().unwrap_or_else(|e| e.into_inner());
+        let mut total = 0usize;
+        let mut skipped = 0usize;
+        let mut items = Vec::with_capacity(limit);
+        for local in songs.values().flat_map(|songs| songs.iter()) {
+            let song = &local.song;
+            let matched = keyword.is_empty()
+                || song.name.to_lowercase().contains(&keyword)
+                || song.singer.to_lowercase().contains(&keyword)
+                || song.album_name.to_lowercase().contains(&keyword);
+            if !matched {
+                continue;
+            }
+            if skipped < start {
+                skipped += 1;
+                continue;
+            }
+            if items.len() < limit {
+                items.push(song.clone());
+            }
+            total += 1;
+        }
+        drop(songs);
 
         Ok(SearchResult {
             total: total as u32,
-            has_more: start.saturating_add(limit) < total,
+            has_more: start.saturating_add(items.len()) < total,
             items,
         })
     }
@@ -792,9 +803,17 @@ impl MusicSource for LocalSource {
     }
 
     async fn get_cover_url(&self, song: &SongInfo) -> Result<String, FetchError> {
-        if let Some(cover) = &song.cover_url {
-            return Ok(cover.clone());
+        // 空串封面（`Some("")`）不能短路回落：manager 与适配层同款过滤。
+        if let Some(cover) = song
+            .cover_url
+            .as_deref()
+            .filter(|url| !url.trim().is_empty())
+        {
+            return Ok(cover.to_string());
         }
+        // 与 get_lyric/get_song_url 同款：file_path 缺席时歌曲 id 本身
+        // 可能就是路径（恢复/同步进来的库条目）。绑定随回落面（musid
+        // artwork-local 特性）走。
         // V3 s3（docs/MUSID_DLI_ADAPTER.md §13.3）：模型封面缺席时经 musid
         // `local_cover::read_cover` 解析——内嵌（进解码校验缓存，键配方与
         // 本仓扫描管线一致，L19 全量）优先，其次同目录外挂封面
@@ -802,7 +821,10 @@ impl MusicSource for LocalSource {
         // NotFound 行为，默认树零变化。阻塞面（标签探测 + 可能的解码校验）
         // 与 get_lyric 同款走 spawn_blocking。
         #[cfg(feature = "musid-dli-adapter-artwork-local")]
-        if let Some(audio_path) = song.file_path.clone() {
+        if let Some(audio_path) = song.file_path.clone().or_else(|| {
+            let path = PathBuf::from(&song.id);
+            path.exists().then_some(path)
+        }) {
             let resolved = tokio::task::spawn_blocking(move || {
                 musid_dli::local_cover::read_cover(
                     &audio_path,

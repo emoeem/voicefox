@@ -47,7 +47,7 @@ pub const MUSID_ADAPTER_ENABLED: bool = cfg!(feature = "musid-dli-adapter");
 /// 双栈不生效。
 pub const MUSID_LYRIC_CONVERSIONS_ENABLED: bool = cfg!(feature = "musid-dli-adapter-lyrics");
 
-/// V1 双栈接线点（opt-in；默认构建为 no-op）。
+/// V1 双栈接线点（opt-in；默认构建（V4 起）带 joox/qianqian 适配边）。
 ///
 /// - 总闸（`source.musid_stack`）关闭：四面全走旧路径，无任何注册动作；
 /// - 总闸开启而构建未编译 `musid-dli-adapter`：启动时一次 warn，四面静默

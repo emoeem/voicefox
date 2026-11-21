@@ -37,7 +37,7 @@ cue-rw.workspace = true
 tracing.workspace = true
 
 # musid-dli 适配层（V0）：纯模型映射 + fixture 测试，不接业务路径。
-# 仅 feature `musid-dli-adapter` 启用时进入依赖图；默认构建无此边。
+# 仅 feature `musid-dli-adapter` 启用时进入依赖图；默认构建（V4 起）带 joox/qianqian 适配边。
 # `=0.2.0` 精确 pin：V0 映射断言对模型 serde wire 形状敏感，禁 semver 漂移。
 # `default-features = false`：模型层不需要 lofty/walkdir/cue-rw/tempfile。
 musid-dli = { version = "=0.2.0", optional = true, default-features = false }
@@ -46,7 +46,16 @@ musid-dli = { version = "=0.2.0", optional = true, default-features = false }
 # V4-s1（docs/MUSID_DLI_ADAPTER.md §14.1）：joox legacy 实现已删，适配面是
 # 唯一实现——joox 子 feature 进 default（--no-default-features 仍可构建零
 # musid 树，此时 joox 源整体缺席）。
-default = ["musid-dli-adapter-joox", "musid-dli-adapter-qianqian"]
+# V4 的两源 default flip 带来的歌词面缺口（优化轮 P1-1）：legacy 歌词面
+# 已删，适配面歌词依赖 lyrics-conversions 变体——不进 default 的话默认
+# 构建的 joox/qianqian 恒报「需要 lyrics 变体」。lyrics-cache 是其上的
+# 文档域缓存（V3-s2）。
+default = [
+    "musid-dli-adapter-joox",
+    "musid-dli-adapter-qianqian",
+    "musid-dli-adapter-lyrics",
+    "musid-dli-adapter-lyrics-cache",
+]
 musid-dli-adapter = ["dep:musid-dli"]
 # 歌词往返映射变体：启用 musid-dli 的 lyrics-conversions（含 lyrics-helper，
 # default-features=false）。V1 起歌词面双栈运行时需要它（缺它时 musid 歌词

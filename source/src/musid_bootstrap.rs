@@ -871,7 +871,7 @@ mod qianqian_slice_tests {
         );
         // supported_qualities：descriptor 声明上游档序 Low128/High320/Flac
         // （source_qianqian.rs:743-750）→ 适配层翻译产物
-        // [Low128, High320, Flac]——与 legacy qianqian/mod.rs:81-83 同表。
+        // [Low128, High320, Flac]——与 musid-dli source_qianqian.rs descriptor 同表。
         assert_eq!(
             adapter.supported_qualities(),
             vec![Quality::Low128, Quality::High320, Quality::Flac]
@@ -934,7 +934,7 @@ mod joox_slice_tests {
         );
         // supported_qualities：descriptor 声明上游档序 Low128/High320
         // （source_joox.rs:717-720）→ 适配层翻译产物 [Low128, High320]——
-        // 与 legacy joox/mod.rs:171-173 同表。
+        // 与 musid-dli source_joox.rs descriptor 同表。
         assert_eq!(
             adapter.supported_qualities(),
             vec![Quality::Low128, Quality::High320]

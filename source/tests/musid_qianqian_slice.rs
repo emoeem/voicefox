@@ -6,7 +6,7 @@
 //!   + AuthCapability::None，上游档序 Low128/High320/Flac）；
 //! - (b) 流地址/歌词面的**离线双失败触发点**——空 tsid 的歌在两栈都在任何
 //!   网络调用之前失败（musid source_qianqian.rs:791-793/:840-842 与 legacy
-//!   qianqian/url.rs:39-41、lyric.rs:19-21 同键同 NotFound）；
+//!   musid-dli source_qianqian.rs 的 tracklink/lyric 离线守卫同键同 NotFound；legacy 侧对账随 V4 删除收编）。
 //! - (c) manager 级真实双侧链路（空 tsid 歌在流地址面两栈同请求都失败 →
 //!   MusidErrLegacyErr，legacy 错误原样向上）。
 //!

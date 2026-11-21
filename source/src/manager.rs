@@ -514,14 +514,20 @@ impl SourceManager {
 
     pub fn update_source_preferences(&self, default: SourceId, enabled: &[SourceId]) {
         let enabled: HashSet<_> = enabled.iter().copied().collect();
-        let effective_default = if enabled.contains(&default) {
+        // 校验对象是**本构建已注册**的源：配置里点名了一个本次构建没有的
+        // 源（例如 --no-default-features 下的 joox/qianqian——它们的实现
+        // 随 default 特性树走）时，绝不能把不可达的源装进 default——否则
+        // `default_source()` 的注册断言会在首次 search 时 panic（优化轮
+        // P1-2，审查账本 §16）。最终兜底 Local（manager::new 恒注册）。
+        let effective_default = if enabled.contains(&default) && self.sources.contains_key(&default)
+        {
             default
         } else {
             SourceId::all_online()
                 .iter()
                 .copied()
-                .find(|source| enabled.contains(source))
-                .unwrap_or(default)
+                .find(|source| enabled.contains(source) && self.sources.contains_key(source))
+                .unwrap_or(SourceId::Local)
         };
         *self.enabled.write().unwrap_or_else(|e| e.into_inner()) = enabled;
         *self.default.write().unwrap_or_else(|e| e.into_inner()) = effective_default;
@@ -1073,19 +1079,31 @@ impl SourceManager {
 
     fn sort_search_results(items: &mut [SongInfo], keyword: &str) {
         let keyword = Self::normalize_search_text(keyword);
-        items.sort_by(|a, b| {
-            Self::search_relevance(a, &keyword)
-                .cmp(&Self::search_relevance(b, &keyword))
-                .then_with(|| {
-                    Self::normalize_search_text(&a.name).cmp(&Self::normalize_search_text(&b.name))
-                })
-                .then_with(|| {
-                    Self::normalize_search_text(&a.singer)
-                        .cmp(&Self::normalize_search_text(&b.singer))
-                })
-                .then_with(|| a.source.as_str().cmp(b.source.as_str()))
-                .then_with(|| a.id.cmp(&b.id))
+        // 优化轮 P2-3：装饰-排序-去装饰——每项的归一化键（name/singer/album）
+        // 与相关性只在排序前算一次（原实现每个比较重算 ~10 次全字符串扫描）。
+        let mut decorated: Vec<_> = items
+            .iter()
+            .enumerate()
+            .map(|(index, song)| {
+                (
+                    index,
+                    Self::search_relevance(song, &keyword),
+                    Self::normalize_search_text(&song.name),
+                    Self::normalize_search_text(&song.singer),
+                )
+            })
+            .collect();
+        decorated.sort_by(|a, b| {
+            a.1.cmp(&b.1)
+                .then_with(|| a.2.cmp(&b.2))
+                .then_with(|| a.3.cmp(&b.3))
+                .then_with(|| items[a.0].source.as_str().cmp(items[b.0].source.as_str()))
+                .then_with(|| items[a.0].id.cmp(&items[b.0].id))
         });
+        let original: Vec<_> = items.to_vec();
+        for (position, (index, _, _, _)) in decorated.iter().enumerate() {
+            items[position] = original[*index].clone();
+        }
     }
 
     fn search_relevance(song: &SongInfo, keyword: &str) -> u8 {
@@ -2166,14 +2184,41 @@ impl SourceManager {
                     && f_name.contains(&target_name))
         });
 
-        // 5. 排序（按匹配度）
-        all.sort_by(|a, b| {
-            let a_score = match_score(a, &target_name, &target_singer, target_interval);
-            let b_score = match_score(b, &target_name, &target_singer, target_interval);
+        // 5. 排序（按匹配度）。优化轮 P2-4：retain 阶段已算过的归一化字段
+        // 直接携带进排序（原实现 match_score 在每个比较里对两侧重跑
+        // filter_str + sort_singer + to_lowercase）。
+        let decorated: Vec<(SongInfo, String, String, i64)> = all
+            .into_iter()
+            .map(|s| {
+                let f_name = crate::filter::filter_str(&s.name).to_lowercase();
+                let f_singer = crate::filter::filter_str(&crate::filter::sort_singer(&s.singer))
+                    .to_lowercase();
+                let f_intv = s.duration.as_secs() as i64;
+                (s, f_name, f_singer, f_intv)
+            })
+            .collect();
+        let mut decorated: Vec<_> = decorated;
+        decorated.sort_by(|a, b| {
+            let a_score = scored_match(
+                &a.1,
+                &a.2,
+                a.3,
+                &target_name,
+                &target_singer,
+                target_interval,
+            );
+            let b_score = scored_match(
+                &b.1,
+                &b.2,
+                b.3,
+                &target_name,
+                &target_singer,
+                target_interval,
+            );
             b_score.cmp(&a_score)
         });
 
-        all
+        decorated.into_iter().map(|(song, _, _, _)| song).collect()
     }
 }
 
@@ -2231,22 +2276,27 @@ fn lyric_has_content(data: &LyricData) -> bool {
 }
 
 /// 计算匹配分数（越高越匹配）
-fn match_score(s: &SongInfo, t_name: &str, t_singer: &str, t_intv: i64) -> i32 {
-    let f_name = crate::filter::filter_str(&s.name).to_lowercase();
-    let f_singer = crate::filter::filter_str(&crate::filter::sort_singer(&s.singer)).to_lowercase();
-    let f_intv = s.duration.as_secs() as i64;
-
+/// `match_score` 的纯分数半：吃已归一化的字段（调用方缓存重用，优化轮
+/// P2-4）。
+fn scored_match(
+    f_name: &str,
+    f_singer: &str,
+    f_intv: i64,
+    t_name: &str,
+    t_singer: &str,
+    t_intv: i64,
+) -> i32 {
     let mut score = 0;
-    if f_singer == *t_singer {
+    if f_singer == t_singer {
         score += 30;
     }
-    if f_name == *t_name {
+    if f_name == t_name {
         score += 30;
     }
     if (f_intv - t_intv).abs() < 2 {
         score += 20;
     }
-    if f_name.contains(t_name) || t_name.contains(&f_name) {
+    if f_name.contains(t_name) || t_name.contains(f_name) {
         score += 10;
     }
     score

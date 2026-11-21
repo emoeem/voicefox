@@ -95,7 +95,7 @@ async fn resolve_fails_offline_for_songs_without_a_songid() {
 /// 之前短路，与 migu/qianqian 歌词用例同门）：空 songid →
 /// `Error::NotFound` 离线（source_joox.rs:802-804）→
 /// `FetchError::NotFound`（legacy fetch_lyric 后的 `ok_or(NotFound)` 与
-/// 负缓存同口径衔接，joox/mod.rs:151-165）。
+/// 负缓存同口径衔接，musid-dli source_joox.rs LyricsProvider 分支）。
 #[cfg(feature = "musid-dli-adapter-lyrics")]
 #[tokio::test]
 async fn lyric_face_fails_offline_for_songs_without_a_songid() {

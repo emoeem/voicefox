@@ -1,7 +1,7 @@
 //! musid-dli（crates.io 0.2.0）与 lx-core / lx-source 的模型映射层（V0）+ 双栈
 //! 适配源（V1）。
 //!
-//! feature `musid-dli-adapter` 门控，默认构建完全不引入 musid-dli。V0 硬边界：
+//! feature `musid-dli-adapter` 门控，默认构建（V4 起）带 joox/qianqian 适配边。V0 硬边界：
 //! 纯映射函数与 fixture 测试，不接 `SourceManager`。V1（opt-in）在本文件追加
 //! [`AdapterMusicSource`]：把 musid-dli provider 包装成 voicefox
 //! `MusicSource`（搜索/流地址/歌词三面），由 `SourceManager::register_musid_source`
@@ -933,7 +933,9 @@ pub struct AdapterMusicSource {
     stream: Option<Arc<dyn MdStreamResolver>>,
     /// 歌词面 provider：歌词转换变体（`musid-dli-adapter-lyrics`）关闭时
     /// 不读——V1 歌词面依赖该变体的 `lyric_document_to_lx_data` 归一转换，
-    /// 缺变体时歌词面不生效（启动 warn 由 bootstrap 负责）。
+    /// 缺变体时歌词面不生效（启动 warn 由 bootstrap 负责）。V4 起该变体
+    /// 进 lx-source default（joox/qianqian 主注册表形态的歌词面回归修复，
+    /// 优化轮 P1-1）。
     #[cfg_attr(not(feature = "musid-dli-adapter-lyrics"), expect(dead_code))]
     lyrics: Option<Arc<dyn MdLyricsProvider>>,
     /// 歌词文档缓存（V3 s2，§13.2）：musid `LyricsCache` 文档域，键
@@ -976,7 +978,14 @@ impl AdapterMusicSource {
             lyrics,
             #[cfg(feature = "musid-dli-adapter-lyrics-cache")]
             lyrics_cache: musid_dli::lyrics_cache::LyricsCache::new(
-                musid_dli::lyrics_cache::LyricsCacheConfig::default(),
+                // 优化轮 P3-10：文档域 TTL 从 musid 默认 24h 收敛到 600s——
+                // 缓存的「确认无词」随 manager 链级负缓存（600s）同窗过期，
+                // 上游新上架的词最长 10 分钟内可达（原 24h 窗口里恒不可见）。
+                // 正域 600s 仍是净收益（原先完全不缓存）。
+                musid_dli::lyrics_cache::LyricsCacheConfig {
+                    document_ttl: std::time::Duration::from_secs(600),
+                    ..musid_dli::lyrics_cache::LyricsCacheConfig::default()
+                },
             ),
             #[cfg(feature = "musid-dli-adapter")]
             collection: None,
@@ -1033,12 +1042,15 @@ impl MusicSource for AdapterMusicSource {
         let Some(search) = &self.search else {
             return SourceCapabilities::default();
         };
-        let mut flags = ProviderFaceFlags::default();
-        if self.source == SourceId::Joox {
-            flags.has_search_playlists = true;
-        }
+        // V4-s1/s2 + 优化轮 P3-6：面级 flags 由**槽位装配**推导（搜索歌单
+        // 面随 self.playlists 槽存在性），categories 位按源登记（musid
+        // descriptor 无 categories 位：qianqian 覆写了真实实现，joox 的
+        // categories 返回 Unsupported——两源装配形态不同）。
+        let mut flags = ProviderFaceFlags {
+            has_search_playlists: self.playlists.is_some(),
+            ..ProviderFaceFlags::default()
+        };
         if self.source == SourceId::Qianqian {
-            flags.has_search_playlists = true;
             flags.has_categories = true;
         }
         capabilities_from_provider(search.capabilities(), search.auth_capability(), flags)
@@ -1209,14 +1221,15 @@ impl MusicSource for AdapterMusicSource {
     }
 
     /// 歌单曲目（musid `CollectionProvider::playlist_tracks`；空曲目归
-    /// NotFound 与 legacy `get_playlist_detail` 的空守卫同口径）。
+    /// NotFound 与 legacy `get_playlist_detail` 的空守卫同口径）。`_page`
+    /// 不裁剪：musid 端点返回全量（与 legacy 全量语义一致）。
     #[cfg(any(
         feature = "musid-dli-adapter-joox",
         feature = "musid-dli-adapter-qianqian"
     ))]
     async fn get_playlist_detail(&self, id: &str, _page: u32) -> Result<Vec<SongInfo>, FetchError> {
         let Some(collection) = &self.collection else {
-            return Err(FetchError::Other("该音源不支持歌单详情".to_string()));
+            return Ok(vec![]);
         };
         let tracks = collection
             .playlist_tracks(id)
@@ -1233,7 +1246,9 @@ impl MusicSource for AdapterMusicSource {
     }
 
     /// 专辑曲目（musid `AlbumProvider::album_tracks`；OpenJOOX 专辑是特殊
-    /// 歌单，与 legacy 同一接口）。
+    /// 歌单，与 legacy 同一接口）。分页语义：musid 端点返回全量曲目，
+    /// `_page`/`_limit` 不截断（has_more 恒 false）——与 legacy 行为一致；
+    /// 接口层面的分页裁剪属 musid-dli 上游能力，落地前如实不裁。
     #[cfg(any(
         feature = "musid-dli-adapter-joox",
         feature = "musid-dli-adapter-qianqian"
@@ -1317,7 +1332,9 @@ impl MusicSource for AdapterMusicSource {
     #[cfg(feature = "musid-dli-adapter-qianqian")]
     async fn get_playlist_categories(&self) -> Result<Vec<PlaylistCategory>, FetchError> {
         let Some(playlists) = &self.playlists else {
-            return Err(FetchError::Other("该音源不支持歌单分类".to_string()));
+            // 未装配集合槽位：与 trait 默认（Ok(vec![])）一致，UI 依
+            // capabilities 位隐藏入口。
+            return Ok(vec![]);
         };
         let categories = playlists
             .categories()
@@ -1338,7 +1355,7 @@ impl MusicSource for AdapterMusicSource {
     #[cfg(feature = "musid-dli-adapter-qianqian")]
     async fn get_playlists(&self, tag_id: &str, page: u32) -> Result<Vec<Playlist>, FetchError> {
         let Some(playlists) = &self.playlists else {
-            return Err(FetchError::Other("该音源不支持分类歌单".to_string()));
+            return Ok(vec![]);
         };
         let items = playlists
             .playlists(tag_id, page, 30)
@@ -1734,7 +1751,7 @@ const V2_ROUTE_REGISTRY: &[SourceRouteEntry] = &[
     // :732-742），authentication=false + 无 auth_capability 覆写 →
     // AuthCapability::None——登录面双侧皆无认证位，不设行项。
     // 流地址面 tracklink 双分支两侧同形（source_qianqian.rs:779-825 vs
-    // qianqian/url.rs:33-70）：free_128 完整文件分支 + vip_nopath 阶梯
+    // musid-dli source_qianqian.rs tracklink 分支）：free_128 完整文件分支 + vip_nopath 阶梯
     // 耗尽退 trail_audio_info 试听分支；VIP 曲目匿名恒 path-less →
     // NotFound（上游 live-pinned）——与 legacy 同病同回落，无回退盲区；
     // expireTime 进 expires_at_unix（G4 对该源设防）。**空 tsid 的歌在
@@ -1745,14 +1762,14 @@ const V2_ROUTE_REGISTRY: &[SourceRouteEntry] = &[
     // 歌词面 song_infoandlrc 类形状（signed_get song/info + lyric 文本
     // 下载）→ lxlyric 恒 None，纯 LRC（legacy 千千本就无逐字，无降级）。
     // 保持旧路径：歌手面（musid 无 ArtistProvider、artists 位缺省
-    // false，voicefox qianqian/mod.rs artist=true 恒旧路径并登记缺口）；
+    // false，musid 无 ArtistProvider——artist 位恒 false（voicefox 上游无歌手面））；
     // 榜单面双侧皆无（voicefox qianqian capabilities 无 leaderboard 位，
     // musid 无 ChartProvider）不设；专辑/歌单/链接（musid AlbumProvider
     // :999/PlaylistProvider :874/LinkResolver :1015 且 capabilities true）
     // 集合面不路由登记——musid 侧 search_playlist_refused.json（歌单搜索
     // 被拒形状）在后续接集合面时须处理该语义（envelope 恒不按 state/
     // errno 把关、data:[] 解析为空页，source_qianqian.rs:762-764）。
-    // 用户启用源：翻源后首周盯 MusidErrLegacyOk 计数（§12.3）。
+    // 用户启用源：V4 起恒适配面（主注册表），parity 计数无对账对象——观测口径为运行期 probe 与 MusidErrLegacyOk（仅对仍双栈的源有意义，§12.3）。
     SourceRouteEntry {
         source: SourceId::Qianqian,
         slice: "v2-qianqian（已落地）",
@@ -1777,10 +1794,10 @@ const V2_ROUTE_REGISTRY: &[SourceRouteEntry] = &[
     // 流地址面失败侧对账由 adapter 级离线用例 + 运行期 probe 承载。
     // 歌词面 lyric_live 形状（web_lyric base64 字段，decode_lyric_field
     // live 偏差上游已登记）→ lxlyric 恒 None，纯 LRC（legacy 本就无逐
-    // 字）。封面面不接 musid ArtworkProvider：legacy joox/mod.rs:167
+    // 字）。封面面不接 musid ArtworkProvider：歌曲模型回填（musid-dli
     // get_cover_url 走歌曲模型回填，适配层 get_cover_url 同口径
     // （adapter_musid.rs enrich_song_url_from_song 消费侧），不设行项。
-    // 保持旧路径：榜单/歌手双侧皆无（voicefox joox/mod.rs:103-111 仅
+    // source_joox.rs 无 ArtworkProvider）。榜单/歌手双侧皆无（musid joox descriptor 仅
     // playlists/playlist_search/album/link_parse；musid 无 ChartProvider/
     // ArtistProvider）不设；专辑/歌单/链接（musid AlbumProvider :873/
     // PlaylistProvider :839/LinkResolver :908 且 capabilities true）集合
@@ -5199,6 +5216,407 @@ mod tests {
         // 仓 tests/fixtures/joox 的 provider 测试继续钉住；§12.2 joox 块
         // 的歌手 join 分歧（legacy " / " vs musid '、'）随 legacy 死亡
         // 收敛为 musid 口径（voicefox SongInfo 约定即 '、'）。
+
+        // --- V4 集合面直接测试（优化轮 P2-1）：脚本桩四槽 + joox 装配，
+        // --- 逐面钉路由/转换/空守卫/三分支 parse_link/未接线语义。
+
+        /// 集合面脚本桩：四个 trait 各带可编程应答与调用记录。
+        #[cfg(feature = "musid-dli-adapter-joox")]
+        struct CollectionStub {
+            playlists: std::sync::Mutex<Vec<musid_dli::models::Playlist>>,
+            playlist_tracks:
+                std::sync::Mutex<std::collections::HashMap<String, Vec<musid_dli::models::Track>>>,
+            album_tracks:
+                std::sync::Mutex<std::collections::HashMap<String, Vec<musid_dli::models::Track>>>,
+            resolved: std::sync::Mutex<Option<musid_dli::provider::ResolvedLink>>,
+            calls: std::sync::atomic::AtomicUsize,
+        }
+
+        #[cfg(feature = "musid-dli-adapter-joox")]
+        impl Default for CollectionStub {
+            fn default() -> Self {
+                Self {
+                    playlists: std::sync::Mutex::new(Vec::new()),
+                    playlist_tracks: std::sync::Mutex::new(std::collections::HashMap::new()),
+                    album_tracks: std::sync::Mutex::new(std::collections::HashMap::new()),
+                    resolved: std::sync::Mutex::new(None),
+                    calls: std::sync::atomic::AtomicUsize::new(0),
+                }
+            }
+        }
+
+        #[cfg(feature = "musid-dli-adapter-joox")]
+        impl musid_dli::provider::MusicProvider for CollectionStub {
+            fn id(&self) -> &str {
+                "joox"
+            }
+            fn name(&self) -> &str {
+                "集合桩"
+            }
+            fn capabilities(&self) -> ProviderCapabilities {
+                ProviderCapabilities {
+                    playlists: true,
+                    albums: true,
+                    link_resolve: true,
+                    ..Default::default()
+                }
+            }
+        }
+
+        #[cfg(feature = "musid-dli-adapter-joox")]
+        #[async_trait]
+        impl MdCollectionProvider for CollectionStub {
+            async fn playlist(&self, id: &str) -> Result<musid_dli::models::Playlist, MdError> {
+                self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let playlists = self.playlists.lock().unwrap_or_else(|e| e.into_inner());
+                let mut playlist =
+                    playlists
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| musid_dli::models::Playlist {
+                            id: TrackId::new("joox", id),
+                            title: "桩歌单".into(),
+                            description: None,
+                            artwork_url: None,
+                            track_count: None,
+                            tracks: vec![],
+                            play_count: None,
+                            creator: None,
+                            link: None,
+                            extra: Default::default(),
+                        });
+                playlist.id = TrackId::new("joox", id);
+                Ok(playlist)
+            }
+            async fn playlist_tracks(
+                &self,
+                id: &str,
+            ) -> Result<Vec<musid_dli::models::Track>, MdError> {
+                self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(self
+                    .playlist_tracks
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get(id)
+                    .cloned()
+                    .unwrap_or_default())
+            }
+        }
+
+        #[cfg(feature = "musid-dli-adapter-joox")]
+        #[async_trait]
+        impl MdPlaylistProvider for CollectionStub {
+            async fn categories(
+                &self,
+            ) -> Result<Vec<musid_dli::models::PlaylistCategory>, MdError> {
+                Err(MdError::Unsupported("joox".into()))
+            }
+            async fn playlists(
+                &self,
+                _category: &str,
+                _page: u32,
+                _page_size: u32,
+            ) -> Result<Vec<musid_dli::models::Playlist>, MdError> {
+                Err(MdError::Unsupported("joox".into()))
+            }
+            async fn search_playlists(
+                &self,
+                _keyword: &str,
+                _page: u32,
+            ) -> Result<Vec<musid_dli::models::Playlist>, MdError> {
+                Ok(self
+                    .playlists
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone())
+            }
+            async fn user_playlists(
+                &self,
+                _page: u32,
+                _page_size: u32,
+            ) -> Result<Vec<musid_dli::models::Playlist>, MdError> {
+                Err(MdError::Unsupported("joox".into()))
+            }
+        }
+
+        #[cfg(feature = "musid-dli-adapter-joox")]
+        #[async_trait]
+        impl MdAlbumProvider for CollectionStub {
+            async fn album(&self, id: &str) -> Result<MdAlbum, MdError> {
+                let playlist = MdCollectionProvider::playlist(self, id).await?;
+                Ok(MdAlbum {
+                    id: playlist.id,
+                    title: playlist.title,
+                    artists: vec![],
+                    artwork_url: playlist.artwork_url,
+                    track_count: playlist.track_count,
+                })
+            }
+            async fn album_tracks(
+                &self,
+                id: &str,
+            ) -> Result<Vec<musid_dli::models::Track>, MdError> {
+                Ok(self
+                    .album_tracks
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get(id)
+                    .cloned()
+                    .unwrap_or_default())
+            }
+        }
+
+        #[cfg(feature = "musid-dli-adapter-joox")]
+        #[async_trait]
+        impl MdLinkResolver for CollectionStub {
+            async fn resolve_link(
+                &self,
+                _url: &str,
+            ) -> Result<musid_dli::provider::ResolvedLink, MdError> {
+                self.resolved
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone()
+                    .ok_or_else(|| MdError::InvalidInput("未编排链接".into()))
+            }
+        }
+
+        #[cfg(feature = "musid-dli-adapter-joox")]
+        fn collection_adapter(stub: &Arc<CollectionStub>) -> AdapterMusicSource {
+            AdapterMusicSource::new(
+                SourceId::Joox,
+                "集合桩源（musid-dli）".to_string(),
+                None,
+                None,
+                None,
+                TransportInjection::new(None, 15),
+            )
+            .with_collections(
+                Arc::clone(stub) as Arc<dyn MdCollectionProvider>,
+                Arc::clone(stub) as Arc<dyn MdPlaylistProvider>,
+                Arc::clone(stub) as Arc<dyn MdAlbumProvider>,
+                Arc::clone(stub) as Arc<dyn MdLinkResolver>,
+            )
+        }
+
+        #[cfg(feature = "musid-dli-adapter-joox")]
+        fn stub_track(id: &str, title: &str) -> musid_dli::models::Track {
+            musid_dli::models::Track {
+                id: TrackId::new("joox", id),
+                title: title.to_string(),
+                artists: vec![],
+                album: None,
+                album_id: None,
+                duration: Some(std::time::Duration::from_secs(200)),
+                artwork_url: None,
+                isrc: None,
+                available_qualities: vec![],
+                audio: None,
+                extra: Default::default(),
+            }
+        }
+
+        #[cfg(feature = "musid-dli-adapter-joox")]
+        #[tokio::test]
+        async fn collection_search_playlists_routes_and_converts() {
+            let stub = Arc::new(CollectionStub::default());
+            stub.playlists
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(musid_dli::models::Playlist {
+                    id: TrackId::new("joox", "pl-1"),
+                    title: "歌单一".into(),
+                    description: Some("描述".into()),
+                    artwork_url: Some("https://cover.example/1.jpg".into()),
+                    track_count: Some(12),
+                    tracks: vec![],
+                    play_count: Some(88),
+                    creator: Some("作者".into()),
+                    link: Some("https://web.example/pl/1".into()),
+                    extra: Default::default(),
+                });
+            let adapter = collection_adapter(&stub);
+
+            let items = adapter
+                .search_playlists("晴天", 1)
+                .await
+                .expect("搜索歌单面路由");
+            assert_eq!(items.len(), 1);
+            assert_eq!(items[0].id, "pl-1");
+            assert_eq!(items[0].name, "歌单一");
+            assert_eq!(items[0].source, SourceId::Joox);
+            assert_eq!(items[0].song_count, 12);
+            assert_eq!(items[0].play_count, Some(88));
+            assert_eq!(items[0].creator.as_deref(), Some("作者"));
+            assert_eq!(items[0].link.as_deref(), Some("https://web.example/pl/1"));
+        }
+
+        #[cfg(feature = "musid-dli-adapter-joox")]
+        #[tokio::test]
+        async fn collection_detail_converts_tracks_and_empty_guards_to_not_found() {
+            let stub = Arc::new(CollectionStub::default());
+            stub.playlist_tracks
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert("pl-1".into(), vec![stub_track("t-1", "曲目一")]);
+            let adapter = collection_adapter(&stub);
+
+            let songs = adapter
+                .get_playlist_detail("pl-1", 1)
+                .await
+                .expect("详情面路由");
+            assert_eq!(songs.len(), 1);
+            assert_eq!(songs[0].id, "t-1");
+            assert_eq!(songs[0].name, "曲目一");
+            assert_eq!(songs[0].duration, std::time::Duration::from_secs(200));
+
+            // 空曲目 → NotFound（legacy 空守卫同口径）。
+            let stub2 = Arc::new(CollectionStub::default());
+            let adapter2 = collection_adapter(&stub2);
+            assert!(matches!(
+                adapter2.get_playlist_detail("pl-empty", 1).await,
+                Err(FetchError::NotFound)
+            ));
+        }
+
+        #[cfg(feature = "musid-dli-adapter-joox")]
+        #[tokio::test]
+        async fn collection_album_songs_returns_search_result_shape() {
+            let stub = Arc::new(CollectionStub::default());
+            stub.album_tracks
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(
+                    "al-1".into(),
+                    vec![stub_track("t-1", "曲一"), stub_track("t-2", "曲二")],
+                );
+            let adapter = collection_adapter(&stub);
+            let album = lx_core::model::playlist::Album {
+                id: "al-1".into(),
+                name: "专辑".into(),
+                source: SourceId::Joox,
+                cover_url: None,
+                artist: String::new(),
+            };
+            let result = adapter
+                .get_album_songs(&album, 0, 200)
+                .await
+                .expect("专辑曲目面路由");
+            assert_eq!(result.total, 2);
+            assert!(!result.has_more);
+            assert_eq!(result.items.len(), 2);
+        }
+
+        #[cfg(feature = "musid-dli-adapter-joox")]
+        #[tokio::test]
+        async fn collection_parse_link_maps_all_three_shapes() {
+            // Track 分支。
+            let stub = Arc::new(CollectionStub::default());
+            *stub.resolved.lock().unwrap_or_else(|e| e.into_inner()) = Some(
+                musid_dli::provider::ResolvedLink::Track(stub_track("t-9", "单曲")),
+            );
+            let adapter = collection_adapter(&stub);
+            match adapter
+                .parse_link("https://web.example/song/t-9")
+                .await
+                .expect("song 分支")
+            {
+                ParsedLink::Song(song) => assert_eq!(song.id, "t-9"),
+                other => panic!("期望 Song 分支，实际 {other:?}"),
+            }
+
+            // Playlist 分支：实体不带 tracks → 二次取 playlist_tracks。
+            *stub.resolved.lock().unwrap_or_else(|e| e.into_inner()) = Some(
+                musid_dli::provider::ResolvedLink::Playlist(musid_dli::models::Playlist {
+                    id: TrackId::new("joox", "pl-9"),
+                    title: "链歌单".into(),
+                    description: None,
+                    artwork_url: None,
+                    track_count: None,
+                    tracks: vec![],
+                    play_count: None,
+                    creator: None,
+                    link: None,
+                    extra: Default::default(),
+                }),
+            );
+            stub.playlist_tracks
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert("pl-9".into(), vec![stub_track("t-8", "链曲目")]);
+            match adapter
+                .parse_link("https://web.example/playlist/pl-9")
+                .await
+                .expect("playlist 分支")
+            {
+                ParsedLink::Playlist { playlist, songs } => {
+                    assert_eq!(playlist.id, "pl-9");
+                    assert_eq!(songs.len(), 1);
+                    assert_eq!(songs[0].id, "t-8");
+                }
+                other => panic!("期望 Playlist 分支，实际 {other:?}"),
+            }
+
+            // Album 分支：album_tracks 取曲。
+            *stub.resolved.lock().unwrap_or_else(|e| e.into_inner()) =
+                Some(musid_dli::provider::ResolvedLink::Album(MdAlbum {
+                    id: TrackId::new("joox", "al-9"),
+                    title: "链专辑".into(),
+                    artists: vec!["链作者".to_string()],
+                    artwork_url: None,
+                    track_count: None,
+                }));
+            stub.album_tracks
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert("al-9".into(), vec![stub_track("t-7", "专辑曲目")]);
+            match adapter
+                .parse_link("https://web.example/album/al-9")
+                .await
+                .expect("album 分支")
+            {
+                ParsedLink::Album { playlist, songs } => {
+                    assert_eq!(playlist.id, "al-9");
+                    assert_eq!(playlist.name, "链专辑");
+                    assert_eq!(playlist.creator.as_deref(), Some("链作者"));
+                    assert_eq!(songs.len(), 1);
+                }
+                other => panic!("期望 Album 分支，实际 {other:?}"),
+            }
+        }
+
+        #[cfg(feature = "musid-dli-adapter-joox")]
+        #[tokio::test]
+        async fn collection_browse_faces_fall_back_to_trait_defaults_when_unwired() {
+            // 未 with_collections 的适配器：浏览面走 trait 默认（空列表），
+            // search_playlists 走「不支持」错误，capabilities 位如实为假。
+            let adapter = AdapterMusicSource::new(
+                SourceId::Joox,
+                "裸源（musid-dli）".to_string(),
+                None,
+                None,
+                None,
+                TransportInjection::new(None, 15),
+            );
+            assert!(
+                adapter
+                    .get_playlists("", 1)
+                    .await
+                    .expect("空列表")
+                    .is_empty(),
+                "未接线浏览面 = trait 默认空列表"
+            );
+            assert!(
+                adapter
+                    .get_playlist_categories()
+                    .await
+                    .expect("空列表")
+                    .is_empty()
+            );
+            assert!(adapter.search_playlists("k", 1).await.is_err());
+            let caps = adapter.capabilities();
+            assert!(!caps.playlist_search, "槽位缺席 → 位为假（P3-6 推导）");
+        }
 
         // --- 登记切片（reg-soda / reg-ytm，docs §12.4 末段）：不迁，断言
         // --- 随所在 feature 门进外层门禁（--lib）。
