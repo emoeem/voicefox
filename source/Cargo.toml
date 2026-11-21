@@ -90,6 +90,12 @@ musid-dli-adapter-reg-ytm = ["musid-dli-adapter"]
 # §13.5）；voicefox 库状态/索引 schema/Watcher 调度/UI 全部留在本仓
 # （§13.3 SourceManager 边界）。
 musid-dli-adapter-local = ["musid-dli-adapter", "musid-dli/local"]
+# V3 切片 s2（docs/MUSID_DLI_ADAPTER.md §13.2）：歌词文档缓存——musid
+# `LyricsCache` 文档域接入 adapter 歌词面（命中词/确认无词省重复取词）。
+# 依赖歌词转换变体（文档域存 LyricDocument，归一转换复用其产物）；负域
+# 不接——manager 链级负缓存（网络错误不投毒、全链确认无词才记）在 adapter
+# 之上承担策略。
+musid-dli-adapter-lyrics-cache = ["musid-dli-adapter-lyrics", "musid-dli/lyrics-cache"]
 
 [dev-dependencies]
 # 仅测试目标需要：用虚拟时间验证"每源超时"而不用真的等 8 秒。

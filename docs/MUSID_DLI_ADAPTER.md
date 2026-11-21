@@ -1651,3 +1651,50 @@ WAV stub + CUE sheet + 外挂歌词，无真实用户目录），11 用例：
 
 **范围留待后续切片**：歌词缓存（§13.2，LyricsCache 文档域接入 musid 歌词
 槽）、本地封面（§13.3，`local_cover::read_cover` 外挂封面回落）。
+
+### 13.2 切片 s2：歌词文档缓存接入（musid-dli-adapter-lyrics-cache）
+
+**feature**：`musid-dli-adapter-lyrics-cache =
+["musid-dli-adapter-lyrics", "musid-dli/lyrics-cache"]`（source/Cargo.toml）。
+musid `LyricsCache`（RESOURCE_DESIGN.md §8）文档域接入 adapter 歌词面；
+搜索域与负域**不接**——搜索域按 SearchMode 键控搜索列表，voicefox 的
+歌词链不走 musid 搜索；负域（`NegativeCache` + M2 错误类别）由 manager
+链级负缓存承担策略（`LyricNegativeCache`：600 s TTL、1024 容量、网络
+错误不投毒、全链确认无词才记——§11 的既有语义，原样保留）。
+
+**接线（`adapter_musid.rs`）**：`AdapterMusicSource` 新增 cfg 门控字段
+`lyrics_cache: LyricsCache`（`LyricsCacheConfig::default()`：文档 24 h、
+容量 512）。`get_lyric` 流程：
+
+1. `document_get(provider, id)`（键 = musid `TrackId` 的 provider + id，
+   稳定 id，绝无标题参与）：`Some(Some(doc))` 命中直接
+   `lyric_document_to_lx_data` 返回；`Some(None)` 是缓存的确认无词，归
+   `FetchError::NotFound`——与新鲜 `Ok(None)` 完全同形；
+2. 未缓存才打 provider：`Ok(Some)` / `Ok(None)` 写入文档域；
+   `Err` **不写缓存**（网络抖动不投毒，错误直接向上）。
+
+**probe 对账透明性**：probe 影子与主路径共用本面，缓存前后对账结论不变
+——单侧瞬时 Err 本就不计结论；双缺两侧都 NotFound；内容对照以真实产物
+为准（缓存内容即真实产物）。manager 计数（MusidOk 等）读的是用户可见
+行为，缓存命中仍是真实有词，计数语义不变。
+
+**测试（adapter_musid.rs，`--lib` 门，计数桩钉行为）**：
+
+- `lyrics_cache_hit_skips_the_second_provider_call`：两次 get_lyric 同文，
+  provider 调用数 = 1；
+- `lyrics_cached_absence_answers_not_found_without_recalls`：确认无词
+  两次 NotFound，provider 调用数 = 1；
+- `lyrics_errors_are_never_cached`：provider 恒 Err，三次全 Err 且错误
+  变体不变（若误缓存会变 NotFound），错误永不落缓存。
+
+**门禁实跑（2026-11-21，本会话）**：
+- `cargo test -p lx-source --features musid-dli-adapter-lyrics-cache
+  --lib`：**296 通过 / 0 失败 / 2 忽略**（含本切片 3 例）；
+- `cargo clippy -p lx-source --features musid-dli-adapter-lyrics-cache
+  --all-targets -- -D warnings`：0 错误；
+- `cargo fmt --all -- --check`：clean；
+- 歌词变体回归（缓存代码 cfg 关闭）`--features musid-dli-adapter-lyrics
+  --lib`：**293 通过 / 0 失败 / 2 忽略**；默认树 release：**218 通过 /
+  0 失败 / 2 忽略**（零变化）。
+
+**CI**：musid-stack job 新增「Tests (V3 lyrics document cache slice)」步。

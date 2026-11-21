@@ -134,6 +134,11 @@ jobs:
       - name: Tests (V3 local library parity slice)
         run: cargo test -p lx-source --features musid-dli-adapter-local --test musid_local_parity
 
+      # V3 歌词文档缓存（docs/MUSID_DLI_ADAPTER.md §13.2）：LyricsCache 文档
+      # 域接入 adapter 歌词面，命中/确认无词/错误不缓存三用例随 --lib 门进。
+      - name: Tests (V3 lyrics document cache slice)
+        run: cargo test -p lx-source --features musid-dli-adapter-lyrics-cache --lib
+
       - name: Default baseline
         run: cargo test -p lx-source
 

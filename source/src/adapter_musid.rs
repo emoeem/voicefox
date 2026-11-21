@@ -912,6 +912,14 @@ pub struct AdapterMusicSource {
     /// 缺变体时歌词面不生效（启动 warn 由 bootstrap 负责）。
     #[cfg_attr(not(feature = "musid-dli-adapter-lyrics"), expect(dead_code))]
     lyrics: Option<Arc<dyn MdLyricsProvider>>,
+    /// 歌词文档缓存（V3 s2，§13.2）：musid `LyricsCache` 文档域，键
+    /// (provider, provider 侧资源 id)。正域缓存命中词与确认无词
+    /// （`Some(None)`），负域不接——manager 链级负缓存（网络错误不投毒、
+    /// 全链确认无词才记）在 adapter 之上承担策略；本缓存只省重复取词。
+    /// 缓存透明：probe 影子与主路径共用本面，缓存前后对账结论不变
+    /// （单侧 Err 不计结论、双缺两侧都 NotFound、内容对照以真实产物为准）。
+    #[cfg(feature = "musid-dli-adapter-lyrics-cache")]
+    lyrics_cache: musid_dli::lyrics_cache::LyricsCache,
     /// voicefox 代理/超时预算记录（§4：0.2.0 无法注入，仅登记供诊断）。
     transport: TransportInjection,
 }
@@ -932,6 +940,10 @@ impl AdapterMusicSource {
             search,
             stream,
             lyrics,
+            #[cfg(feature = "musid-dli-adapter-lyrics-cache")]
+            lyrics_cache: musid_dli::lyrics_cache::LyricsCache::new(
+                musid_dli::lyrics_cache::LyricsCacheConfig::default(),
+            ),
             transport,
         }
     }
@@ -1031,9 +1043,37 @@ impl MusicSource for AdapterMusicSource {
             };
             let track = adapter_track_for_song(song)
                 .map_err(|error| FetchError::Other(error.to_string()))?;
+            // V3 s2（§13.2）：文档域缓存先行。`Some(Some(doc))` 命中直接归一
+            // 返回；`Some(None)` 是缓存的确认无词（与新鲜 Ok(None) 同形，
+            // 都归 NotFound，probe 对账行为不变）；`None` 未缓存才走 provider。
+            #[cfg(feature = "musid-dli-adapter-lyrics-cache")]
+            if let Some(cached) = self
+                .lyrics_cache
+                .document_get(&track.id.provider, &track.id.id)
+            {
+                return match cached {
+                    Some(document) => Ok(lyric_document_to_lx_data(&document)),
+                    None => Err(FetchError::NotFound),
+                };
+            }
             match lyrics.lyrics(&track).await {
-                Ok(Some(document)) => Ok(lyric_document_to_lx_data(&document)),
-                Ok(None) => Err(FetchError::NotFound),
+                Ok(Some(document)) => {
+                    #[cfg(feature = "musid-dli-adapter-lyrics-cache")]
+                    self.lyrics_cache.document_put(
+                        &track.id.provider,
+                        &track.id.id,
+                        Some(&document),
+                    );
+                    Ok(lyric_document_to_lx_data(&document))
+                }
+                Ok(None) => {
+                    #[cfg(feature = "musid-dli-adapter-lyrics-cache")]
+                    self.lyrics_cache
+                        .document_put(&track.id.provider, &track.id.id, None);
+                    Err(FetchError::NotFound)
+                }
+                // 错误不缓存：网络抖动不投毒，manager 链级负缓存（全链确认
+                // 无词才记、600s TTL）在 adapter 之上承担策略（§13.2）。
                 Err(error) => Err(fetch_error_from_error(&error)),
             }
         }
@@ -2889,6 +2929,171 @@ mod tests {
             assert!(matches!(
                 without_lyrics.get_lyric(&wy_song()).await,
                 Err(FetchError::NotFound)
+            ));
+        }
+
+        // --- V3 s2 歌词文档缓存（docs §13.2；musid-dli-adapter-lyrics-cache） ---
+
+        /// 歌词面计数桩：只实现歌词 provider（search/stream 槽恒 None），
+        /// 以调用次数钉住缓存行为。
+        #[cfg(feature = "musid-dli-adapter-lyrics-cache")]
+        struct CountingLyricStub {
+            document: Option<musid_dli::models::LyricDocument>,
+            calls: std::sync::atomic::AtomicUsize,
+        }
+
+        #[cfg(feature = "musid-dli-adapter-lyrics-cache")]
+        impl musid_dli::provider::MusicProvider for CountingLyricStub {
+            fn id(&self) -> &str {
+                "netease"
+            }
+            fn name(&self) -> &str {
+                "计数源"
+            }
+            fn capabilities(&self) -> ProviderCapabilities {
+                ProviderCapabilities {
+                    lyrics: true,
+                    ..Default::default()
+                }
+            }
+        }
+
+        #[cfg(feature = "musid-dli-adapter-lyrics-cache")]
+        #[async_trait]
+        impl MdLyricsProvider for CountingLyricStub {
+            async fn lyrics(
+                &self,
+                _track: &Track,
+            ) -> Result<Option<musid_dli::models::LyricDocument>, MdError> {
+                self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(self.document.clone())
+            }
+        }
+
+        #[cfg(feature = "musid-dli-adapter-lyrics-cache")]
+        fn counting_adapter(
+            document: Option<musid_dli::models::LyricDocument>,
+        ) -> (AdapterMusicSource, Arc<CountingLyricStub>) {
+            let stub = Arc::new(CountingLyricStub {
+                document,
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            });
+            let adapter = AdapterMusicSource::new(
+                SourceId::Wy,
+                "缓存源（musid-dli）".to_string(),
+                None,
+                None,
+                Some(Arc::clone(&stub) as Arc<dyn MdLyricsProvider>),
+                TransportInjection::new(None, 15),
+            );
+            (adapter, stub)
+        }
+
+        #[cfg(feature = "musid-dli-adapter-lyrics-cache")]
+        fn lrc_document() -> musid_dli::models::LyricDocument {
+            use musid_dli::models::{LyricDocument, LyricFormat, LyricLine};
+            LyricDocument {
+                format: LyricFormat::Lrc,
+                original: "[00:01.00]你好".to_string(),
+                translation: None,
+                romanization: None,
+                lines: vec![LyricLine {
+                    start_ms: 1000,
+                    end_ms: None,
+                    text: "你好".to_string(),
+                    translations: BTreeMap::new(),
+                    romanization: None,
+                    words: vec![],
+                }],
+            }
+        }
+
+        #[cfg(feature = "musid-dli-adapter-lyrics-cache")]
+        #[tokio::test]
+        async fn lyrics_cache_hit_skips_the_second_provider_call() {
+            let (adapter, stub) = counting_adapter(Some(lrc_document()));
+
+            let first = adapter.get_lyric(&wy_song()).await.expect("首取有词");
+            assert_eq!(first.lyric, "[00:01.00]你好");
+            assert_eq!(stub.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+            let second = adapter.get_lyric(&wy_song()).await.expect("缓存命中");
+            assert_eq!(second.lyric, "[00:01.00]你好");
+            assert_eq!(
+                stub.calls.load(std::sync::atomic::Ordering::SeqCst),
+                1,
+                "缓存命中不再打 provider"
+            );
+        }
+
+        #[cfg(feature = "musid-dli-adapter-lyrics-cache")]
+        #[tokio::test]
+        async fn lyrics_cached_absence_answers_not_found_without_recalls() {
+            let (adapter, stub) = counting_adapter(None);
+
+            assert!(matches!(
+                adapter.get_lyric(&wy_song()).await,
+                Err(FetchError::NotFound)
+            ));
+            assert!(matches!(
+                adapter.get_lyric(&wy_song()).await,
+                Err(FetchError::NotFound)
+            ));
+            assert_eq!(
+                stub.calls.load(std::sync::atomic::Ordering::SeqCst),
+                1,
+                "确认无词缓存后不再打 provider"
+            );
+        }
+
+        #[cfg(feature = "musid-dli-adapter-lyrics-cache")]
+        #[tokio::test]
+        async fn lyrics_errors_are_never_cached() {
+            struct ErringStub;
+            impl musid_dli::provider::MusicProvider for ErringStub {
+                fn id(&self) -> &str {
+                    "netease"
+                }
+                fn name(&self) -> &str {
+                    "错误源"
+                }
+                fn capabilities(&self) -> ProviderCapabilities {
+                    ProviderCapabilities {
+                        lyrics: true,
+                        ..Default::default()
+                    }
+                }
+            }
+            #[async_trait]
+            impl MdLyricsProvider for ErringStub {
+                async fn lyrics(
+                    &self,
+                    _track: &Track,
+                ) -> Result<Option<musid_dli::models::LyricDocument>, MdError> {
+                    Err(MdError::Provider {
+                        provider: "netease".into(),
+                        message: "boom".into(),
+                    })
+                }
+            }
+
+            let adapter = AdapterMusicSource::new(
+                SourceId::Wy,
+                "错误源（musid-dli）".to_string(),
+                None,
+                None,
+                Some(Arc::new(ErringStub)),
+                TransportInjection::new(None, 15),
+            );
+
+            assert!(adapter.get_lyric(&wy_song()).await.is_err());
+            assert!(adapter.get_lyric(&wy_song()).await.is_err());
+            // 错误不落缓存：第三次仍打到 provider（无计数桩，用行为验证——
+            // 若被缓存，两次都会是同一个 Err 变体；此处 Network Err 每次
+            // 重新产生，缓存命中会把它变成 NotFound，故 Err 变体即证据）。
+            assert!(matches!(
+                adapter.get_lyric(&wy_song()).await,
+                Err(FetchError::Other(_))
             ));
         }
     }
