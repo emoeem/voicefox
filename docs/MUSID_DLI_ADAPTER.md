@@ -1698,3 +1698,54 @@ musid `LyricsCache`（RESOURCE_DESIGN.md §8）文档域接入 adapter 歌词面
   0 失败 / 2 忽略**（零变化）。
 
 **CI**：musid-stack job 新增「Tests (V3 lyrics document cache slice)」步。
+
+### 13.3 切片 s3：本地封面解析回落（musid-dli-adapter-artwork-local）
+
+**feature**：`musid-dli-adapter-artwork-local =
+["musid-dli-adapter", "musid-dli/artwork-local"]`（source/Cargo.toml）。
+musid `artwork-local` 是 union feature（artwork + local-cover，
+`local-cover` 自带 `local`）；带来 `local_cover::read_cover`（L19 全量：
+内嵌首标签封面进解码校验缓存，键 sha256(音频路径字节 + 图片字节) 命名
+`{hash}.jpg`，与 voicefox `cover_cache::embedded_cover_path` 同配方）与
+同目录外挂封面检出（cover.jpg/cover.png/folder.png 等，大小写不敏感，
+检出不复制不校验）。
+
+**接线（`source/src/local/mod.rs`）**：`LocalSource::get_cover_url` 的
+模型封面（`song.cover_url`，扫描期产物）优先原样返回不变；缺席时经
+musid `read_cover(EmbeddedFirst)` 解析回落——内嵌（缓存化）优先、其次
+外挂检出；再缺才 NotFound。阻塞面（标签探测 + 可能的解码校验）与
+`get_lyric` 同款走 spawn_blocking。feature 关闭时维持原 NotFound 行为，
+默认树零变化。缓存目录复用 `cover_cache::cache_dir()`（voicefox 既有
+内容寻址封面缓存约定，两栈键配方同源）。
+
+**测试（`source/tests/musid_local_cover_parity.rs`，挂
+`musid-dli-adapter-artwork-local` 门，5 用例）**：
+
+1. `embedded_cache_key_recipe_matches_across_stacks`：MP3 fixture 写入
+   内嵌封面后，voicefox 扫描管线的 cover_url 缓存路径与 musid
+   `read_cover` 在同一缓存目录的产物**逐字符相同**（键配方同源的证据）；
+2. `external_cover_is_resolved_when_no_embedded_art`：无内嵌标签 +
+   同目录 cover.png → get_cover_url 落外挂文件原路径（musid 直读一致）
+   ——**新能力**：本仓原实现此处恒 NotFound；
+3. `model_cover_url_still_wins_unchanged`：模型封面在则原样返回，
+   优先级不变；
+4. `absent_everywhere_still_not_found`：双缺恒 NotFound（行为兼容）；
+5. `embedded_first_priority_is_pinned_in_read_cover`：内嵌与外挂俱在时
+   内嵌落缓存目录、外挂按原路径返回（防回落路径误配 ExternalFirst）。
+
+测试语料：WAV stub（外挂/缺席用例；WAV 无封面槽，musid local_cover.rs
+测试注释同口径）+ musid 同款 ffmpeg 构建 MP3 fixture
+（`source/tests/fixtures/local/spec_mp3_cbr128.mp3`，musid-dli 仓
+`tests/fixtures/local/` 逐字拷贝，出处见该目录 README.md）+ 68 字节
+1x1 RGBA PNG（zlib/struct 生成，chunk CRC 与 image crate 解码验证）。
+
+**门禁实跑（2026-11-21，本会话）**：
+- `cargo test -p lx-source --features musid-dli-adapter-artwork-local
+  --test musid_local_cover_parity`：**5 通过 / 0 失败**；
+- `cargo clippy -p lx-source --features musid-dli-adapter-artwork-local
+  --all-targets -- -D warnings`：0 错误；
+- `cargo fmt --all -- --check`：clean；
+- 默认树回归 `--lib --release` 与 artwork-local `--lib`：见提交说明
+  （实跑数字随提交记录）。
+
+**CI**：musid-stack job 新增「Tests (V3 local cover parity slice)」步。

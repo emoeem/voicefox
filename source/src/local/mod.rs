@@ -795,6 +795,28 @@ impl MusicSource for LocalSource {
         if let Some(cover) = &song.cover_url {
             return Ok(cover.clone());
         }
+        // V3 s3（docs/MUSID_DLI_ADAPTER.md §13.3）：模型封面缺席时经 musid
+        // `local_cover::read_cover` 解析——内嵌（进解码校验缓存，键配方与
+        // 本仓扫描管线一致，L19 全量）优先，其次同目录外挂封面
+        //（cover.png/folder.jpg 等，检出不复制）。feature 关闭时维持原
+        // NotFound 行为，默认树零变化。阻塞面（标签探测 + 可能的解码校验）
+        // 与 get_lyric 同款走 spawn_blocking。
+        #[cfg(feature = "musid-dli-adapter-artwork-local")]
+        if let Some(audio_path) = song.file_path.clone() {
+            let resolved = tokio::task::spawn_blocking(move || {
+                musid_dli::local_cover::read_cover(
+                    &audio_path,
+                    &crate::cover_cache::cache_dir(),
+                    musid_dli::local_cover::CoverPriority::EmbeddedFirst,
+                )
+                .map(|path| path.to_string_lossy().to_string())
+            })
+            .await
+            .map_err(|error| FetchError::Other(format!("读取本地封面任务失败: {error}")))?;
+            if let Some(cover) = resolved {
+                return Ok(cover);
+            }
+        }
         Err(FetchError::NotFound)
     }
 

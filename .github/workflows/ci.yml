@@ -139,6 +139,12 @@ jobs:
       - name: Tests (V3 lyrics document cache slice)
         run: cargo test -p lx-source --features musid-dli-adapter-lyrics-cache --lib
 
+      # V3 本地封面对账（docs/MUSID_DLI_ADAPTER.md §13.3）：内嵌缓存键配方
+      # 双栈同源、外挂封面检出回落、模型封面优先级不变、双缺 NotFound、
+      # EmbeddedFirst 次序钉住。
+      - name: Tests (V3 local cover parity slice)
+        run: cargo test -p lx-source --features musid-dli-adapter-artwork-local --test musid_local_cover_parity
+
       - name: Default baseline
         run: cargo test -p lx-source
 

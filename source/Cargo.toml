@@ -96,6 +96,12 @@ musid-dli-adapter-local = ["musid-dli-adapter", "musid-dli/local"]
 # 不接——manager 链级负缓存（网络错误不投毒、全链确认无词才记）在 adapter
 # 之上承担策略。
 musid-dli-adapter-lyrics-cache = ["musid-dli-adapter-lyrics", "musid-dli/lyrics-cache"]
+# V3 切片 s3（docs/MUSID_DLI_ADAPTER.md §13.3）：本地封面解析回落——
+# `song.cover_url` 缺席时本地源经 musid `local_cover::read_cover` 解析
+# （内嵌优先、同目录外挂封面检出 folder.jpg/cover.png 等，L19 全量）。
+# artwork-local 是 musid 的 union feature（artwork + local-cover），
+# `local-cover` 自带 `local`。
+musid-dli-adapter-artwork-local = ["musid-dli-adapter", "musid-dli/artwork-local"]
 
 [dev-dependencies]
 # 仅测试目标需要：用虚拟时间验证"每源超时"而不用真的等 8 秒。
