@@ -226,7 +226,8 @@ impl SourceManager {
         manager.register(Arc::new(WySource::new()));
         // V4-s2（docs/MUSID_DLI_ADAPTER.md §14.3）起 qianqian 的 legacy 实
         // 现已删，唯一实现是 musid 适配面：主注册表直装（不走影子 map）。
-        // TransportInjection 仅诊断登记（§4 口径：0.2.0 不注入）。
+        // TransportInjection 预算为占位（manager::new 拿不到网络配置）；
+        // musid-dli 0.2.1 起注入生效，真实预算随 bootstrap 路径（影子源）。
         #[cfg(feature = "musid-dli-adapter-qianqian")]
         if let Some(qianqian) = crate::musid_bootstrap::qianqian(
             &crate::adapter_musid::TransportInjection::new(None, 15),
@@ -235,7 +236,8 @@ impl SourceManager {
         }
         // V4-s1（docs/MUSID_DLI_ADAPTER.md §14.1）起 joox 的 legacy 实现已
         // 删，唯一实现是 musid 适配面：主注册表直装（不走影子 map）。
-        // TransportInjection 仅诊断登记（§4 口径：0.2.0 不注入）。
+        // TransportInjection 预算为占位（manager::new 拿不到网络配置）；
+        // musid-dli 0.2.1 起注入生效，真实预算随 bootstrap 路径（影子源）。
         #[cfg(feature = "musid-dli-adapter-joox")]
         if let Some(joox) =
             crate::musid_bootstrap::joox(&crate::adapter_musid::TransportInjection::new(None, 15))

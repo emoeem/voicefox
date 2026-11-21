@@ -2465,9 +2465,9 @@ dependencies = [
 
 [[package]]
 name = "musid-dli"
-version = "0.2.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cc02ffac46391bfe07065fa68d99b2a4e2ed83f995cda9335cd5c8e888eb053b"
+checksum = "936a494e651fb87ab1066c4b9250708122787709dfb99dee1e4a84f364ab944b"
 dependencies = [
  "aes 0.8.4",
  "async-trait",
@@ -3318,7 +3318,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

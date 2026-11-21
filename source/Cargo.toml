@@ -40,7 +40,7 @@ tracing.workspace = true
 # 仅 feature `musid-dli-adapter` 启用时进入依赖图；默认构建（V4 起）带 joox/qianqian 适配边。
 # `=0.2.0` 精确 pin：V0 映射断言对模型 serde wire 形状敏感，禁 semver 漂移。
 # `default-features = false`：模型层不需要 lofty/walkdir/cue-rw/tempfile。
-musid-dli = { version = "=0.2.0", optional = true, default-features = false }
+musid-dli = { version = "=0.2.1", optional = true, default-features = false }
 
 [features]
 # V4-s1（docs/MUSID_DLI_ADAPTER.md §14.1）：joox legacy 实现已删，适配面是
