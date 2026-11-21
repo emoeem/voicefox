@@ -37,6 +37,45 @@ jobs:
       - name: Clippy (zero warnings)
         run: cargo clippy --workspace --all-targets -- -D warnings -A clippy::double_must_use
 
+  # ── musid-dli 双栈（V1，opt-in feature 门；docs/MUSID_DLI_ADAPTER.md §11）──
+  # 覆盖全部 musid cfg 代码（manager 双栈路径 / adapter_musid / parity /
+  # musid_bootstrap）与 musid_dual_stack / musid_parity 集成测试；默认构建
+  # 零 musid 边由 tree 门锁死。§0 登记的 cover_cache flaky 与既有 workspace
+  # 测试 job 同口径（release/全量下未复现）。
+  musid-stack:
+    name: musid dual-stack (adapter features)
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy (adapter feature, zero warnings)
+        run: cargo clippy -p lx-source --all-targets --features musid-dli-adapter -- -D warnings -A clippy::double_must_use
+
+      - name: Clippy (lyrics variant, zero warnings)
+        run: cargo clippy -p lx-source --all-targets --features musid-dli-adapter-lyrics -- -D warnings -A clippy::double_must_use
+
+      - name: Default build carries no musid-dli edge
+        run: |
+          if cargo tree -p lx-source -e normal | grep -q musid-dli; then
+            echo "default feature tree must not contain musid-dli" >&2
+            exit 1
+          fi
+          echo "no musid-dli edge in the default feature tree"
+
+      - name: Tests (adapter feature)
+        run: cargo test -p lx-source --features musid-dli-adapter
+
+      - name: Tests (lyrics variant)
+        run: cargo test -p lx-source --features musid-dli-adapter-lyrics
+
+      - name: Default baseline
+        run: cargo test -p lx-source
+
   # ── Linux 构建 ──
   build-linux:
     name: Build Linux x86_64

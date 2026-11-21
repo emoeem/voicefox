@@ -1,12 +1,13 @@
-# musid-dli 适配层设计（V0）
+# musid-dli 适配层设计（V0 / V1）
 
-> 状态：**V0 已落地**（2026-11-20；映射函数 + fixture 测试，未接业务路径）。
+> 状态：**V0 已落地**（2026-11-20；映射函数 + fixture 测试）→ **V1 双栈接入
+> 已落地**（2026-11-21；opt-in 四面路由 + 回退计数 + parity 对账，§11）。
 >
-> 落地物：
-> - 映射代码 `source/src/adapter_musid.rs`，由 `source/src/lib.rs:31-32` 在
+> V0 落地物：
+> - 映射代码 `source/src/adapter_musid.rs`，由 `source/src/lib.rs` 在
 >   feature `musid-dli-adapter` 后注册；
 > - fixture `source/tests/fixtures/musid/`（8 个 JSON，来源与形状说明见 §7）；
-> - 依赖方案 `source/Cargo.toml:43-49`：crates.io `musid-dli = "=0.2.0"`
+> - 依赖方案 `source/Cargo.toml`：crates.io `musid-dli = "=0.2.0"`
 >   optional + `default-features = false`，feature `musid-dli-adapter` 与
 >   歌词变体 `musid-dli-adapter-lyrics`（取舍与验收口径见 §8）。
 >
@@ -26,9 +27,20 @@
 > - `cargo tree -p lx-source`（默认）无 musid 边；开 feature 可见
 >   `musid-dli v0.2.0`。
 >
+> V1 门禁（2026-11-21 复跑；两轮评审修订后复跑，命令与结果见 §11.9；
+> 本段例数一律按"总例数 = 通过 + 失败 + ignored"计）：默认基线 lib 仍为
+> 220 例（218 通过 / 0 失败 / 2 ignored，未触发 §0 登记 flaky——其根因已
+> 定位修复，见 §11.10 第二轮 F2）——旧实现零删改、默认路径行为零变化的
+> 双证；adapter feature 全量 lib 260 例（258 通过 / 0 失败 / 2 ignored；
+> V0 249 例 + 新增 11 例单测），歌词变体 lib 265 例（263/0/2）；新增集成
+> 测试 `musid_dual_stack`（adapter feature 下 19 例 / 歌词变体下 23 例 /
+> 默认构建 `#![cfg]` 编译为空 0 例）与 `musid_parity`（6 例）全绿；CI
+> 新增 `musid-stack` job（评审 P6）。
+>
 > 依据：2026-11-20 双仓工作树现场盘点（`pairs` 逐条读过源码）+ 本阶段复核。
 > 本文是 voicefox 侧 `lx-source` 与 musid-dli 0.2.0（crates.io）之间的
-> 模型映射契约；V1-V4 的升级顺序草案见 §5，取消/超时/换源语义对齐见 §6。
+> 模型映射契约；V1 双栈的落地语义见 §11，V2-V4 升级顺序见 §5，取消/超时/
+> 换源语义对齐见 §6。
 
 ## 0. V0 范围与非范围
 
@@ -394,7 +406,7 @@ getter 供设置页展示；文档注明"上游公开 transport 后接通"）。
 
 - **V0（本阶段）**：映射函数 + fixture 测试，零业务路径接触。
   依赖：crates.io `musid-dli = "=0.2.0"` optional + feature gate（§8）。
-- **V1（双栈接入）**：
+- **V1（双栈接入，已落地，语义与验收见 §11）**：
   1. 前置 (a) 上游公开 Transport 注入面 **且** voicefox 开启 musid-dli
      `source-*` feature（两步前置，见 §4：transport 与全部 provider 实现
      都在 `source-*` 后面）；(b) `AdapterMusicSource`
@@ -411,6 +423,12 @@ getter 供设置页展示；文档注明"上游公开 transport 后接通"）。
      `musid-dli-adapter-netease = ["musid-dli-adapter",
      "musid-dli/source-netease"]`，其余源同形），provider 实现与 transport
      面随子 feature 进入 feature 树（§8 V1 预告）。
+     **V1 落地差异（如实登记）**：V1 实装收敛到三个运行时面（搜索/流地址/
+     歌词，§11.4）；歌单/专辑/歌手/榜单/链接直解各面 V1 不接（影子源不进
+     capabilities 聚合，这些方法在 manager 路径上不可达，接了即死代码），
+     留给 V2 逐源迁移；(b) 的歌词转换变体依赖在 V1 如实成立
+     （`musid-dli-adapter-lyrics`）；(d) 的子 feature 已按 §11.1 落地
+     （bilibili 不设——`bili` 恒旧路径）。
   2. `SourceManager` 注册双栈源；session 统一（§2.9）。
   3. 依赖升档：`"=0.2.0"`→`"0.2"`（wire 形状已 pin，V0 禁漂移）。
 - **V2（引擎收敛候选）**：下载引擎切片消费 `ResolvedUrl.fallback_endpoints`
@@ -494,12 +512,17 @@ fallback 顺序契约、strict chunk 降级、错误分类映射、能力位映�
 ```toml
 [dependencies]
 # V0：仅映射与测试，不接业务路径；默认构建完全不引入（feature 关闭无边）。
+# V1：musid-dli 成为影子源（业务路径）的 regular optional dependency，
+#     版本 pin 维持（"=0.2.0"→"0.2" 的放宽随外层 CI 矩阵落地，§11.1）。
 musid-dli = { version = "=0.2.0", optional = true, default-features = false }
 
 [features]
 musid-dli-adapter = ["dep:musid-dli"]
-# 歌词往返映射变体（仅测试用）：多拉 musid-dli/lyrics-conversions（含 lyrics-helper 0.5.1 default-features=false）
+# 歌词往返映射变体：V1 起歌词面双栈运行时需要它（缺它该面不生效 + warn）
 musid-dli-adapter-lyrics = ["musid-dli-adapter", "musid-dli/lyrics-conversions"]
+# V1 按源子 feature（bilibili 不设，§11.1；其余源同形）：
+musid-dli-adapter-netease = ["musid-dli-adapter", "musid-dli/source-netease"]
+# ... qqmusic / kugou / kuwo / migu / jamendo / apple / fivesing / qianqian / joox
 ```
 
 - **`=0.2.0` 精确 pin**：模型 serde wire 在 0.2.0 已 pin，但 V0 映射测试的
@@ -584,3 +607,344 @@ musid-dli 内部解决；`ProviderDescriptor` 的 version/priority/supported_qua
 路由；`ResolvedLink::Artist` 变体 voicefox 无 → 适配层报不支持或降级为歌手
 搜索；voicefox 的 Playlist/Album 变体自带 songs：适配层 resolve 后立即调
 `playlist_tracks/album_tracks` 补齐。
+
+## 11. V1 双栈接入（已落地，2026-11-21）
+
+V1 把 musid-dli 提升为 `lx-source` 的可选正式依赖并接通三个运行时面
+（搜索 / 流地址 / 歌词），全部 opt-in：**编译期 feature × 运行期 config
+× 用户源 enabled 三重门**。硬约束的落点：
+
+- 默认路径行为零变化：所有开关默认 false，影子 map 恒空，路由判定恒不
+  命中；默认构建 lib 套件例数不变（220，§11.9）。
+- musid-dli 不进默认 feature：`cargo tree -p lx-source`（默认）无 musid 边
+  （§11.9）。
+- 旧实现一行不删：路由是"槽位插入 + 失败回落"，不是替换。唯一例外是
+  三处机械等价的重排（§11.11 如实登记）。
+- SourceManager 应用级职责全部保留（多源调度/超时隔离/错误隔离/用户源
+  优先级/内置与 JS fallback/歌词负缓存/换源/UI 状态）。
+
+### 11.1 依赖与 feature 面
+
+- musid-dli 维持 `optional = true` + `default-features = false` +
+  `"=0.2.0"` 精确 pin（§8）；"提升为正式依赖"指的是它从"仅映射与测试"
+  变为业务路径（影子源）的 regular optional dependency——V0 已是该形态，
+  V1 增加的是**按源子 feature**（feature 名对照 musid-dli Cargo.toml 的
+  `source-*`，注意 apple 是 `source-apple` 不是 `source-applemusic`）：
+  `musid-dli-adapter-netease/qqmusic/kugou/kuwo/migu/jamendo/apple/fivesing/qianqian/joox`，
+  均为 `["musid-dli-adapter", "musid-dli/source-<x>"]`。
+- **bilibili 不设子 feature**：`bili` 恒旧路径（独立存储 + 扫码登录链路，
+  §11.4）。
+- provider 实现与 transport 面随子 feature 进入 feature 树（reqwest/aes/
+  md-5/... 只进 feature 树，不进默认树）。
+- `"=0.2.0"` → `"0.2"` 的放宽（§5 V1 步骤 3）**暂缓**：等外层 CI 的
+  feature 矩阵跑通后再执行，V1 期间 wire 形状仍由 fixture 测试 pin。
+- musid-dli 的 `lyrics-cache` / `session-file` / `download` / `lx-js-bridge`
+  feature V1 均不启用（voicefox 负缓存/会话存储/下载引擎权威）。
+
+### 11.2 配置面（core/src/model/config.rs SourceConfig）
+
+新增 5 个字段，全部 `bool`、`#[serde(default)]`、默认 false；配置形状不随
+feature 变化（字段恒解析）：
+
+| 字段 | 语义 |
+|---|---|
+| `source.musid_stack` | 总闸；false 时四面全走旧路径 |
+| `source.musid_search` | 搜索面（单源 + 聚合同规则） |
+| `source.musid_song_url` | 流地址面（内置槽位前插 musid 判定） |
+| `source.musid_lyric` | 歌词面（另需编译期 `musid-dli-adapter-lyrics` 变体） |
+| `source.musid_parity_probe` | parity 对账影子模式（恒纯观测：恒展示旧路径结果，musid 调用仅用于计数且不阻塞用户路径） |
+
+双维度 opt-in 的组合语义：config 开而 feature 关 → 该面静默走旧路径 +
+启动时一次 warn（`lx_source::MUSID_ADAPTER_ENABLED` /
+`MUSID_LYRIC_CONVERSIONS_ENABLED` 两个运行时常量把 cfg! 结果透给宿主，
+因为 `cfg!` 只对本 crate 的 feature 生效）。接线点唯一：
+`app/src/context.rs` 在 `set_js_url_first` 之后调用
+`lx_source::bootstrap_musid_stack(&source_manager, &config.source, &config.network)`——
+总闸关/feature 缺时该函数为 no-op 或仅 warn，不会注册影子源。
+
+### 11.3 影子源注册（独立 map，不覆盖内置）
+
+`SourceManager` 新增（均 `cfg(feature = "musid-dli-adapter")`）：
+
+- `musid_sources: RwLock<HashMap<SourceId, Arc<dyn MusicSource>>>`——影子
+  map 与 `sources` 完全独立。`register` 以 `SourceId` 为键、二次注册会覆盖
+  内置实现，所以影子源走专用入口
+  `register_musid_source(&self, Arc<dyn MusicSource>)`（`&self` + RwLock，
+  app 侧 Arc 共享下可注册）。
+- `set_musid_routes(MusidRouteConfig)`：下发 5 个开关（AtomicBool）。
+- `musid_parity_snapshot()`：计数只读快照（设置页/诊断）。
+- **health_check / capabilities 聚合 / `sources_supporting` /
+  `leaderboard_sources` / `playlist_sources` / 登录链路（qr login/logout/
+  is_logged_in）一律不读 musid map**：影子源不进健康检测、不改设置页入口
+  显隐。测试 `musid_registration_never_touches_builtin_state` 用带
+  `playlists=true` 能力位的影子源验证聚合位不翻真。
+
+`AdapterMusicSource`（adapter_musid.rs，V1 新写）实现 voicefox
+`MusicSource` fat-trait：`search→TrackSearch::search`（SearchQuery 拆装 +
+search_page_to_result）、`get_song_url→StreamResolver::resolve`（song_to_track
+保真 TrackId；JS 歌按 `builtin_source_for_js` 还原平台；**ResolveOptions
+显式传档位**，禁 Default=High；stream_to_resolved_url +
+enrich_song_url_from_song 补 cover_url/qualities；`expires_at_unix` 已过期
+→ Err，绝不透传播放器（G4）；notes 走 debug 日志）、
+`get_lyric→LyricsProvider::lyrics`（lyric_document_to_lx_data，lxlyric 恒
+None，需歌词转换变体）、`get_cover_url` 只回填歌曲模型封面（ArtworkProvider
+不接）、`supported_qualities` 经 §2.4 翻译。登录方法全部保持 trait 默认
+（恒未登录/默认错误），`capabilities()` 仅回填 provider descriptor 位作
+诊断对照。装配点 `source/src/musid_bootstrap.rs`：每个子 feature 一个
+装配分支，同一 provider 实例按 Arc 克隆拆成 TrackSearch/StreamResolver/
+LyricsProvider 三面（共享同一分配），constructor 走 musid-dli 无参
+`new()`（provider_default 传输：15s、无代理）。
+
+### 11.4 路由决策（四面）
+
+共用判定 `musid_route(face_gate, source)`：总闸 && 面开关 && 源可映射
+（`soda`/`local` 不在 §1 命名表、`bili` 显式排除——恒旧路径）&& 影子源
+已注册 && 用户 enabled 集含该源。歌曲的路由平台：JS 音源搜到的歌
+（`Local` + `extra[source]`）按 `builtin_source_for_js` 还原，普通歌曲取
+`source`。**probe（`musid_parity_probe`）优先于替换且恒纯观测（评审 P1
+修订）**：probe 开启时该面 musid 只作影子——旧路径权威、恒展示旧路径
+结果，musid 的产物一律不进用户路径（含流地址面：旧链失败侧对账只计数，
+旧错误原样向上且时延与不开 probe 一致）；对账全部在后台任务落账
+（评审 P4 与第二轮 F1：聚合 spawn_search_shadow_reconcile、单源搜索与
+歌词经 oneshot、流地址失败侧 tokio::spawn），用户路径零额外延迟，计数
+最终一致。**取消语义（第二轮 F5 登记）**：影子与对账任务是
+fire-and-forget——用户请求被取消或外层超时后，影子照常跑满自己的预算
+（搜索 10s、歌词 20s、流地址对账 10s）并消耗 musid 配额、照常落账
+（oneshot 发送端被弃的影子只浪费查询、不计）；计数因此可能包含用户从未
+见到结果的对账，属诊断面的已知形态。
+
+1. **搜索面**（`search_scoped` 单源 + `search_all` 聚合）：单源路径在
+   enabled 检查后插入 musid 判定，musid 先行；聚合路径按源逐个路由进
+   **同一 JoinSet**，同享每源 10s 超时与同一去重键 `(source,
+   extra[source], id)`（manager 原键，adapter 产物无 `extra[source]`，
+   天然同形）。**musid 尝试预算取每源预算前半（`MUSID_ATTEMPT_BUDGET`
+   5s，评审 P2）**：musid Err **或预算耗尽**后立即按旧路径重试该源，回退
+   继承剩余预算——musid 慢失败/挂死不再把回退挤到归零，替换模式总时延
+   ≤ 基线每源 10s（单源路径同切分，整体受 app 外层 12s 约束）。probe
+   影子任务限 10s、在后台对账（评审 P4），聚合结果不被最慢影子拖住。
+   musid-dli `aggregate_search` 不引入——多源调度/超时隔离是
+   SourceManager 应用级职责（硬边界）；`SearchCancelToken` 在 V1 **无接缝**
+   （0.2.0 的 `TrackSearch::search` 无 token 参数，token 只被未引入的
+   `aggregate_search*` 消费），取消完全依赖 voicefox 的 future-drop
+   （JoinSet/timeout），硬挂接留 V3（§6.1）。
+2. **流地址面**（`get_song_url_inner`）：本地/bili 早退后、内置槽位前插
+   musid 判定；`js_first` 语义不变——false=musid 先于内置先行槽，
+   true=JS 先于 musid（musid 槽位在 JS 循环之后、内置兜底之前）；
+   `js_start_index` 续播机制零改动（续播轮次 musid 槽位仍参与，V1 未记
+   跳过状态，配额按轮重复消耗——评审 P8 确认已登记）。musid resolve
+   尝试限 [`MUSID_RESOLVE_BUDGET`] 10s（评审 P3：musid 内部固 15s
+   `provider_default` 不可注入，预算在宿主侧收口）——Err/超时 → 继续既有
+   内置→JS→内置兜底链（错误文本逐字保持原实现），回退链预算 ≥20s；
+   **残余退化如实登记**：对比基线满 30s 外层预算，musid 尝试至多占用
+   10s，慢失败场景下回退链可用预算被压缩（≤20s）。
+3. **歌词面**（`get_lyric_inner`）：musid 槽位与 JS 槽位同位——JS 之后、
+   内置 fallback 之前；产物过同一内容门 `lyric_has_content`；None/空内容/
+   Err → 继续链、不写负缓存；musid 确认无词时与旧路径同口径写同一负缓存
+   键（负缓存仍由 `get_lyric_with_fallback` 统一裁决）。该面整体需要
+   `musid-dli-adapter-lyrics` 变体（缺变体时 musid 歌词槽位与 probe 双跑
+   均不生效 + 启动 warn）。musid-dli 自带 `LyricsCache` 不启用，voicefox
+   负缓存权威（`(provider, raw_id)` 键换算留 V3）。
+4. **歌曲详情面**：无独立运行时开关（如实登记，非漏项）——voicefox
+   fat-trait 无 by-id 详情方法、musid-dli 0.2.0 无公开 detail trait
+   （netease `track_details` 是 crate 内部方法）；详情由承载面携带：搜索
+   产物经 search_page_to_result 逐条 track_to_song、resolve 入参经
+   song_to_track 保真（专辑 id 不模仿缺省回落，§2.1）。若 V2 需要
+   by-id 详情钩子（如 wy 歌单同步 `songs_from_detail` 路径），前置是上游
+   公开 per-provider detail trait。
+
+### 11.5 回退语义与计数（source/src/parity.rs）
+
+`ParityCounters`（`Mutex<HashMap<(ParityFace, SourceId, ParityOutcome), u64>>`，
+内存计数不落盘，`Arc` 共享供 JoinSet 任务记录）：
+
+- `MusidOk`：musid 路径成功给出产物（替换模式命中；probe 模式流地址面
+  失败侧对账命中——产物不进用户路径，评审 P1）。
+- `MusidErrLegacyOk`：musid 失败（Err/空产出/过期地址/尝试预算耗尽），
+  旧路径同请求成功。
+- `MusidErrLegacyErr`：两栈同请求都失败。
+- `ParityMatch` / `ParityMismatch`：probe 真双跑的对照结论。
+
+各面口径（不是所有 outcome 在所有面都产生，如实登记）：
+
+| 面 | 替换模式 | probe 模式 |
+|---|---|---|
+| 搜索 | MusidOk / MusidErrLegacyOk / MusidErrLegacyErr（单源在 `musid_search_single` 计；聚合在各源任务内计；musid 尝试预算耗尽也回退并计——评审 P2） | 双 Ok 才对照（ParityMatch/Mismatch；聚合在后台任务 `spawn_search_shadow_reconcile` 计、单源在影子任务经 oneshot 拿到旧路径产物后计——均不阻塞用户路径，评审 P4，计数最终一致）；单侧瞬时 Err 不计（无双方产物可归一）；双 Err 记 MusidErrLegacyErr |
+| 流地址 | 同搜索三态（在 `get_song_url_inner` 的成功/错误出口计；err 侧为纯簿记，零时延） | **只做失败侧对账且恒纯观测（评审 P1；第二轮 F1 后台化）**：旧链成功不双跑 resolve（避免双倍平台配额，零调用零计数）；旧链失败才在后台任务跑 musid（限 10s）——命中记 MusidOk、失败记 MusidErrLegacyErr，**musid 地址绝不返回**，旧错误原样向上且时延与不开 probe 一致；计数最终一致 |
+| 歌词 | 槽位命中记 MusidOk；err 侧 legacy 归因仅在 `get_lyric_with_fallback` **主请求链**记（评审 P7：本地外挂→JS→musid→内置 fallback 的同请求 rescue 才算 ErrLegacyOk，find_music 跨源候选的 rescue 不归因到路由源平台——该情形不计；Err 与空产出同归因；跨源补全候选的 musid 槽位只计 MusidOk） | 双 Ok 按内容对照（双方都确认无词 = ParityMatch；单侧有词 = ParityMismatch）；单侧 Err 不计；双 Err 记 MusidErrLegacyErr；影子在后台任务对账（评审 P4） |
+
+错误分类经 fetch_error_from_error/search_error_from_error（§9 表，禁止按
+中文子串匹配）。**整体外层超时不计**（无双方结局）：聚合替换模式的两栈
+（musid 尝试 + 回退）都在每源 10s 预算内挂死时，任务整体超时，不计（测试
+`search_all_both_stacks_timing_out_counts_nothing` pin）；musid 尝试预算
+（5s）耗尽但回退完成时正常计数（测试
+`search_all_musid_hang_falls_back_within_the_budget_split` pin）。V1 只计数
+不自动熔断（连续失败自动禁用 musid 是 V2 候选）。**probe 计数为后台落账、
+最终一致**（评审 P4 与第二轮 F1）：读取快照用于诊断时存在短暂滞后，属
+预期；用户取消/外层超时后影子照常跑满预算并落账（见 §11.4 取消语义），
+计数可能包含用户未见结果的对账。
+
+### 11.6 parity 归一对照规则
+
+- 歌曲对（`parity::songs_equivalent`）：id 精确相等；name/singer/album 经
+  `filter_str`（+ singer 先 `sort_singer`）后相等——与 find_music 同一套
+  归一（manager.rs:1192-1204）；album 任一侧空串视为缺失不比；时长两侧
+  都非 ZERO 才比、差 ≤1s；qualities 集合相等（adapter 产物在
+  track_to_song 已按 §2.4 折档，Standard→Low128、Unknown 掉出，直接比
+  折档后集合）。
+- 搜索产物集（`compare_search_items`）：条数一致且 musid 侧每条都能按 id
+  精确配对到一条等价 legacy 歌曲；`total`/`has_more` 不对照（§2.7
+  `None→items.len()` 语义差如实豁免）。
+- 歌词（`compare_lyrics`）：`lyric` 正文逐行去空白去空行后的（行数，首行
+  `[...]` 时间戳标签）指纹相等；翻译/逐字不比（musid-dli 无 YRC/QRC
+  序列化器，lxlyric 恒 None，逐字对照无法成立）。
+
+### 11.7 Transport 注入现状（P9，硬发现维持）
+
+musid-dli 0.2.0 的 `transport` 模块与 `with_transport` 均 `pub(crate)`
+（本次复核 `src/lib.rs:40-54` 属实），**voicefox 的代理/超时在 0.2.0 上
+无法注入**。V1 落地形态：影子源构造时
+`TransportInjection::new(config.network.proxy_url, config.network.timeout)`
+记录预算（`AdapterMusicSource::transport_injection()` getter 供诊断），
+proxy/超时继续只驱动 `lx_source::http::configure`。升级前置两步缺一不可
+（§4）：上游公开 transport feature + voicefox 开 source-\* 子 feature；
+不做 path 依赖或 fork 绕过。注入接通后 musid_bootstrap 的装配点是唯一
+改动位置。
+
+### 11.8 V1 显式边界（不接清单）
+
+- **换源/匹配**：`find_music`/`find_music_on`/auto_toggle/policy 候选
+  收窄完全走 voicefox 旧路径（±5s 严格过滤不放宽）；musid-dli
+  `matcher::match_breakdown` 不接线、无配置项（不给可误开的开关）。
+  musid 搜到的歌（source 非 Local）天然参与既有换源链；匹配成功的
+  SongInfo 仍由 voicefox 写 `toggle_source`（musid 边界上该字段不存在）。
+- **登录/会话**：扫码（bili/tx/wy）与 cookie 会话全走旧路径；
+  musid-dli `ProviderSession`/`FileSessionStore` 不接线；
+  `capabilities_from_provider` 仅用于 AdapterMusicSource 自身
+  capabilities()（诊断对照），不改 `sources_supporting` 显隐。
+  `wechat_login`/`vip_account` 双栈期恒 false。**双栈零凭据流动**
+  （评审 P5 登记）：musid provider 全部以无参 `new()` 构造（匿名），voicefox
+  侧无任何 cookie/session 接线、musid-dli `session-file` feature 未启用
+  （§11.1）——不存在"双栈并发串账号"风险；反面后果两条：
+  (a) 替换模式下对内置栈已 cookie 登录的用户，musid 面恒匿名，VIP/登录态
+  曲目的结果集与档位可能变窄甚至退化（musid 命中不等于登录态等价）；
+  (b) probe 对账在登录源上是"内置带登录态 vs musid 匿名"的不对称双跑，
+  会产生系统性 ParityMismatch 噪声——解读 §11.5 计数时必须把登录源
+  （wy/tx/kg/bili 等 cookie 类）的 mismatch 与真实行为差异区分开。
+- **歌单/专辑/歌手/榜单/链接直解**：影子源不实现这些 fat-trait 方法
+  （保持 trait 默认错误）——影子源不进 capabilities 聚合，这些路径经
+  manager 恒走内置，接了即不可达死代码；V2 逐源迁移时再按 §5 步骤 2
+  评估。
+- **musid-dli aggregate_search / SearchCancelToken / StreamCache /
+  LyricsCache / 下载引擎**：V1 均不引入（§11.4/§11.5）。
+
+### 11.9 测试与门禁（V1 复跑结果）
+
+- `cargo fmt --all`：已执行，`--check` 干净。
+- 确定性硬门 `cargo test -p lx-source --features musid-dli-adapter --
+  adapter_musid`：35 通过 / 0 失败（V0 的 29 + 新增 6 例 AdapterMusicSource
+  单测）；歌词变体下 40 通过 / 0 失败。
+- 新增集成测试：`source/tests/musid_dual_stack.rs`（路由判定 / 回退计数 /
+  尝试预算切分 / js_first 语义 / probe 影子与不阻塞用户路径（搜索面 +
+  流地址错误路径）/ 整体超时不计 / 会话隔离 / 负缓存语义；歌词面用例挂
+  `musid-dli-adapter-lyrics` 门）——adapter feature 下 19 例（`--list`
+  口径）/ 歌词变体下 23 例全绿；`source/tests/musid_parity.rs`（聚合 probe
+  真双跑对照 / 归一差异 / 单侧失败豁免 / 模式计数分离 / 累计）6 例全绿。
+  probe 计数断言按"后台落账最终一致"轮询（`settled_count`）。
+- 默认基线 `cargo test -p lx-source`：lib 220 例（218 通过 / 0 失败 /
+  2 ignored）——默认 lib 例数与 V0 完全一致，musid 相关 lib 单测全部挂
+  feature 门；新集成测试文件 `#![cfg(feature)]` 在默认构建下编译为空。
+  **§0 登记 flaky 已根因修复（评审第二轮 F2）**：`sweep_in` 按 **atime**
+  排序淘汰，而测试助手旧实现只钉 mtime——relatime/秒级精度下六个文件的
+  atime 全是创建时刻的近同值，排序不稳定。现用 `std::fs::File::set_times`
+  （1.75+）把 atime/mtime 一起显式钉死，断言一字未动；复跑验证：默认
+  lib 全量连跑 6 次 + 定向用例连跑 8 次 + cover_cache 模块连跑 6 次，
+  全部 0 失败（修订前实测约 1/6 全量跑触发 1 次）。§8 的"修掉 flaky 或
+  CI 按名单拆分"前置以第一种方式兑现，musid-stack job 维持无作用域全量。
+- `cargo tree -p lx-source`（默认）无 musid-dli 边；
+  `--features musid-dli-adapter` 可见 `musid-dli v0.2.0`；
+  `--features musid-dli-adapter-netease` 连带 reqwest 等进入 feature 树。
+- `cargo check -p lx-source`（默认 / adapter / netease 子 feature /
+  lyrics 变体）与 `cargo check -p voicefox-app`（默认 +
+  `--features lx-source/musid-dli-adapter-lyrics,lx-source/musid-dli-adapter-netease`）
+  均零错误零警告。
+- **CI 覆盖已闭环（评审 P6）**：`.github/workflows/ci.yml` 新增
+  `musid-stack` job（fmt-check / clippy `-p lx-source --all-targets` 开
+  `musid-dli-adapter` 与 `musid-dli-adapter-lyrics` 两形态 `-D warnings` /
+  默认 `cargo tree` 零 musid 边断言 / adapter 与歌词变体两形态
+  `cargo test -p lx-source` / 默认基线）——§11 全部 cfg 代码与两个集成
+  测试文件在 CI 上可复现，不再可静默烂掉。V0 §8 的 flaky 修复口径继续
+  有效（该 job 与既有 workspace 测试 job 同口径承受同一登记 flaky）。
+- 未跑（外层门禁职责）：全仓 clippy/test、feature 全矩阵、MSRV、三平台
+  构建（CI job 覆盖的是 lx-source 单包两形态）。
+
+### 11.10 评审修订（2026-11-21，逐条对应评审意见；第二轮 F1-F5 追加于后）
+
+- **P1（probe 语义泄漏）**：流地址面 probe 从"旧链失败跑 musid 并返回其
+  地址兜底"改为**恒纯观测**——只计数（MusidOk/MusidErrLegacyErr），musid
+  产物不进用户路径，旧错误原样向上。五处"恒展示旧路径结果"声明
+  （§11.2 表、§11.4、config.rs、config.example.toml、MusidRouteConfig
+  注释）与实现恢复一致；测试 `probe_song_url_runs_musid_only_after_the_legacy_chain_fails`
+  改为 pin 旧错误向上 + MusidOk 计数 + musid 确实被调用。
+- **P2（聚合回退饥饿）**：替换模式的 musid 尝试独立给预算
+  `MUSID_ATTEMPT_BUDGET` 5s（每源 10s 前半；单源路径同切分），Err/预算
+  耗尽后回退继承剩余预算——musid 慢失败/挂死不再把回退挤到归零；总时延
+  ≤ 基线。新测试 `search_all_musid_hang_falls_back_within_the_budget_split`
+  / `search_single_musid_hang_falls_back_after_the_attempt_budget` pin；
+  "整体超时不计"收窄为"两栈都挂死"（`search_all_both_stacks_timing_out_counts_nothing`）。
+- **P3（resolve 挤占 30s）**：musid resolve 槽位宿主侧收口
+  `MUSID_RESOLVE_BUDGET` 10s（`musid_url_try` 与 probe 失败侧对账同限）；
+  回退链预算 ≥20s，残余退化在 §11.4 登记。
+- **P4（probe 拖慢用户路径）**：三类 probe 对账全部改后台任务——聚合
+  `spawn_search_shadow_reconcile`（fire-and-forget）、单源搜索与歌词经
+  oneshot 交接旧路径产物/结论给影子任务；计数最终一致（§11.5 登记）。
+  新测试 `probe_shadow_does_not_block_the_user_path` pin（musid 影子挂死时
+  单源搜索 <1s 返回）；probe 计数断言改轮询（`settled_count`）。
+- **P5（会话不对称）**：§11.8 登记"双栈零凭据流动 + (a) musid 面恒匿名
+  退化 (b) probe 在登录源上的系统性 mismatch 噪声"。
+- **P6（CI 零覆盖）**：ci.yml 新增 `musid-stack` job（见 §11.9）。
+- **P7（歌词 err 侧跨源归因）**：`MusidErrLegacyOk` 归因收窄到主请求链
+  （本地外挂→JS→musid→内置 fallback）；find_music 跨源候选 rescue 不归因
+  （不计），新测试 `lyric_cross_source_rescue_is_not_attributed_to_the_routed_source`
+  pin。
+- **P8（续播轮次重试 musid）**：维持已登记口径（V1 未记跳过状态，§11.4
+  加交叉引用）。
+
+**第二轮评审修订（2026-11-21）**：
+
+- **F1（probe 对账时延声明与实现不符）**：流地址面失败侧对账原为内联
+  await（错误返回前同步等 musid resolve 至多 10s），"用户路径零额外延迟"
+  对该面为假。改实现为后台化：`musid_url_err_exit` 的 probe 分支
+  tokio::spawn 对账任务（限 `MUSID_RESOLVE_BUDGET`），旧错误立即向上，
+  时延与不开 probe 一致——§11.2/§11.4/config 注释的"不阻塞用户路径"
+  声明对四面成立，无需收窄。新测试
+  `probe_song_url_reconcile_does_not_block_the_error_path`（musid resolve
+  挂死 → 错误 <1s 返回 + 预算耗尽后 MusidErrLegacyErr 后台落账）；
+  原 URL probe 用例的计数断言改 `settled_count`。
+- **F2（CI 承受登记 flaky）**：根因修复而非 CI 拆名单——见 §11.9 默认
+  基线条（`sweep_in` 按 atime 排序、测试助手旧实现只钉 mtime；修复用
+  `File::set_times` 钉死两个时间戳，断言未动，连跑 6+8+6 次全绿）。
+  musid-stack job 维持无作用域全量测试，§8 前置以"修掉 flaky"路径兑现。
+- **F3（头部门禁数据错误）**：头部 musid_dual_stack 例数改为实测口径
+  （adapter 19 / 歌词变体 23 / 默认构建 0），全量 lib 例数统一为
+  "总例数 = 通过 + 失败 + ignored"口径（adapter 260、歌词 265）。
+- **F4（测试注释与 §11.5 口径矛盾）**：musid_parity.rs 注释改写——单侧
+  失败场景不计；probe 双 Err 记 MusidErrLegacyErr（§11.5 搜索面 probe 列），
+  MusidErrLegacyOk 属替换模式归因。
+- **F5（取消语义未登记）**：§11.4 probe 总则与 §11.5 登记——影子/对账
+  fire-and-forget，用户取消/外层超时后照常跑满预算（搜索 10s / 歌词 20s /
+  流地址对账 10s）并消耗 musid 配额、照常落账；oneshot 发送端被弃的影子
+  只浪费查询、不计。
+
+### 11.11 旧代码的重排登记（"一行不删"的例外）
+
+V1 为承载路由对三处旧实现做了机械等价重排，语义逐字保持（默认构建
+lib 例数不变 + 全量回归双证）：
+
+1. `search_all` 的单源任务返回值从裸超时结果改为 `(SourceId, 超时结果)`
+   元组——probe 影子对照需要按源配对；join 分支同步加一层元组解构。
+2. `get_lyric_inner` 返回值从裸 `Result` 改为 `(Result, Option<SourceId>)`
+   ——err 侧 legacy 归因需要"musid 槽位已尝试且无产出"轨迹；尾部的
+   `ok_or_else(...)?` 等价改写为 let-else。
+3. `get_song_url_inner` 尾部三个错误出口收敛为单一 `final_error` 出口
+   （错误文本逐字保持），probe 兜底/err 侧计数在统一出口评估。
+

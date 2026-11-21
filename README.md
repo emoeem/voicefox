@@ -104,7 +104,7 @@ cargo run --release
 - [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) — 功能、音源与平台说明
 - [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) — 配置
 - [`docs/SYNC.md`](docs/SYNC.md) — 跨音源同步、Diff、匹配与登录限制
-- [`docs/MUSID_DLI_ADAPTER.md`](docs/MUSID_DLI_ADAPTER.md)：musid-dli 适配层设计与 V0 落地状态（映射契约 45 对、feature 方案、缺口登记、门禁结果）
+- [`docs/MUSID_DLI_ADAPTER.md`](docs/MUSID_DLI_ADAPTER.md)：musid-dli 适配层设计与 V0/V1 落地状态（映射契约 45 对、feature 方案、V1 opt-in 双栈路由与回退计数、parity 对账口径、缺口登记、门禁结果）
 - [`flutter/README.md`](flutter/README.md) — Flutter/Rust 新架构开发线
 
 ## 验证

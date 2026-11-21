@@ -139,6 +139,13 @@ save_lyric = true            # 保存 .lrc 并内嵌歌词
 | `auto_toggle` | `true` | 播放失败时自动尝试其它音源的同曲匹配 |
 | `js_first` | `false` | 播放地址解析顺序：默认内置原平台先行、JS 音源回退（坏掉的 JS 脚本不再拖慢可直接播放的歌）；`true` 恢复「JS 音源优先」 |
 | `js_sources` | `[]` | JS 音源脚本 URL 或本地路径，数组顺序即优先级。脚本缓存在 `<配置目录>/voicefox/sources`（旧版 `lx-tui/sources` 的内容启动时自动迁移） |
+| `musid_stack` | `false` | musid-dli 双栈总闸（V1，实验性 opt-in）：`false` 时全部走内置旧路径。生效还需编译期 feature `musid-dli-adapter` 与按源子 feature（`musid-dli-adapter-netease` 等）；config 开而 feature 关时该面静默走旧路径，启动时 warn 一次 |
+| `musid_search` | `false` | 搜索面双栈（单源与聚合同规则）：musid 影子源先行，Err 或尝试预算耗尽后按旧路径重试该源。影子源独立注册，不覆盖内置源 |
+| `musid_song_url` | `false` | 流地址面双栈：内置槽位前插 musid 判定，Err 或地址过期后继续既有内置与 JS 兜底链；`js_first` 语义不变 |
+| `musid_lyric` | `false` | 歌词面双栈：musid 槽位在 JS 槽位之后、内置 fallback 之前，产物过同一内容门；运行时另需编译期 `musid-dli-adapter-lyrics` 变体，缺 feature 时该面不生效并 warn |
+| `musid_parity_probe` | `false` | parity 对账影子模式（纯观测）：恒展示旧路径结果，musid 仅用于后台计数对照（搜索/歌词真双跑；流地址面只做失败侧对账，避免双倍平台配额），不阻塞用户路径 |
+
+以上 5 个 `musid_*` 字段配置形状恒定（不随编译 feature 变化）、默认全部关闭，关闭时行为与 V0 完全一致；路由判定、回退计数与 parity 归一口径见 [`MUSID_DLI_ADAPTER.md`](MUSID_DLI_ADAPTER.md) §11。
 
 ### `[lyric]` 歌词
 

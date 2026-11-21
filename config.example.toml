@@ -33,6 +33,16 @@ auto_toggle = true          # 播放失败时自动尝试其它音源的同曲�
 # 一起变慢；依赖 JS 音源解 VIP 曲目时再打开。
 # js_first = false
 
+# musid-dli 双栈接入（V1，实验性 opt-in）：全部默认 false，不开时旧行为
+# 唯一生效。开启还需编译期 musid-dli-adapter 与按源子 feature
+# （musid-dli-adapter-netease 等，docs/MUSID_DLI_ADAPTER.md §11）；
+# config 开而 feature 关 → 该面静默走旧路径 + 启动时一次 warn。
+# musid_stack = false         # 双栈总闸（false 时下面四面全走旧路径）
+# musid_search = false        # 搜索面（musid 影子源先行，失败回退内置）
+# musid_song_url = false      # 流地址面（内置槽位前插 musid 判定）
+# musid_lyric = false         # 歌词面（另需 musid-dli-adapter-lyrics 变体）
+# musid_parity_probe = false  # parity 对账影子模式（纯观测：恒展示旧路径结果，仅后台计数）
+
 # JS 音源脚本 URL 或本地路径（lx-music user API 协议）
 # 脚本缓存目录：<配置目录>/voicefox/sources（旧版 lx-tui 目录的内容会自动迁移）
 # 数组顺序即 JS 音源之间的解析优先级，例如：

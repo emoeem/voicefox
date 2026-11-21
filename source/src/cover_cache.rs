@@ -365,12 +365,16 @@ mod tests {
 
     const TEMP_SUFFIX: &str = ".part.";
 
-    /// 直接设置 mtime（测试用）：`filetime` 不是依赖，走 std 的 File API 不便，
-    /// 这里用平台无关的"回拨"手法——把文件内容重写一次并把 mtime 往前挪。
+    /// 测试用：显式钉死访问/修改时间（`std::fs::File::set_times`，Rust
+    /// 1.75+，平台无关，无需 libc/filetime）。sweep 按 **atime** 排序淘汰
+    /// （模块文档），mtime 只参与临时文件宽限期判定——两个时间戳在这里
+    /// 一次设齐，不再依赖文件系统秒级精度的隐式值（本测试曾经的 flaky
+    /// 根因：relatime 下六个文件的 atime 全是创建时刻的近同值，排序不稳定；
+    /// 修复只钉时间戳，断言一字未动）。
     fn set_mtime(path: &std::path::Path, time: std::time::SystemTime) {
-        // Linux 上用 utimensat 需要 libc；这里改用最简单可移植的办法：
-        // 通过 `std::fs::File::set_modified`（Rust 1.75+）。
+        use std::fs::FileTimes;
         let file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
-        file.set_modified(time).unwrap();
+        file.set_times(FileTimes::new().set_accessed(time).set_modified(time))
+            .unwrap();
     }
 }

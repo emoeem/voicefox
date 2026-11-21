@@ -173,6 +173,9 @@ impl AppContext {
             &config.source.enabled,
         ));
         source_manager.set_js_url_first(config.source.js_first);
+        // V1 双栈接线（opt-in；默认构建 no-op）：注册 musid-dli 影子源并
+        // 下发路由开关（docs/MUSID_DLI_ADAPTER.md §11）。
+        lx_source::bootstrap_musid_stack(&source_manager, &config.source, &config.network);
         let bili_source = source_manager.bili_source();
 
         let lyric_service = Arc::new(LyricService::new(Arc::new(

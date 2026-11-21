@@ -1,9 +1,12 @@
-//! musid-dli（crates.io 0.2.0）与 lx-core / lx-source 的模型映射层（V0）。
+//! musid-dli（crates.io 0.2.0）与 lx-core / lx-source 的模型映射层（V0）+ 双栈
+//! 适配源（V1）。
 //!
 //! feature `musid-dli-adapter` 门控，默认构建完全不引入 musid-dli。V0 硬边界：
-//! 这里只有纯映射函数与 fixture 测试，不接 `SourceManager`、不实现
-//! `MusicSource` 双栈注册（那是 V1 的 `AdapterMusicSource`，见
-//! `docs/MUSID_DLI_ADAPTER.md` §5）。
+//! 纯映射函数与 fixture 测试，不接 `SourceManager`。V1（opt-in）在本文件追加
+//! [`AdapterMusicSource`]：把 musid-dli provider 包装成 voicefox
+//! `MusicSource`（搜索/流地址/歌词三面），由 `SourceManager::register_musid_source`
+//! 注册进**独立影子 map**（绝不覆盖内置注册），路由开关见
+//! `docs/MUSID_DLI_ADAPTER.md` §11。
 //!
 //! 契约要点（细节见设计文档）：
 //! - 命名互转唯一通道是 `musid_dli::models` 的 namespace 双向表；查不到
@@ -27,7 +30,10 @@
 //! proxy/超时继续只驱动 voicefox 内置音源。升级前置见设计文档 §4。
 
 use std::collections::BTreeMap;
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use async_trait::async_trait;
 
 use crate::session::SourceSession;
 use lx_core::model::leaderboard::LeaderboardInfo;
@@ -35,10 +41,13 @@ use lx_core::model::login::{
     QrLoginKind as LxQrLoginKind, QrLoginResult, QrLoginSession as LxQrLoginSession,
     QrLoginStatus as LxQrLoginStatus,
 };
+use lx_core::model::lyric::LyricData;
 use lx_core::model::playlist::{Album, Artist, Playlist, PlaylistCategory};
 use lx_core::model::song::SongInfo;
 use lx_core::model::source::{AudioProperties, Quality, SourceId};
-use lx_core::traits::source::{FetchError, SearchError, SearchResult, SongUrl, SourceCapabilities};
+use lx_core::traits::source::{
+    FetchError, MusicSource, SearchError, SearchResult, SongUrl, SourceCapabilities,
+};
 use musid_dli::models::{
     Album as MdAlbum, Artist as MdArtist, AudioFormat, AudioSpec, ByteRange, Chart, ChartEntry,
     ChecksumAlgorithm, FallbackEndpoint, LyricSearchResult as MdLyricSearchResult,
@@ -47,7 +56,11 @@ use musid_dli::models::{
 };
 use musid_dli::provider::{
     AuthCapability, AuthState, ProviderCapabilities, QrLoginKind, QrLoginPoll, QrLoginSession,
-    QrLoginStatus, SearchPage,
+    QrLoginStatus, ResolveOptions, SearchPage, SearchQuery,
+};
+use musid_dli::provider::{
+    LyricsProvider as MdLyricsProvider, StreamResolver as MdStreamResolver,
+    TrackSearch as MdTrackSearch,
 };
 use musid_dli::{Error as MdError, ProviderSession};
 
@@ -840,6 +853,217 @@ impl TransportInjection {
     /// 已记录的总超时（秒）。
     pub fn timeout_secs(&self) -> u64 {
         self.timeout_secs
+    }
+}
+
+// ---------------------------------------------------------------------------
+// V1 双栈适配源（AdapterMusicSource：musid-dli provider -> voicefox MusicSource）
+// ---------------------------------------------------------------------------
+
+/// 当前 unix 秒（过期 URL 判定用）。
+fn now_unix() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|since| since.as_secs())
+        .unwrap_or(0)
+}
+
+/// 歌曲到 musid `Track` 的入参保真映射：`song.source` 直译；JS 音源搜到的
+/// 歌（`source=Local` + `extra[source]` 平台标记）按平台标记还原 provider
+/// （其 `id` 即该平台的歌曲 id）；真本地文件歌曲（文件路径当 id、无平台
+/// 标记）在 manager 侧就早退不会路由到 musid，这里防御性报错（绝不把
+/// 文件路径当平台 id 发出去）。
+fn adapter_track_for_song(song: &SongInfo) -> Result<Track, AdapterError> {
+    if song.source != SourceId::Local {
+        return song_to_track(song);
+    }
+    let Some(source) = crate::manager::builtin_source_for_js(song) else {
+        return Err(AdapterError::UnmappedProvider("local".to_string()));
+    };
+    let mut mapped = song.clone();
+    mapped.source = source;
+    song_to_track(&mapped)
+}
+
+/// musid-dli provider 到 voicefox `MusicSource` 的适配源（V1 双栈影子源）。
+///
+/// 影子语义（docs §11，P2/P10 口径）：
+/// - 不参与健康检测、capabilities 聚合、设置页入口显隐与登录链路——
+///   `SourceManager` 只把本包装放进独立影子 map；
+/// - `capabilities()` 仅回填 provider descriptor 位（诊断对照），
+///   `SourceManager::capabilities` 不读影子 map；
+/// - 登录/会话四面（扫码、cookie、logout）恒走旧路径：本实现不覆写任何
+///   登录方法（保持 trait 默认错误）、`is_logged_in` 恒 false，musid-dli
+///   `ProviderSession`/`FileSessionStore` 不接线（V2 按 §5 步骤 2 再接）；
+/// - 链接直解不覆写：host-side 域路由保留在 voicefox（§10）；
+/// - 流地址面按 §2.4 显式传档位（禁用 `ResolveOptions::default()=High`），
+///   产物经 `stream_to_resolved_url` + `enrich_song_url_from_song` 补齐
+///   cover_url/qualities（§3 第 13、14 条），`expires_at_unix` 已过期的
+///   地址视为失败（G4：绝不透传播放器），降档/丢弃 notes 走 debug 日志；
+/// - 歌词面复用 `lyric_document_to_lx_data`（lxlyric 恒 None，§2.10），
+///   需要 `musid-dli-adapter-lyrics` 变体。
+pub struct AdapterMusicSource {
+    source: SourceId,
+    display_name: String,
+    search: Option<Arc<dyn MdTrackSearch>>,
+    stream: Option<Arc<dyn MdStreamResolver>>,
+    /// 歌词面 provider：歌词转换变体（`musid-dli-adapter-lyrics`）关闭时
+    /// 不读——V1 歌词面依赖该变体的 `lyric_document_to_lx_data` 归一转换，
+    /// 缺变体时歌词面不生效（启动 warn 由 bootstrap 负责）。
+    #[cfg_attr(not(feature = "musid-dli-adapter-lyrics"), expect(dead_code))]
+    lyrics: Option<Arc<dyn MdLyricsProvider>>,
+    /// voicefox 代理/超时预算记录（§4：0.2.0 无法注入，仅登记供诊断）。
+    transport: TransportInjection,
+}
+
+impl AdapterMusicSource {
+    /// 由装配点构造（`musid_bootstrap`，按源子 feature 装配具体 provider）。
+    pub fn new(
+        source: SourceId,
+        display_name: String,
+        search: Option<Arc<dyn MdTrackSearch>>,
+        stream: Option<Arc<dyn MdStreamResolver>>,
+        lyrics: Option<Arc<dyn MdLyricsProvider>>,
+        transport: TransportInjection,
+    ) -> Self {
+        Self {
+            source,
+            display_name,
+            search,
+            stream,
+            lyrics,
+            transport,
+        }
+    }
+
+    /// 已登记的 voicefox 网络（代理/超时）预算。
+    pub fn transport_injection(&self) -> &TransportInjection {
+        &self.transport
+    }
+}
+
+#[async_trait]
+impl MusicSource for AdapterMusicSource {
+    fn id(&self) -> SourceId {
+        self.source
+    }
+
+    fn name(&self) -> &str {
+        &self.display_name
+    }
+
+    /// 诊断对照用能力位（不进 `SourceManager::capabilities` 聚合）。
+    /// 面级 flags（search_playlists/categories/user_playlists）V1 装配点
+    /// 未探测，按缺省 false 登记。
+    fn capabilities(&self) -> SourceCapabilities {
+        let Some(search) = &self.search else {
+            return SourceCapabilities::default();
+        };
+        capabilities_from_provider(
+            search.capabilities(),
+            search.auth_capability(),
+            ProviderFaceFlags::default(),
+        )
+    }
+
+    async fn search(
+        &self,
+        keyword: &str,
+        page: u32,
+        limit: u32,
+    ) -> Result<SearchResult, SearchError> {
+        let Some(search) = &self.search else {
+            return Err(SearchError::Other(
+                "musid-dli provider 未注册搜索面".to_string(),
+            ));
+        };
+        let page = search
+            .search(&SearchQuery {
+                keyword: keyword.to_string(),
+                page,
+                page_size: limit,
+            })
+            .await
+            .map_err(|error| search_error_from_error(&error))?;
+        search_page_to_result(&page).map_err(|error| SearchError::Other(error.to_string()))
+    }
+
+    async fn get_song_url(&self, song: &SongInfo, quality: Quality) -> Result<SongUrl, FetchError> {
+        let Some(stream) = &self.stream else {
+            return Err(FetchError::Other(
+                "musid-dli provider 未注册流地址面".to_string(),
+            ));
+        };
+        let track =
+            adapter_track_for_song(song).map_err(|error| FetchError::Other(error.to_string()))?;
+        // 显式传档位（§2.4）：不用 ResolveOptions::default()=High。
+        let options = ResolveOptions {
+            quality: stream_quality_from_quality(quality),
+        };
+        let info = stream
+            .resolve(&track, &options)
+            .await
+            .map_err(|error| fetch_error_from_error(&error))?;
+        let resolved = stream_to_resolved_url(&info);
+        // G4：过期 URL 绝不透传播放器——已过期视为失败，调用方回落旧链。
+        if let Some(expires_at) = resolved.expires_at_unix
+            && now_unix() >= expires_at
+        {
+            return Err(FetchError::Other(
+                "musid-dli 解析的播放地址已过期".to_string(),
+            ));
+        }
+        let mut url = resolved.url;
+        enrich_song_url_from_song(&mut url, song);
+        for note in &resolved.notes {
+            tracing::debug!(target: "musid_adapter", source = self.source.as_str(), note);
+        }
+        Ok(url)
+    }
+
+    async fn get_lyric(&self, song: &SongInfo) -> Result<LyricData, FetchError> {
+        #[cfg(feature = "musid-dli-adapter-lyrics")]
+        {
+            let Some(lyrics) = &self.lyrics else {
+                return Err(FetchError::Other(
+                    "musid-dli provider 未注册歌词面".to_string(),
+                ));
+            };
+            let track = adapter_track_for_song(song)
+                .map_err(|error| FetchError::Other(error.to_string()))?;
+            match lyrics.lyrics(&track).await {
+                Ok(Some(document)) => Ok(lyric_document_to_lx_data(&document)),
+                Ok(None) => Err(FetchError::NotFound),
+                Err(error) => Err(fetch_error_from_error(&error)),
+            }
+        }
+        #[cfg(not(feature = "musid-dli-adapter-lyrics"))]
+        {
+            let _ = song;
+            Err(FetchError::Other(
+                "musid 歌词面需要 musid-dli-adapter-lyrics feature（歌词转换变体）".to_string(),
+            ))
+        }
+    }
+
+    /// V1 封面面不接 musid `ArtworkProvider`：搜索产物自带 cover_url，这里
+    /// 只回填歌曲模型上的封面（与消费面 fallback 口径一致）。
+    async fn get_cover_url(&self, song: &SongInfo) -> Result<String, FetchError> {
+        song.cover_url
+            .clone()
+            .filter(|url| !url.trim().is_empty())
+            .ok_or(FetchError::NotFound)
+    }
+
+    /// provider descriptor 的档位声明经 §2.4 翻译（`Unknown` 掉出）。
+    fn supported_qualities(&self) -> Vec<Quality> {
+        self.search
+            .as_ref()
+            .map(|provider| provider.supported_qualities())
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(quality_from_stream)
+            .collect()
     }
 }
 
@@ -1920,6 +2144,308 @@ mod tests {
             let error = lyric_data_to_md_document(&lx_data, musid_dli::models::LyricFormat::Lrc)
                 .expect_err("无法解析的逐字负载必须报错而不是静默降级");
             assert!(matches!(error, AdapterError::InvalidLyric(_)));
+        }
+    }
+
+    // --- AdapterMusicSource（V1 双栈适配源） ---
+
+    mod adapter {
+        use super::*;
+        use async_trait::async_trait;
+        use musid_dli::provider::MusicProvider;
+        use std::sync::Mutex;
+
+        /// 行为可注入的 musid-dli provider 桩（搜索/流地址/歌词三面）。
+        struct StubProvider {
+            resolve_options: Mutex<Vec<ResolveOptions>>,
+            stream: Option<StreamInfo>,
+            #[cfg(feature = "musid-dli-adapter-lyrics")]
+            document: Option<musid_dli::models::LyricDocument>,
+        }
+
+        impl MusicProvider for StubProvider {
+            fn id(&self) -> &str {
+                "netease"
+            }
+            fn name(&self) -> &str {
+                "测试源"
+            }
+            fn capabilities(&self) -> ProviderCapabilities {
+                ProviderCapabilities {
+                    track_search: true,
+                    stream_resolve: true,
+                    lyrics: true,
+                    ..Default::default()
+                }
+            }
+        }
+
+        #[async_trait]
+        impl MdTrackSearch for StubProvider {
+            async fn search(&self, _query: &SearchQuery) -> Result<SearchPage, MdError> {
+                Ok(SearchPage {
+                    items: vec![netease_track_fixture()],
+                    total: Some(1),
+                    has_more: false,
+                })
+            }
+        }
+
+        #[async_trait]
+        impl MdStreamResolver for StubProvider {
+            async fn resolve(
+                &self,
+                _track: &Track,
+                options: &ResolveOptions,
+            ) -> Result<StreamInfo, MdError> {
+                self.resolve_options
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(*options);
+                self.stream.clone().ok_or(MdError::NotFound)
+            }
+        }
+
+        #[async_trait]
+        #[cfg(feature = "musid-dli-adapter-lyrics")]
+        impl MdLyricsProvider for StubProvider {
+            async fn lyrics(
+                &self,
+                _track: &Track,
+            ) -> Result<Option<musid_dli::models::LyricDocument>, MdError> {
+                Ok(self.document.clone())
+            }
+        }
+
+        fn adapter(stream: Option<StreamInfo>) -> AdapterMusicSource {
+            adapter_with(Arc::new(StubProvider {
+                resolve_options: Mutex::new(Vec::new()),
+                stream,
+                #[cfg(feature = "musid-dli-adapter-lyrics")]
+                document: None,
+            }))
+        }
+
+        /// 同一 provider 实例拆成三面（与 musid_bootstrap 的装配形态一致）。
+        fn adapter_with(provider: Arc<StubProvider>) -> AdapterMusicSource {
+            AdapterMusicSource::new(
+                SourceId::Wy,
+                "测试源（musid-dli）".to_string(),
+                Some(provider.clone()),
+                Some(provider.clone()),
+                #[cfg(feature = "musid-dli-adapter-lyrics")]
+                Some(provider),
+                #[cfg(not(feature = "musid-dli-adapter-lyrics"))]
+                None,
+                TransportInjection::new(None, 15),
+            )
+        }
+
+        fn wy_song() -> SongInfo {
+            let mut song = SongInfo::new(
+                "789".to_string(),
+                SourceId::Wy,
+                "老接口".to_string(),
+                "周杰伦、费玉清".to_string(),
+            );
+            song.cover_url = Some("https://cover.example/789.jpg".to_string());
+            song.qualities = [Quality::High320, Quality::Flac].into_iter().collect();
+            song
+        }
+
+        #[tokio::test]
+        async fn adapter_search_maps_page_to_result() {
+            let adapter = adapter(None);
+            let result = adapter.search("老接口", 1, 10).await.expect("搜索面映射");
+            assert_eq!(result.items.len(), 1);
+            assert_eq!(result.items[0].source, SourceId::Wy);
+            assert_eq!(result.items[0].id, "789");
+            assert_eq!(result.total, 1);
+        }
+
+        #[tokio::test]
+        async fn adapter_resolve_passes_explicit_quality_and_enriches_from_song() {
+            // 档位经桩记录：请求 Flac 必须显式映射为 Lossless（禁 Default=High）。
+            let capture = Arc::new(StubProvider {
+                resolve_options: Mutex::new(Vec::new()),
+                stream: Some(netease_stream_fixture()),
+                #[cfg(feature = "musid-dli-adapter-lyrics")]
+                document: None,
+            });
+            let adapter = AdapterMusicSource::new(
+                SourceId::Wy,
+                "capture".to_string(),
+                None,
+                Some(Arc::clone(&capture) as Arc<dyn MdStreamResolver>),
+                None,
+                TransportInjection::new(None, 15),
+            );
+            let song = wy_song();
+            let url = adapter
+                .get_song_url(&song, Quality::Flac)
+                .await
+                .expect("流地址面映射");
+            let captured = capture
+                .resolve_options
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            assert_eq!(
+                captured
+                    .iter()
+                    .map(|options| options.quality)
+                    .collect::<Vec<_>>(),
+                vec![StreamQuality::Lossless],
+                "请求 Flac 必须显式映射为 Lossless，而不是 Default=High"
+            );
+            // enrich（§3 第 13、14 条）：cover_url/qualities 从歌曲模型补齐。
+            assert_eq!(
+                url.cover_url.as_deref(),
+                Some("https://cover.example/789.jpg")
+            );
+            assert_eq!(
+                url.qualities,
+                vec![Quality::High320, Quality::Flac],
+                "song.qualities 顺序回填"
+            );
+            assert_eq!(url.quality, Quality::High320, "实际档位回填");
+        }
+
+        #[tokio::test]
+        async fn expired_stream_url_is_rejected_not_forwarded() {
+            // G4：expires_at_unix 已过期的地址绝不透传播放器，视为失败回落。
+            let mut info = netease_stream_fixture();
+            info.expires_at_unix = Some(1);
+            let adapter = adapter(Some(info));
+            let error = adapter
+                .get_song_url(&wy_song(), Quality::High320)
+                .await
+                .expect_err("过期地址必须报错");
+            assert!(
+                error.to_string().contains("已过期"),
+                "过期错误语义: {error}"
+            );
+        }
+
+        #[tokio::test]
+        async fn js_sourced_song_keeps_platform_id_through_track() {
+            // JS 音源搜到的歌（Local + extra[source]）：按平台标记还原 provider，
+            // 其 id 即平台歌曲 id——不重编、不丢。
+            let mut js_song = SongInfo::new(
+                "789".to_string(),
+                SourceId::Local,
+                "老接口".to_string(),
+                "周杰伦、费玉清".to_string(),
+            );
+            js_song.extra.insert("source".to_string(), "wy".to_string());
+            let track = adapter_track_for_song(&js_song).expect("JS 歌必须能组 Track");
+            assert_eq!(track.id, TrackId::new("netease", "789"));
+
+            // 真本地文件（无平台标记）：manager 侧早退，这里防御性报错。
+            let local = SongInfo::new(
+                "/music/a.flac".to_string(),
+                SourceId::Local,
+                "本地歌".to_string(),
+                "本地歌手".to_string(),
+            );
+            assert!(matches!(
+                adapter_track_for_song(&local),
+                Err(AdapterError::UnmappedProvider(provider)) if provider == "local"
+            ));
+        }
+
+        #[tokio::test]
+        async fn session_and_login_faces_stay_with_the_legacy_path() {
+            // P10：V1 登录/会话四面全部走旧路径——适配源不覆写任何登录方法，
+            // is_logged_in 恒 false，QR/直解保持 trait 默认错误。
+            let adapter = adapter(None);
+            assert!(!adapter.is_logged_in(), "musid 影子源恒未登录");
+            assert!(adapter.logout().is_ok(), "logout 无会话可清，no-op");
+            assert!(adapter.create_qr_login().await.is_err(), "扫码走旧路径");
+            assert!(
+                adapter.check_qr_login("key").await.is_err(),
+                "扫码轮询走旧路径"
+            );
+            assert!(adapter.parse_link("https://music.163.com/x").await.is_err());
+            // 封面面只回填歌曲模型上的 cover_url。
+            assert_eq!(
+                adapter
+                    .get_cover_url(&wy_song())
+                    .await
+                    .expect("歌曲自带封面"),
+                "https://cover.example/789.jpg"
+            );
+            let bare = SongInfo::new(
+                "1".to_string(),
+                SourceId::Wy,
+                "名".to_string(),
+                "歌手".to_string(),
+            );
+            assert!(matches!(
+                adapter.get_cover_url(&bare).await,
+                Err(FetchError::NotFound)
+            ));
+        }
+
+        #[test]
+        fn transport_budget_is_recorded_for_diagnostics() {
+            let adapter = adapter(None);
+            assert_eq!(adapter.transport_injection().timeout_secs(), 15);
+            assert_eq!(adapter.transport_injection().proxy_url(), None);
+        }
+
+        #[cfg(feature = "musid-dli-adapter-lyrics")]
+        #[tokio::test]
+        async fn adapter_lyric_maps_document_and_not_found() {
+            use musid_dli::models::{LyricDocument, LyricFormat, LyricLine};
+
+            let document = LyricDocument {
+                format: LyricFormat::Lrc,
+                original: "[00:01.00]你好".to_string(),
+                translation: None,
+                romanization: None,
+                lines: vec![LyricLine {
+                    start_ms: 1000,
+                    end_ms: None,
+                    text: "你好".to_string(),
+                    translations: BTreeMap::new(),
+                    romanization: None,
+                    words: vec![],
+                }],
+            };
+
+            let with_lyrics = AdapterMusicSource::new(
+                SourceId::Wy,
+                "lyrics".to_string(),
+                None,
+                None,
+                Some(Arc::new(StubProvider {
+                    resolve_options: Mutex::new(Vec::new()),
+                    stream: None,
+                    document: Some(document),
+                })),
+                TransportInjection::new(None, 15),
+            );
+            let data = with_lyrics.get_lyric(&wy_song()).await.expect("歌词面映射");
+            assert_eq!(data.lyric, "[00:01.00]你好");
+            assert_eq!(data.lxlyric, None, "musid-dli 无 YRC/QRC 序列化器");
+
+            let without_lyrics = AdapterMusicSource::new(
+                SourceId::Wy,
+                "none".to_string(),
+                None,
+                None,
+                Some(Arc::new(StubProvider {
+                    resolve_options: Mutex::new(Vec::new()),
+                    stream: None,
+                    document: None,
+                })),
+                TransportInjection::new(None, 15),
+            );
+            assert!(matches!(
+                without_lyrics.get_lyric(&wy_song()).await,
+                Err(FetchError::NotFound)
+            ));
         }
     }
 }

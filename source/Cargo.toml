@@ -44,9 +44,28 @@ musid-dli = { version = "=0.2.0", optional = true, default-features = false }
 
 [features]
 musid-dli-adapter = ["dep:musid-dli"]
-# 歌词往返映射变体（仅测试）：额外启用 musid-dli 的 lyrics-conversions
-# （含 lyrics-helper，default-features=false），默认 adapter feature 不背它。
+# 歌词往返映射变体：启用 musid-dli 的 lyrics-conversions（含 lyrics-helper，
+# default-features=false）。V1 起歌词面双栈运行时需要它（缺它时 musid 歌词
+# 面不生效 + 启动 warn）；不开则只有映射/测试面。
 musid-dli-adapter-lyrics = ["musid-dli-adapter", "musid-dli/lyrics-conversions"]
+# V1 按源子 feature：provider 实现与 transport 面随子 feature 进入 feature
+# 树（musid-dli src/lib.rs:70-104 的 #[cfg(feature = "source-*")] 模块门），
+# 连带把 reqwest/aes/md-5/... 拉进 feature 树（不是默认树）。子 feature 名
+# 对照 musid-dli Cargo.toml 的 source-*（注意 apple 是 source-apple，不是
+# source-applemusic）。默认构建（不开任何 adapter feature）依旧零 musid 边；
+# musid-dli 保持 "=0.2.0" 精确 pin（wire 形状测试即 pin，放宽到 "0.2" 随外层
+# CI feature 矩阵落地后执行）。bilibili 不设子 feature：bili 恒走旧路径
+# （独立存储 + 扫码登录链路，docs/MUSID_DLI_ADAPTER.md §11）。
+musid-dli-adapter-netease = ["musid-dli-adapter", "musid-dli/source-netease"]
+musid-dli-adapter-qqmusic = ["musid-dli-adapter", "musid-dli/source-qqmusic"]
+musid-dli-adapter-kugou = ["musid-dli-adapter", "musid-dli/source-kugou"]
+musid-dli-adapter-kuwo = ["musid-dli-adapter", "musid-dli/source-kuwo"]
+musid-dli-adapter-migu = ["musid-dli-adapter", "musid-dli/source-migu"]
+musid-dli-adapter-jamendo = ["musid-dli-adapter", "musid-dli/source-jamendo"]
+musid-dli-adapter-apple = ["musid-dli-adapter", "musid-dli/source-apple"]
+musid-dli-adapter-fivesing = ["musid-dli-adapter", "musid-dli/source-fivesing"]
+musid-dli-adapter-qianqian = ["musid-dli-adapter", "musid-dli/source-qianqian"]
+musid-dli-adapter-joox = ["musid-dli-adapter", "musid-dli/source-joox"]
 
 [dev-dependencies]
 # 仅测试目标需要：用虚拟时间验证"每源超时"而不用真的等 8 秒。

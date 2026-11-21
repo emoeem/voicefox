@@ -310,6 +310,28 @@ pub struct SourceConfig {
     /// 依赖 JS 音源解 VIP 曲目的用户可以打开这个开关恢复旧行为。
     #[serde(default)]
     pub js_first: bool,
+    /// V1 双栈总闸（musid-dli 接入，opt-in）：false 时搜索/流地址/歌词四面
+    /// 全部走内置旧路径。开启还需编译期 `musid-dli-adapter` feature 与按源
+    /// 子 feature（`musid-dli-adapter-*`）；config 开而 feature 关 → 该面
+    /// 静默走旧路径 + 启动时一次 warn。配置形状不随 feature 变化：
+    /// 字段恒解析、恒默认 false（docs/MUSID_DLI_ADAPTER.md §11）。
+    #[serde(default)]
+    pub musid_stack: bool,
+    /// 搜索面双栈（单源与聚合同规则；musid 影子源独立注册，不覆盖内置）。
+    #[serde(default)]
+    pub musid_search: bool,
+    /// 流地址面双栈（内置槽位前插 musid 判定；js_first 语义不变）。
+    #[serde(default)]
+    pub musid_song_url: bool,
+    /// 歌词面双栈（运行时另需编译期 `musid-dli-adapter-lyrics` 歌词转换
+    /// 变体；缺 feature 时该面不生效 + 启动 warn）。
+    #[serde(default)]
+    pub musid_lyric: bool,
+    /// parity 对账影子模式（恒纯观测）：musid 参与但恒展示旧路径结果
+    /// （musid 产物一律不进用户路径），仅内存计数对照且不阻塞用户路径
+    /// （搜索/歌词真双跑；流地址面只做失败侧对账，避免双倍平台配额）。
+    #[serde(default)]
+    pub musid_parity_probe: bool,
 }
 
 impl Default for SourceConfig {
@@ -322,6 +344,11 @@ impl Default for SourceConfig {
             policy: SourcePolicy::Auto,
             policy_platform: None,
             js_first: false,
+            musid_stack: false,
+            musid_search: false,
+            musid_song_url: false,
+            musid_lyric: false,
+            musid_parity_probe: false,
         }
     }
 }
@@ -869,7 +896,7 @@ fn legacy_config_version() -> u32 {
 mod tests {
     use super::{
         AccentFollowCover, Config, DownloadConfig, LocalMusicConfig, STATUS_BAR_MAX_HEIGHT,
-        SourceId, SourcePolicy, StatusBarItem, UiConfig, WebdavConfig,
+        SourceConfig, SourceId, SourcePolicy, StatusBarItem, UiConfig, WebdavConfig,
     };
 
     #[test]
@@ -1009,6 +1036,51 @@ mod tests {
         .unwrap();
 
         assert!(!config.enabled);
+    }
+
+    /// V1 双栈 opt-in 开关：默认全 false（不开 opt-in 时旧实现唯一生效），
+    /// 且配置形状不随 feature 变化——字段恒解析（缺失/显式取值两种形态）。
+    #[test]
+    fn musid_stack_flags_default_off_and_parse_in_any_shape() {
+        let default = SourceConfig::default();
+        assert!(
+            !default.musid_stack
+                && !default.musid_search
+                && !default.musid_song_url
+                && !default.musid_lyric
+                && !default.musid_parity_probe,
+            "双栈总闸与四面开关必须全部默认 false"
+        );
+
+        // 旧配置完全不含 musid 字段：照常解析，默认 false。
+        let legacy: SourceConfig = serde_json::from_value(serde_json::json!({
+            "enabled": ["kw", "wy"],
+            "default": "kw"
+        }))
+        .expect("旧配置解析");
+        assert!(!legacy.musid_stack);
+
+        // 显式开启（含 probe）：形状一致、逐字段落位。
+        let enabled: SourceConfig = serde_json::from_value(serde_json::json!({
+            "musid_stack": true,
+            "musid_search": true,
+            "musid_song_url": true,
+            "musid_lyric": true,
+            "musid_parity_probe": true
+        }))
+        .expect("musid 配置解析");
+        assert!(
+            enabled.musid_stack
+                && enabled.musid_search
+                && enabled.musid_song_url
+                && enabled.musid_lyric
+                && enabled.musid_parity_probe
+        );
+
+        // 序列化往返保真（设置页落盘路径）。
+        let round_trip: SourceConfig =
+            serde_json::from_value(serde_json::to_value(&enabled).expect("序列化")).expect("回读");
+        assert_eq!(round_trip.musid_parity_probe, enabled.musid_parity_probe);
     }
 
     #[test]

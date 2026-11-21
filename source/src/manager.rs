@@ -44,6 +44,76 @@ struct JsSourceEntry {
 /// 音源管理器
 type LyricNegativeCache = HashMap<(SourceId, Option<String>, String), Instant>;
 
+/// V1 双栈路由开关（feature `musid-dli-adapter`；对应 config.source.musid_*，
+/// 全部默认 false——不开 opt-in 时旧实现唯一生效）。
+#[cfg(feature = "musid-dli-adapter")]
+struct MusidRoutes {
+    stack: std::sync::atomic::AtomicBool,
+    search: std::sync::atomic::AtomicBool,
+    song_url: std::sync::atomic::AtomicBool,
+    lyric: std::sync::atomic::AtomicBool,
+    parity_probe: std::sync::atomic::AtomicBool,
+}
+
+/// 双栈路由开关的公共设置入口（`lx_source::bootstrap_musid_stack` 构造）。
+#[cfg(feature = "musid-dli-adapter")]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MusidRouteConfig {
+    /// 总闸：false 时四面全走旧路径。
+    pub stack: bool,
+    /// 搜索面。
+    pub search: bool,
+    /// 流地址面。
+    pub song_url: bool,
+    /// 歌词面（运行时另需 `musid-dli-adapter-lyrics` 歌词转换变体）。
+    pub lyric: bool,
+    /// parity 对账影子模式（纯观测：旧路径权威恒展示旧路径结果，musid
+    /// 调用仅用于计数对照且不阻塞用户路径）。
+    pub parity_probe: bool,
+}
+
+/// 聚合搜索任务输出：(源, 超时包裹的单源结果)。旧路径任务与 musid 替换
+/// 任务共用该形状（同 JoinSet 同预算），probe 影子任务复用同一形状走
+/// 第二个 JoinSet。
+#[cfg(feature = "musid-dli-adapter")]
+type AggregateTaskOutput = (
+    SourceId,
+    Result<Result<SearchResult, SearchError>, tokio::time::error::Elapsed>,
+);
+
+/// musid 搜索尝试预算（替换模式）：每源/单源预算的前半段——musid 慢失败
+/// 或挂死不再把回退挤到归零（评审 P2）；回退继承剩余预算，整体仍 ≤ 基线
+/// （聚合每源 10s / 单源 app 外层 12s）。
+#[cfg(feature = "musid-dli-adapter")]
+const MUSID_ATTEMPT_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// musid resolve 槽位预算（流地址面）：外层 30s 的前段——musid 慢失败后
+/// 回退链仍有 ≥20s（评审 P3；对比基线满 30s 的残余退化在 §11.4 登记；
+/// musid-dli 0.2.0 内部固 15s 不可注入，预算只能在宿主侧收口）。
+#[cfg(feature = "musid-dli-adapter")]
+const MUSID_RESOLVE_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// V1 双栈流地址槽位状态（feature `musid-dli-adapter`）。
+#[cfg(feature = "musid-dli-adapter")]
+struct MusidUrlSlot {
+    musid: Option<Arc<dyn MusicSource>>,
+    /// 计数键：路由命中的平台（JS 歌按 extra[source] 还原）。
+    source: SourceId,
+    /// probe 影子模式：不抢跑，旧链失败后仅对账计数（纯观测，评审 P1）。
+    probe: bool,
+    /// musid resolve 是否已尝试过（err 侧 legacy 归因的输入）。
+    attempted: bool,
+}
+
+/// V1 双栈歌词槽位状态（feature `musid-dli-adapter`）：content 为 musid
+/// 产物（已过同一内容门）；empty_source 为"musid 已尝试且无产出"的归因
+/// 平台（err 侧 legacy 归因的输入）。
+#[cfg(feature = "musid-dli-adapter")]
+struct MusidLyricSlot {
+    content: Option<LyricData>,
+    empty_source: Option<SourceId>,
+}
+
 pub struct SourceManager {
     sources: HashMap<SourceId, Arc<dyn MusicSource>>,
     /// JS 自定义音源，按配置顺序依次用于解析，并共同参与聚合搜索。
@@ -60,6 +130,18 @@ pub struct SourceManager {
     /// 每次播放都触发 JS 音源 + 全源聚合补全的长耗时请求。
     /// 键为 (来源，JS 平台标记，歌曲 id)。
     lyric_negative_cache: std::sync::Mutex<LyricNegativeCache>,
+    /// V1 双栈影子源（feature `musid-dli-adapter`，opt-in）：独立于
+    /// `sources`，绝不覆盖内置注册（`register` 以 `SourceId` 为键，二次
+    /// 注册会覆盖内置实现）。影子源不进健康检测、capabilities 聚合、
+    /// 设置页入口显隐与登录链路（docs/MUSID_DLI_ADAPTER.md §11）。
+    #[cfg(feature = "musid-dli-adapter")]
+    musid_sources: std::sync::RwLock<HashMap<SourceId, Arc<dyn MusicSource>>>,
+    /// 双栈路由开关（config.source.musid_*，全部默认 false）。
+    #[cfg(feature = "musid-dli-adapter")]
+    musid_routes: MusidRoutes,
+    /// parity 对账计数（内存，不落盘；JoinSet 任务经 Arc 记录）。
+    #[cfg(feature = "musid-dli-adapter")]
+    parity: Arc<crate::parity::ParityCounters>,
 }
 
 /// 判断是否为真本地文件歌曲：JS 音源的搜索结果同样标记为 `SourceId::Local`，
@@ -125,6 +207,18 @@ impl SourceManager {
             enabled: std::sync::RwLock::new(enabled.iter().copied().collect()),
             js_url_first: std::sync::atomic::AtomicBool::new(false),
             lyric_negative_cache: std::sync::Mutex::new(HashMap::new()),
+            #[cfg(feature = "musid-dli-adapter")]
+            musid_sources: std::sync::RwLock::new(HashMap::new()),
+            #[cfg(feature = "musid-dli-adapter")]
+            musid_routes: MusidRoutes {
+                stack: std::sync::atomic::AtomicBool::new(false),
+                search: std::sync::atomic::AtomicBool::new(false),
+                song_url: std::sync::atomic::AtomicBool::new(false),
+                lyric: std::sync::atomic::AtomicBool::new(false),
+                parity_probe: std::sync::atomic::AtomicBool::new(false),
+            },
+            #[cfg(feature = "musid-dli-adapter")]
+            parity: Arc::new(crate::parity::ParityCounters::default()),
         };
         // 注册内置音源
         manager.register(Arc::new(KwSource::new()));
@@ -146,6 +240,111 @@ impl SourceManager {
 
     pub fn register(&mut self, source: Arc<dyn MusicSource>) {
         self.sources.insert(source.id(), source);
+    }
+
+    // ------------------------------------------------------------------
+    // V1 双栈（musid-dli-adapter feature，opt-in；docs/MUSID_DLI_ADAPTER.md §11）
+    // ------------------------------------------------------------------
+
+    /// 注册 musid-dli 影子源。
+    ///
+    /// 影子源以 [`SourceId`] 为键存入**独立**的 `musid_sources`，绝不写入
+    /// `self.sources`（后者以 `SourceId` 为键，二次注册会覆盖内置实现）。
+    /// 影子源不参与健康检测、capabilities 聚合、入口显隐与登录链路；只在
+    /// 四面路由判定（[`Self::musid_route`]）命中的时候按开关被调用。
+    #[cfg(feature = "musid-dli-adapter")]
+    pub fn register_musid_source(&self, source: Arc<dyn MusicSource>) {
+        self.musid_sources
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(source.id(), source);
+    }
+
+    /// 下发双栈路由开关（全部 false = 旧路径唯一生效；config 开而 feature
+    /// 关的场景在 `bootstrap_musid_stack` 里就不会到达本方法）。
+    #[cfg(feature = "musid-dli-adapter")]
+    pub fn set_musid_routes(&self, routes: MusidRouteConfig) {
+        let store = |flag: &std::sync::atomic::AtomicBool, value: bool| {
+            flag.store(value, std::sync::atomic::Ordering::Relaxed);
+        };
+        store(&self.musid_routes.stack, routes.stack);
+        store(&self.musid_routes.search, routes.search);
+        store(&self.musid_routes.song_url, routes.song_url);
+        store(&self.musid_routes.lyric, routes.lyric);
+        store(&self.musid_routes.parity_probe, routes.parity_probe);
+    }
+
+    /// parity 对账计数快照（设置页/诊断只读展示）。
+    #[cfg(feature = "musid-dli-adapter")]
+    pub fn musid_parity_snapshot(&self) -> Vec<crate::parity::ParityRecord> {
+        self.parity.snapshot()
+    }
+
+    /// 四面共用的路由判定：总闸 && 面开关 && 源可映射（`soda`/`local`/`bili`
+    /// 恒旧路径）&& 影子源已注册 && 用户 enabled 集含该源。
+    #[cfg(feature = "musid-dli-adapter")]
+    fn musid_route(&self, face_gate: bool, source: SourceId) -> Option<Arc<dyn MusicSource>> {
+        if !self
+            .musid_routes
+            .stack
+            .load(std::sync::atomic::Ordering::Relaxed)
+            || !face_gate
+        {
+            return None;
+        }
+        // 命名表可映射的才可路由；bili 虽在 §1 命名表内，但它是独立存储 +
+        // 登录链路，双栈期恒旧路径（P4）。
+        if matches!(source, SourceId::Local | SourceId::Soda | SourceId::Bili)
+            || crate::adapter_musid::source_id_to_provider(source).is_none()
+        {
+            return None;
+        }
+        if !self
+            .enabled
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(&source)
+        {
+            return None;
+        }
+        self.musid_sources
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&source)
+            .cloned()
+    }
+
+    /// 歌曲的双栈路由平台：JS 音源搜到的歌（`Local` + `extra[source]`）按
+    /// 平台标记还原，普通歌曲取 `source`。
+    #[cfg(feature = "musid-dli-adapter")]
+    fn musid_effective_source(song: &SongInfo) -> Option<SourceId> {
+        if song.source == SourceId::Local {
+            return builtin_source_for_js(song);
+        }
+        Some(song.source)
+    }
+
+    /// parity 计数入口（内存计数，只增不减）。
+    #[cfg(feature = "musid-dli-adapter")]
+    fn musid_record(
+        &self,
+        face: crate::parity::ParityFace,
+        source: SourceId,
+        outcome: crate::parity::ParityOutcome,
+    ) {
+        self.parity.record(face, source, outcome);
+    }
+
+    /// 对账影子模式是否在生效（总闸 && probe）。
+    #[cfg(feature = "musid-dli-adapter")]
+    fn musid_probe_active(&self) -> bool {
+        self.musid_routes
+            .stack
+            .load(std::sync::atomic::Ordering::Relaxed)
+            && self
+                .musid_routes
+                .parity_probe
+                .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// 开始一次 JS 音源请求。代次和当前音源受同一把锁保护，
@@ -456,12 +655,129 @@ impl SourceManager {
                 source.as_str()
             )));
         }
+        // V1 双栈搜索面（musid-dli-adapter，opt-in）：musid 为替换路径，
+        // 失败立即按旧路径重试并计 fallback；probe 模式真双跑、恒展示旧
+        // 路径结果（docs/MUSID_DLI_ADAPTER.md §11）。
+        #[cfg(feature = "musid-dli-adapter")]
+        if let Some(outcome) = self.musid_search_single(keyword, page, limit, source).await {
+            return outcome;
+        }
         let source = self
             .sources
             .get(&source)
             .map(Arc::clone)
             .ok_or_else(|| SearchError::Other("音源不可用".to_string()))?;
         source.search(keyword, page, limit).await
+    }
+
+    /// 单源搜索的双栈路径（feature `musid-dli-adapter`）。
+    ///
+    /// 返回 `None` = 未路由（调用方继续旧路径）；`Some(result)` = musid
+    /// 路径的最终结果（替换模式含失败回落旧路径后的结果；probe 模式恒为
+    /// 旧路径结果）。替换模式：musid 尝试预算 [`MUSID_ATTEMPT_BUDGET`]，
+    /// Err/预算耗尽后立即按旧路径重试该源（回退不被 musid 慢失败挤占，
+    /// 评审 P2；整体仍受 app 外层 12s 约束）。probe 模式（纯观测）：旧路径
+    /// 权威，musid 影子在后台任务对账（oneshot 交接旧路径产物，评审 P4
+    /// ——用户路径零额外延迟），计数最终一致。
+    #[cfg(feature = "musid-dli-adapter")]
+    async fn musid_search_single(
+        &self,
+        keyword: &str,
+        page: u32,
+        limit: u32,
+        source: SourceId,
+    ) -> Option<Result<SearchResult, SearchError>> {
+        let search_flag = self
+            .musid_routes
+            .search
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let probe = self
+            .musid_routes
+            .parity_probe
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if !search_flag && !probe {
+            return None;
+        }
+        let musid = self.musid_route(search_flag || probe, source)?;
+        if probe {
+            // 对账影子模式（纯观测）：旧路径权威，musid 影子任务后台真双跑
+            // （限 10s，与聚合每源预算同口径）；旧路径产物经 oneshot 交接给
+            // 影子任务对照计数。计数：双 Ok 才对照（ParityMatch/Mismatch），
+            // 单侧瞬时 Err 不计，双 Err 记 MusidErrLegacyErr。
+            let legacy = self.sources.get(&source).map(Arc::clone);
+            let (verdict_tx, verdict_rx) = tokio::sync::oneshot::channel();
+            let parity = Arc::clone(&self.parity);
+            let shadow_keyword = keyword.to_string();
+            tokio::spawn(async move {
+                let shadow = tokio::time::timeout(
+                    std::time::Duration::from_secs(10),
+                    musid.search(&shadow_keyword, page, limit),
+                )
+                .await
+                .map_err(|_| SearchError::Other("musid 对账搜索超时".to_string()))
+                .and_then(|inner| inner);
+                let legacy_items: Result<Vec<SongInfo>, ()> = match verdict_rx.await {
+                    Ok(verdict) => verdict,
+                    // 主路径异常结束（发送端被弃）：不作对账结论。
+                    Err(_) => return,
+                };
+                let outcome = match (&legacy_items, &shadow) {
+                    (Err(()), Err(_)) => Some(crate::parity::ParityOutcome::MusidErrLegacyErr),
+                    (Err(()), _) | (_, Err(_)) => None,
+                    (Ok(legacy), Ok(shadow)) => {
+                        let matched = crate::parity::compare_search_items(legacy, &shadow.items);
+                        Some(if matched {
+                            crate::parity::ParityOutcome::ParityMatch
+                        } else {
+                            crate::parity::ParityOutcome::ParityMismatch
+                        })
+                    }
+                };
+                if let Some(outcome) = outcome {
+                    parity.record(crate::parity::ParityFace::Search, source, outcome);
+                }
+            });
+            let legacy_result = match legacy {
+                Some(legacy) => legacy.search(keyword, page, limit).await,
+                None => Err(SearchError::Other("音源不可用".to_string())),
+            };
+            let _ = verdict_tx.send(
+                legacy_result
+                    .as_ref()
+                    .map(|result| result.items.clone())
+                    .map_err(|_| ()),
+            );
+            return Some(legacy_result);
+        }
+        // 替换模式：musid 先行（尝试预算 MUSID_ATTEMPT_BUDGET）；Err/预算
+        // 耗尽立即按旧路径重试该源并计 fallback——回退不被 musid 慢失败
+        // 挤占（评审 P2）。
+        let attempt =
+            tokio::time::timeout(MUSID_ATTEMPT_BUDGET, musid.search(keyword, page, limit)).await;
+        match attempt {
+            Ok(Ok(result)) => {
+                self.musid_record(
+                    crate::parity::ParityFace::Search,
+                    source,
+                    crate::parity::ParityOutcome::MusidOk,
+                );
+                Some(Ok(result))
+            }
+            Ok(Err(_)) | Err(_) => {
+                let legacy = self.sources.get(&source).map(Arc::clone);
+                let fallback = match legacy {
+                    Some(legacy) => legacy.search(keyword, page, limit).await,
+                    None => Err(SearchError::Other("音源不可用".to_string())),
+                };
+                let outcome = if fallback.is_ok() {
+                    crate::parity::ParityOutcome::MusidErrLegacyOk
+                } else {
+                    crate::parity::ParityOutcome::MusidErrLegacyErr
+                };
+                self.musid_record(crate::parity::ParityFace::Search, source, outcome);
+                Some(fallback)
+            }
+        }
     }
 
     pub async fn search_all(
@@ -472,6 +788,10 @@ impl SourceManager {
     ) -> Result<SearchResult, SearchError> {
         let per_source_limit = (limit / 2).max(10);
         let mut tasks = tokio::task::JoinSet::new();
+        // V1 双栈聚合（musid-dli-adapter，opt-in）：probe 影子任务走第二个
+        // JoinSet，与旧路径任务并行（真双跑），产物不进聚合结果。
+        #[cfg(feature = "musid-dli-adapter")]
+        let mut musid_shadows = tokio::task::JoinSet::new();
         let enabled = self
             .enabled
             .read()
@@ -481,29 +801,51 @@ impl SourceManager {
             if !enabled.contains(source_id) {
                 continue;
             }
+            // musid 路由进同一 JoinSet（同享每源 10s 超时与同一去重键）；
+            // probe 模式只 spawn 影子任务、旧路径任务照常 spawn。
+            #[cfg(feature = "musid-dli-adapter")]
+            if self.musid_search_all_spawn(
+                &mut tasks,
+                &mut musid_shadows,
+                keyword,
+                page,
+                per_source_limit,
+                *source_id,
+            ) {
+                continue;
+            }
             if let Some(source) = self.sources.get(source_id) {
                 let source = Arc::clone(source);
                 let keyword = keyword.to_string();
                 tasks.spawn(async move {
-                    tokio::time::timeout(
-                        std::time::Duration::from_secs(10),
-                        source.search(&keyword, page, per_source_limit),
+                    (
+                        *source_id,
+                        tokio::time::timeout(
+                            std::time::Duration::from_secs(10),
+                            source.search(&keyword, page, per_source_limit),
+                        )
+                        .await,
                     )
-                    .await
                 });
             }
         }
         for source in self.js_sources() {
             let keyword = keyword.to_string();
             tasks.spawn(async move {
-                tokio::time::timeout(
-                    std::time::Duration::from_secs(10),
-                    source.search(&keyword, page, per_source_limit),
+                (
+                    SourceId::Local,
+                    tokio::time::timeout(
+                        std::time::Duration::from_secs(10),
+                        source.search(&keyword, page, per_source_limit),
+                    )
+                    .await,
                 )
-                .await
             });
         }
 
+        // probe 影子对照所需的旧路径逐源产物（仅 feature 构建读取）。
+        #[cfg(feature = "musid-dli-adapter")]
+        let mut legacy_probe_items: HashMap<SourceId, Vec<SongInfo>> = HashMap::new();
         let mut items = Vec::new();
         let mut total = 0u32;
         let mut has_more = false;
@@ -511,16 +853,35 @@ impl SourceManager {
         let mut errors = Vec::new();
         while let Some(result) = tasks.join_next().await {
             match result {
-                Ok(Ok(Ok(result))) => {
+                Ok((_source_id, Ok(Ok(result)))) => {
+                    #[cfg(feature = "musid-dli-adapter")]
+                    let source_id = _source_id;
                     success_count += 1;
                     total = total.saturating_add(result.total);
                     has_more |= result.has_more;
+                    #[cfg(feature = "musid-dli-adapter")]
+                    if self.musid_probe_active() {
+                        legacy_probe_items.insert(source_id, result.items.clone());
+                    }
                     items.extend(result.items);
                 }
-                Ok(Ok(Err(error))) => errors.push(error.to_string()),
-                Ok(Err(_)) => errors.push("请求超时".to_string()),
+                Ok((_, Ok(Err(error)))) => errors.push(error.to_string()),
+                Ok((_, Err(_))) => errors.push("请求超时".to_string()),
                 Err(error) => errors.push(error.to_string()),
             }
+        }
+
+        // probe 影子对照：musid 有产物且旧路径该源也有产物时按 §11 归一
+        // 规则对照计数（旧路径失败的源不对照——无双方产物）。对账在后台
+        // 任务落账（评审 P4）：聚合不被最慢的影子拖住（最多 10s），计数
+        // 最终一致。
+        #[cfg(feature = "musid-dli-adapter")]
+        if self.musid_probe_active() {
+            Self::spawn_search_shadow_reconcile(
+                musid_shadows,
+                legacy_probe_items,
+                Arc::clone(&self.parity),
+            );
         }
 
         if success_count == 0 {
@@ -546,6 +907,128 @@ impl SourceManager {
             total,
             has_more,
         })
+    }
+
+    /// 聚合搜索的按源双栈路由（feature `musid-dli-adapter`）。
+    ///
+    /// 返回 `true` = 本源已由 musid 替换任务处理（旧路径 spawn 跳过）；
+    /// `false` = 旧路径任务照常 spawn（未路由，或 probe 影子模式——影子
+    /// 任务已另行 spawn 到 `shadows`，旧路径仍是结果来源）。
+    #[cfg(feature = "musid-dli-adapter")]
+    fn musid_search_all_spawn(
+        &self,
+        tasks: &mut tokio::task::JoinSet<AggregateTaskOutput>,
+        shadows: &mut tokio::task::JoinSet<AggregateTaskOutput>,
+        keyword: &str,
+        page: u32,
+        per_source_limit: u32,
+        source_id: SourceId,
+    ) -> bool {
+        let search_flag = self
+            .musid_routes
+            .search
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let probe = self
+            .musid_routes
+            .parity_probe
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if !search_flag && !probe {
+            return false;
+        }
+        let Some(musid) = self.musid_route(search_flag || probe, source_id) else {
+            return false;
+        };
+        let parity = Arc::clone(&self.parity);
+        if probe {
+            // 对账影子模式：musid 作为额外并行 provider 参与同一次聚合
+            // （真双跑），产物不进结果，仅供对照计数（恒展示旧路径结果）。
+            let keyword = keyword.to_string();
+            shadows.spawn(async move {
+                (
+                    source_id,
+                    tokio::time::timeout(
+                        std::time::Duration::from_secs(10),
+                        musid.search(&keyword, page, per_source_limit),
+                    )
+                    .await,
+                )
+            });
+            return false;
+        }
+        // 替换模式：musid 先行（尝试预算 MUSID_ATTEMPT_BUDGET = 每源预算
+        // 前半，评审 P2），Err/预算耗尽立即按旧路径重试该源并计 fallback
+        // ——回退继承剩余预算，不被 musid 慢失败/挂死挤占；仅整体外层超时
+        // （回退也超时）不计（无双方结局）。
+        let legacy = self.sources.get(&source_id).map(Arc::clone);
+        let keyword = keyword.to_string();
+        tasks.spawn(async move {
+            (
+                source_id,
+                tokio::time::timeout(std::time::Duration::from_secs(10), async move {
+                    let attempt = tokio::time::timeout(
+                        MUSID_ATTEMPT_BUDGET,
+                        musid.search(&keyword, page, per_source_limit),
+                    )
+                    .await;
+                    match attempt {
+                        Ok(Ok(result)) => {
+                            parity.record(
+                                crate::parity::ParityFace::Search,
+                                source_id,
+                                crate::parity::ParityOutcome::MusidOk,
+                            );
+                            Ok(result)
+                        }
+                        Ok(Err(_)) | Err(_) => {
+                            let fallback = match legacy {
+                                Some(legacy) => {
+                                    legacy.search(&keyword, page, per_source_limit).await
+                                }
+                                None => Err(SearchError::Other("音源不可用".to_string())),
+                            };
+                            let outcome = if fallback.is_ok() {
+                                crate::parity::ParityOutcome::MusidErrLegacyOk
+                            } else {
+                                crate::parity::ParityOutcome::MusidErrLegacyErr
+                            };
+                            parity.record(crate::parity::ParityFace::Search, source_id, outcome);
+                            fallback
+                        }
+                    }
+                })
+                .await,
+            )
+        });
+        true
+    }
+
+    /// 聚合搜索 probe 影子的后台对账（评审 P4：fire-and-forget，不阻塞聚合
+    /// 返回，计数最终一致）：musid 有产物且旧路径同源也有产物时按 §11 归一
+    /// 规则对照（ParityMatch/ParityMismatch）；旧路径失败的源不对照（无双方
+    /// 产物可归一）；影子 Err/超时同样不计。
+    #[cfg(feature = "musid-dli-adapter")]
+    fn spawn_search_shadow_reconcile(
+        mut shadows: tokio::task::JoinSet<AggregateTaskOutput>,
+        legacy_probe_items: HashMap<SourceId, Vec<SongInfo>>,
+        parity: Arc<crate::parity::ParityCounters>,
+    ) {
+        tokio::spawn(async move {
+            while let Some(joined) = shadows.join_next().await {
+                let Ok((source, Ok(Ok(page)))) = joined else {
+                    continue;
+                };
+                let Some(legacy) = legacy_probe_items.get(&source) else {
+                    continue;
+                };
+                let matched = crate::parity::compare_search_items(legacy, &page.items);
+                let outcome = if matched {
+                    crate::parity::ParityOutcome::ParityMatch
+                } else {
+                    crate::parity::ParityOutcome::ParityMismatch
+                };
+                parity.record(crate::parity::ParityFace::Search, source, outcome);
+            }
+        });
     }
 
     fn sort_search_results(items: &mut [SongInfo], keyword: &str) {
@@ -895,11 +1378,26 @@ impl SourceManager {
         let mut builtin_attempted = false;
         let mut js_errors = Vec::new();
 
+        // V1 双栈流地址槽位（musid-dli-adapter，opt-in）：本地/bili 早退后、
+        // 内置槽位前插 musid 判定；js_first 语义不变——true=JS 先于 musid
+        // （musid 槽位落到 JS 循环之后、内置兜底之前）。musid Err → 继续
+        // 既有内置→JS→内置兜底链；过期地址在适配源内已视为失败（G4）。
+        #[cfg(feature = "musid-dli-adapter")]
+        let mut musid_url = self.musid_url_slot_route(song);
+        #[cfg(feature = "musid-dli-adapter")]
+        if !js_first && let Some(url) = self.musid_url_try(&mut musid_url, song, quality).await {
+            return Ok((url, None));
+        }
+
         // 默认内置音源先行：单个挂死的 JS 音源不再拖慢本可直接播放的歌。
         if !js_first && let Some(builtin) = self.builtin_fallback_source(song) {
             builtin_attempted = true;
             match builtin.get_song_url(song, quality).await {
-                Ok(result) => return Ok((result, None)),
+                Ok(result) => {
+                    #[cfg(feature = "musid-dli-adapter")]
+                    self.musid_url_record_legacy_ok(&musid_url);
+                    return Ok((result, None));
+                }
                 Err(error) => builtin_error = Some(error.to_string()),
             }
         }
@@ -911,9 +1409,20 @@ impl SourceManager {
             .skip(js_start_index)
         {
             match js_source.get_song_url(song, quality).await {
-                Ok(result) => return Ok((result, Some(index))),
+                Ok(result) => {
+                    #[cfg(feature = "musid-dli-adapter")]
+                    self.musid_url_record_legacy_ok(&musid_url);
+                    return Ok((result, Some(index)));
+                }
                 Err(error) => js_errors.push(error.to_string()),
             }
+        }
+
+        // V1 双栈：js_first（或续播轮次）时 musid 槽位在 JS 之后、内置兜底
+        // 之前（js_start_index 续播机制零改动）。
+        #[cfg(feature = "musid-dli-adapter")]
+        if js_first && let Some(url) = self.musid_url_try(&mut musid_url, song, quality).await {
+            return Ok((url, None));
         }
 
         // 错误汇总：JS 音源实际尝试过才提 JS；JS 搜到的歌一个源都没有时
@@ -922,37 +1431,191 @@ impl SourceManager {
             .then(|| format!("JS 音源失败: {}", js_errors.join("; ")))
             .or_else(|| (song.source == SourceId::Local).then(|| "未加载任何 JS 音源".to_string()));
 
+        // V1 双栈：错误路径收敛到统一出口（probe 影子模式在旧链失败后才跑
+        // musid 兜底并计数；替换模式在此计 both_err）。旧路径各臂的错误文本
+        // 与原实现逐字一致。
+        let final_error: FetchError;
         // 全部失败后内置音源兜底（内置音源先行模式下上面已经试过，不再重复）。
         if let Some(source) = self
             .builtin_fallback_source(song)
             .filter(|_| !builtin_attempted)
         {
-            return match source.get_song_url(song, quality).await {
-                Ok(result) => Ok((result, None)),
-                Err(error) => match js_note {
-                    Some(note) => Err(FetchError::Other(format!(
-                        "{note}; 内置{}音源失败: {error}",
-                        source.name()
-                    ))),
-                    None => Err(error),
-                },
+            match source.get_song_url(song, quality).await {
+                Ok(result) => {
+                    #[cfg(feature = "musid-dli-adapter")]
+                    self.musid_url_record_legacy_ok(&musid_url);
+                    return Ok((result, None));
+                }
+                Err(error) => {
+                    final_error = match js_note {
+                        Some(note) => FetchError::Other(format!(
+                            "{note}; 内置{}音源失败: {error}",
+                            source.name()
+                        )),
+                        None => error,
+                    };
+                }
+            }
+        } else if !builtin_attempted {
+            final_error =
+                FetchError::Other(js_note.unwrap_or_else(|| "歌曲来源不可用".to_string()));
+        } else {
+            final_error = match (builtin_error, js_note) {
+                (Some(builtin_error), Some(js_note)) => {
+                    FetchError::Other(format!("{js_note}; 内置音源失败: {builtin_error}"))
+                }
+                (Some(builtin_error), None) => FetchError::Other(builtin_error),
+                // builtin_attempted 为 true 时必然已经失败返回，这里只是兜底。
+                (None, js_note) => {
+                    FetchError::Other(js_note.unwrap_or_else(|| "歌曲来源不可用".to_string()))
+                }
             };
         }
 
-        if !builtin_attempted {
-            return Err(FetchError::Other(
-                js_note.unwrap_or_else(|| "歌曲来源不可用".to_string()),
-            ));
+        // V1 双栈错误出口（评审 P1：probe 纯观测——旧链失败才跑 musid 仅
+        // 计数，musid 产物不进用户路径；替换模式 musid 已失败过 → 计
+        // both_err）。未路由/未命中时原样返回旧错误。
+        #[cfg(feature = "musid-dli-adapter")]
+        self.musid_url_err_exit(&mut musid_url, song, quality).await;
+        Err(final_error)
+    }
+
+    /// V1 双栈流地址槽位状态（feature `musid-dli-adapter`）。
+    #[cfg(feature = "musid-dli-adapter")]
+    fn musid_url_slot_route(&self, song: &SongInfo) -> MusidUrlSlot {
+        let none = MusidUrlSlot {
+            musid: None,
+            source: song.source,
+            probe: false,
+            attempted: false,
+        };
+        let Some(source) = Self::musid_effective_source(song) else {
+            return none;
+        };
+        let probe = self
+            .musid_routes
+            .parity_probe
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let face = self
+            .musid_routes
+            .song_url
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if !face && !probe {
+            return none;
         }
-        match (builtin_error, js_note) {
-            (Some(builtin_error), Some(js_note)) => Err(FetchError::Other(format!(
-                "{js_note}; 内置音源失败: {builtin_error}"
-            ))),
-            (Some(builtin_error), None) => Err(FetchError::Other(builtin_error)),
-            // builtin_attempted 为 true 时必然已经失败返回，这里只是兜底。
-            (None, js_note) => Err(FetchError::Other(
-                js_note.unwrap_or_else(|| "歌曲来源不可用".to_string()),
-            )),
+        let Some(musid) = self.musid_route(face || probe, source) else {
+            return none;
+        };
+        MusidUrlSlot {
+            musid: Some(musid),
+            source,
+            probe,
+            attempted: false,
+        }
+    }
+
+    /// 替换模式的 musid resolve 尝试：成功（未过期地址）记 MusidOk 并返回；
+    /// Err/预算耗尽（[`MUSID_RESOLVE_BUDGET`]，评审 P3——musid 内部固 15s
+    /// 不可注入，预算在宿主侧收口，不挤占外层 30s 内的回退链）返回 None
+    /// 让调用方继续旧链（attempted 置位供 err 侧归因）。probe 模式不抢跑
+    /// （返回 None）。
+    #[cfg(feature = "musid-dli-adapter")]
+    async fn musid_url_try(
+        &self,
+        slot: &mut MusidUrlSlot,
+        song: &SongInfo,
+        quality: Quality,
+    ) -> Option<SongUrl> {
+        if slot.probe {
+            return None;
+        }
+        let musid = slot.musid.as_ref()?;
+        slot.attempted = true;
+        let attempt =
+            tokio::time::timeout(MUSID_RESOLVE_BUDGET, musid.get_song_url(song, quality)).await;
+        match attempt {
+            Ok(Ok(url)) => {
+                self.musid_record(
+                    crate::parity::ParityFace::SongUrl,
+                    slot.source,
+                    crate::parity::ParityOutcome::MusidOk,
+                );
+                Some(url)
+            }
+            Ok(Err(error)) => {
+                tracing::debug!(
+                    target: "musid_adapter",
+                    source = slot.source.as_str(),
+                    error = %error,
+                    "musid resolve 失败，回落旧链"
+                );
+                None
+            }
+            Err(_) => {
+                tracing::debug!(
+                    target: "musid_adapter",
+                    source = slot.source.as_str(),
+                    budget_secs = MUSID_RESOLVE_BUDGET.as_secs(),
+                    "musid resolve 预算耗尽，回落旧链"
+                );
+                None
+            }
+        }
+    }
+
+    /// musid 已尝试且未成功、旧路径同请求成功 → MusidErrLegacyOk。
+    #[cfg(feature = "musid-dli-adapter")]
+    fn musid_url_record_legacy_ok(&self, slot: &MusidUrlSlot) {
+        if slot.attempted && !slot.probe {
+            self.musid_record(
+                crate::parity::ParityFace::SongUrl,
+                slot.source,
+                crate::parity::ParityOutcome::MusidErrLegacyOk,
+            );
+        }
+    }
+
+    /// 统一错误出口（评审 P1 修订：probe 恒纯观测；评审第二轮 F1：对账
+    /// 后台化）。probe 模式旧链失败才跑 musid（失败侧对账，legacy 成功不
+    /// 双跑 resolve 避免双倍平台配额，尝试限 [`MUSID_RESOLVE_BUDGET`]）
+    /// ——**只计数**（成功记 MusidOk、失败记 MusidErrLegacyErr），musid
+    /// 产物不进用户路径，旧错误原样向上（与不开 probe 时逐字节**与时延**
+    /// 一致：对账 resolve 在后台任务进行，错误路径不等它）。替换模式
+    /// musid 已尝试过 → MusidErrLegacyErr（纯簿记，零时延）。未路由时无
+    /// 动作。
+    #[cfg(feature = "musid-dli-adapter")]
+    async fn musid_url_err_exit(&self, slot: &mut MusidUrlSlot, song: &SongInfo, quality: Quality) {
+        if slot.probe {
+            let Some(musid) = slot.musid.as_ref() else {
+                return;
+            };
+            // 失败侧对账在后台任务落账（评审第二轮 F1：probe 影子不阻塞
+            // 错误路径——旧错误立即向上；fire-and-forget 的取消语义见
+            // §11.5：用户取消/外层超时后影子仍消耗 musid 配额并落账）。
+            let parity = Arc::clone(&self.parity);
+            let source = slot.source;
+            let probe_song = song.clone();
+            let musid = Arc::clone(musid);
+            tokio::spawn(async move {
+                let attempt = tokio::time::timeout(
+                    MUSID_RESOLVE_BUDGET,
+                    musid.get_song_url(&probe_song, quality),
+                )
+                .await;
+                let outcome = match attempt {
+                    Ok(Ok(_)) => crate::parity::ParityOutcome::MusidOk,
+                    Ok(Err(_)) | Err(_) => crate::parity::ParityOutcome::MusidErrLegacyErr,
+                };
+                parity.record(crate::parity::ParityFace::SongUrl, source, outcome);
+            });
+            return;
+        }
+        if slot.attempted {
+            self.musid_record(
+                crate::parity::ParityFace::SongUrl,
+                slot.source,
+                crate::parity::ParityOutcome::MusidErrLegacyErr,
+            );
         }
     }
 
@@ -975,32 +1638,205 @@ impl SourceManager {
         )
         .await
         {
-            Ok(result) => result,
+            // 第二个元组位是 musid 槽位的 err 侧归因轨迹（feature 构建）；
+            // 裸 get_lyric 调用（跨源补全候选等）不用它。
+            Ok((result, _)) => result,
             Err(_) => Err(FetchError::Network("获取歌词超时".to_string())),
         }
     }
 
-    async fn get_lyric_inner(&self, song: &SongInfo) -> Result<LyricData, FetchError> {
+    /// 歌词主链（本地外挂 → JS → [musid 槽位] → 内置 fallback）。
+    ///
+    /// 第二个元组位：musid 槽位"已尝试且无产出"的归因平台（替换模式的
+    /// err 侧 legacy 计数输入；feature 关闭时恒 `None`）。
+    async fn get_lyric_inner(
+        &self,
+        song: &SongInfo,
+    ) -> (Result<LyricData, FetchError>, Option<SourceId>) {
         // 真本地文件歌曲优先读外挂/内嵌歌词，不经过 JS 音源（拿文件路径当
         // 平台歌曲 id 请求必然无效）。无词时返回空数据，由
         // get_lyric_with_fallback 决定是否联网补全。
         if is_local_file_song(song)
             && let Some(local) = self.sources.get(&SourceId::Local)
         {
-            return local.get_lyric(song).await;
+            return (local.get_lyric(song).await, None);
         }
         for js_source in self.js_sources() {
             if let Ok(data) = js_source.get_lyric(song).await
                 && lyric_has_content(&data)
             {
-                return Ok(data);
+                return (Ok(data), None);
             }
         }
 
-        let source = self
-            .builtin_fallback_source(song)
-            .ok_or_else(|| FetchError::Other("歌曲来源不可用".to_string()))?;
-        source.get_lyric(song).await
+        // V1 双栈歌词槽位（musid-dli-adapter + 歌词转换变体，opt-in）：与
+        // JS 槽位同位——JS 之后、内置 fallback 之前；产物过同一内容门
+        // （lyric_has_content）；None/空内容/Err → 继续链、不写负缓存
+        // （负缓存仍由 get_lyric_with_fallback 统一裁决，与旧路径同键）。
+        #[cfg(feature = "musid-dli-adapter")]
+        let musid_slot = self.musid_lyric_slot(song).await;
+        #[cfg(feature = "musid-dli-adapter")]
+        if let Some(data) = musid_slot.content {
+            return (Ok(data), None);
+        }
+
+        let Some(source) = self.builtin_fallback_source(song) else {
+            return (Err(FetchError::Other("歌曲来源不可用".to_string())), None);
+        };
+        let result = source.get_lyric(song).await;
+        #[cfg(feature = "musid-dli-adapter")]
+        let empty_source = musid_slot.empty_source;
+        #[cfg(not(feature = "musid-dli-adapter"))]
+        let empty_source = None;
+        (result, empty_source)
+    }
+
+    /// V1 双栈歌词槽位（feature `musid-dli-adapter`）：替换模式尝试 musid
+    /// 取词；probe 模式不在此抢跑（真双跑对照在 `get_lyric_with_fallback`
+    /// 的主请求）；缺歌词转换变体（`musid-dli-adapter-lyrics`）时该面恒
+    /// 不生效（启动 warn 由 `bootstrap_musid_stack` 负责）。
+    #[cfg(feature = "musid-dli-adapter")]
+    async fn musid_lyric_slot(&self, song: &SongInfo) -> MusidLyricSlot {
+        let none = MusidLyricSlot {
+            content: None,
+            empty_source: None,
+        };
+        if !cfg!(feature = "musid-dli-adapter-lyrics") {
+            return none;
+        }
+        let Some(source) = Self::musid_effective_source(song) else {
+            return none;
+        };
+        let lyric_flag = self
+            .musid_routes
+            .lyric
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let probe = self
+            .musid_routes
+            .parity_probe
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if !lyric_flag || probe {
+            return none;
+        }
+        let Some(musid) = self.musid_route(lyric_flag, source) else {
+            return none;
+        };
+        match musid.get_lyric(song).await {
+            Ok(data) if lyric_has_content(&data) => {
+                self.musid_record(
+                    crate::parity::ParityFace::Lyric,
+                    source,
+                    crate::parity::ParityOutcome::MusidOk,
+                );
+                MusidLyricSlot {
+                    content: Some(data),
+                    empty_source: None,
+                }
+            }
+            _ => MusidLyricSlot {
+                content: None,
+                empty_source: Some(source),
+            },
+        }
+    }
+
+    /// 歌词主请求的双栈入口（feature `musid-dli-adapter`）：返回 (旧路径
+    /// 结果, musid 空产出归因平台)。probe 模式真双跑——musid 影子在后台
+    /// 任务对账（评审 P4，用户路径零额外延迟），恒展示旧路径结果。
+    #[cfg(feature = "musid-dli-adapter")]
+    async fn musid_lyric_main(
+        &self,
+        song: &SongInfo,
+    ) -> (Result<LyricData, FetchError>, Option<SourceId>) {
+        // 歌词面的 musid 参与（替换与 probe 双跑）都依赖歌词转换变体才有
+        // 产物可归一；缺变体时该面整体不生效。
+        if !cfg!(feature = "musid-dli-adapter-lyrics") {
+            return (self.get_lyric(song).await, None);
+        }
+        let probe = self
+            .musid_routes
+            .parity_probe
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if probe {
+            let lyric_flag = self
+                .musid_routes
+                .lyric
+                .load(std::sync::atomic::Ordering::Relaxed);
+            let Some(source) = Self::musid_effective_source(song) else {
+                return (self.get_lyric(song).await, None);
+            };
+            let Some(musid) = self.musid_route(lyric_flag || probe, source) else {
+                return (self.get_lyric(song).await, None);
+            };
+            // 真双跑（纯观测，评审 P4）：musid 影子在后台任务对账（oneshot
+            // 接收旧路径结论），用户路径零额外延迟，计数最终一致。旧路径带
+            // 20s 超时，影子同预算。计数——单侧瞬时 Err 不作对账结论，双 Err
+            // 记 MusidErrLegacyErr，双 Ok 按内容对照（双方都确认无词 =
+            // ParityMatch）。
+            let (verdict_tx, verdict_rx) = tokio::sync::oneshot::channel();
+            let parity = Arc::clone(&self.parity);
+            let probe_song = song.clone();
+            tokio::spawn(async move {
+                let shadow = tokio::time::timeout(
+                    std::time::Duration::from_secs(20),
+                    musid.get_lyric(&probe_song),
+                )
+                .await;
+                let verdict = match verdict_rx.await {
+                    Ok(verdict) => verdict,
+                    // 主路径异常结束（发送端被弃）：不作对账结论。
+                    Err(_) => return,
+                };
+                let outcome = match (&verdict, &shadow) {
+                    (crate::parity::LyricLegacyVerdict::Failed, Err(_)) => {
+                        Some(crate::parity::ParityOutcome::MusidErrLegacyErr)
+                    }
+                    (crate::parity::LyricLegacyVerdict::Failed, _) => None,
+                    (_, Err(_)) | (_, Ok(Err(_))) => None,
+                    (crate::parity::LyricLegacyVerdict::NoContent, Ok(Ok(shadow))) => {
+                        let matched = !lyric_has_content(shadow);
+                        Some(if matched {
+                            crate::parity::ParityOutcome::ParityMatch
+                        } else {
+                            crate::parity::ParityOutcome::ParityMismatch
+                        })
+                    }
+                    (crate::parity::LyricLegacyVerdict::Content(fingerprint), Ok(Ok(shadow))) => {
+                        let matched = lyric_has_content(shadow)
+                            && crate::parity::lyric_fingerprints_equivalent(fingerprint, shadow);
+                        Some(if matched {
+                            crate::parity::ParityOutcome::ParityMatch
+                        } else {
+                            crate::parity::ParityOutcome::ParityMismatch
+                        })
+                    }
+                };
+                if let Some(outcome) = outcome {
+                    parity.record(crate::parity::ParityFace::Lyric, source, outcome);
+                }
+            });
+            let legacy_result = self.get_lyric(song).await;
+            let verdict = match &legacy_result {
+                Err(_) => crate::parity::LyricLegacyVerdict::Failed,
+                Ok(data) if lyric_has_content(data) => crate::parity::LyricLegacyVerdict::Content(
+                    crate::parity::lyric_fingerprint(data),
+                ),
+                Ok(_) => crate::parity::LyricLegacyVerdict::NoContent,
+            };
+            let _ = verdict_tx.send(verdict);
+            return (legacy_result, None);
+        }
+        // 替换模式：主请求走含 musid 槽位的链（get_lyric_inner），带回
+        // err 侧归因轨迹。
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            self.get_lyric_inner(song),
+        )
+        .await
+        {
+            Ok((result, empty_source)) => (result, empty_source),
+            Err(_) => (Err(FetchError::Network("获取歌词超时".to_string())), None),
+        }
     }
 
     /// 获取歌词，当前音源无内容时自动从同曲候选中补全。
@@ -1050,6 +1886,18 @@ impl SourceManager {
         };
 
         let mut found: Option<LyricData> = None;
+        // V1 双栈歌词主请求（musid-dli-adapter，opt-in）：probe 影子真双跑
+        // 对照计数（恒展示旧路径结果）；替换模式走含 musid 槽位的链并带回
+        // err 侧 legacy 归因轨迹。
+        #[cfg(feature = "musid-dli-adapter")]
+        let (musid_empty_source, found_in_main) = {
+            let (result, empty_source) = self.musid_lyric_main(song).await;
+            attempts(result, &mut found);
+            // err 侧归因只看主请求链（评审 P7）：跨源补全候选来自其它平台，
+            // 不归因到路由源平台。
+            (empty_source, found.is_some())
+        };
+        #[cfg(not(feature = "musid-dli-adapter"))]
         attempts(self.get_lyric(song).await, &mut found);
         if found.is_none() {
             // find_music 最多返回上百个候选，而单个 get_lyric 自带 20s 超时：串行
@@ -1089,6 +1937,18 @@ impl SourceManager {
         }
 
         if let Some(data) = found {
+            #[cfg(feature = "musid-dli-adapter")]
+            if found_in_main && let Some(source) = musid_empty_source {
+                // musid 槽位无产出（空/Err），旧路径主请求链（本地外挂→JS→
+                // 内置 fallback）给出了词 → MusidErrLegacyOk。跨源补全候选
+                // 的 rescue 不归因（评审 P7：另一平台的产物不算"同请求
+                // 成功"），该情形不计。
+                self.musid_record(
+                    crate::parity::ParityFace::Lyric,
+                    source,
+                    crate::parity::ParityOutcome::MusidErrLegacyOk,
+                );
+            }
             self.lyric_negative_cache
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -1096,6 +1956,16 @@ impl SourceManager {
             return Ok(data);
         }
 
+        #[cfg(feature = "musid-dli-adapter")]
+        if let Some(source) = musid_empty_source {
+            // musid 槽位无产出且整条链（含跨源补全）确认无词 → 双方皆无
+            // （无词结论是全链的，归因到路由源平台）。
+            self.musid_record(
+                crate::parity::ParityFace::Lyric,
+                source,
+                crate::parity::ParityOutcome::MusidErrLegacyErr,
+            );
+        }
         if let Some(error) = last_error {
             return Err(error);
         }
