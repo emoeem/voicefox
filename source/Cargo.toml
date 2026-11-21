@@ -46,7 +46,7 @@ musid-dli = { version = "=0.2.0", optional = true, default-features = false }
 # V4-s1（docs/MUSID_DLI_ADAPTER.md §14.1）：joox legacy 实现已删，适配面是
 # 唯一实现——joox 子 feature 进 default（--no-default-features 仍可构建零
 # musid 树，此时 joox 源整体缺席）。
-default = ["musid-dli-adapter-joox"]
+default = ["musid-dli-adapter-joox", "musid-dli-adapter-qianqian"]
 musid-dli-adapter = ["dep:musid-dli"]
 # 歌词往返映射变体：启用 musid-dli 的 lyrics-conversions（含 lyrics-helper，
 # default-features=false）。V1 起歌词面双栈运行时需要它（缺它时 musid 歌词

@@ -42,7 +42,6 @@ pub fn register_available(
         feature = "musid-dli-adapter-apple",
         feature = "musid-dli-adapter-fivesing",
         feature = "musid-dli-adapter-bilibili",
-        feature = "musid-dli-adapter-qianqian",
     )))]
     {
         let _ = manager;
@@ -82,12 +81,10 @@ pub fn register_available(
     register_built(manager, &mut registered, fivesing(transport));
     #[cfg(feature = "musid-dli-adapter-bilibili")]
     register_built(manager, &mut registered, bilibili(transport));
-    #[cfg(feature = "musid-dli-adapter-qianqian")]
-    register_built(manager, &mut registered, qianqian(transport));
 
-    // V4-s1（§14.1）：joox 不在此影子注册——legacy 已删，适配面由
-    // `SourceManager::new` 直接装配进主注册表（唯一实现路径），见 joox()
-    // 的装配分支。
+    // V4-s1/s2（§14.1/§14.3）：joox 与 qianqian 不在此影子注册——legacy
+    // 已删，适配面由 `SourceManager::new` 直接装配进主注册表（唯一实现路
+    // 径），见各自装配分支。
 
     registered
 }
@@ -194,13 +191,33 @@ fn bilibili(transport: &TransportInjection) -> Option<Arc<dyn MusicSource>> {
     )
 }
 
+/// qianqian（V4-s2 切片 2，docs/MUSID_DLI_ADAPTER.md §14.3）：legacy 实现
+/// 已删，本装配分支是 qianqian 的**唯一**实现路径——集合面（分类目录/
+/// 分类歌单/歌单搜索/详情/专辑/链接直解）与 search/url/lyrics 同实例装
+/// 配（musid `QianqianProvider` 按 trait 拆面：CollectionProvider/
+/// PlaylistProvider（categories+playlists+search_playlists）/AlbumProvider/
+/// LinkResolver 均为 M4 的 legacy 逐字移植，§12.7 行 10 的账面依据）。
+/// 子 feature 自本切片起进 lx-source default。
 #[cfg(feature = "musid-dli-adapter-qianqian")]
-fn qianqian(transport: &TransportInjection) -> Option<Arc<dyn MusicSource>> {
-    assemble!(
-        transport,
-        musid_dli::source_qianqian::QianqianProvider,
-        SourceId::Qianqian
+pub(crate) fn qianqian(transport: &TransportInjection) -> Option<Arc<dyn MusicSource>> {
+    let provider = Arc::new(
+        <musid_dli::source_qianqian::QianqianProvider as std::default::Default>::default(),
+    );
+    let adapter = AdapterMusicSource::new(
+        SourceId::Qianqian,
+        format!("{}（musid-dli）", provider.name()),
+        Some(provider.clone()),
+        Some(provider.clone()),
+        Some(provider.clone()),
+        transport.clone(),
     )
+    .with_collections(
+        provider.clone(),
+        provider.clone(),
+        provider.clone(),
+        provider,
+    );
+    Some(Arc::new(adapter))
 }
 
 /// joox（V4-s1 切片 1，docs/MUSID_DLI_ADAPTER.md §14.1）：legacy 实现已删，
@@ -845,9 +862,12 @@ mod qianqian_slice_tests {
             !capabilities.leaderboard,
             "榜单面双侧皆无（musid 无 ChartProvider，voicefox 无 leaderboard 位）"
         );
+        // V4-s2（§14.3）：集合面槽位装配后，面级 flags 如实翻真——
+        // musid PlaylistProvider 的 categories/playlists/search_playlists
+        // 均为 legacy 逐字移植（§14.0 账本行 2）。
         assert!(
-            !capabilities.playlist_search && !capabilities.playlist_categories,
-            "面级 flags 装配点未探测（§11.3），漂移即红"
+            capabilities.playlist_search && capabilities.playlist_categories,
+            "面级 flags 按源登记（search_playlists + categories 真实实现），漂移即红"
         );
         // supported_qualities：descriptor 声明上游档序 Low128/High320/Flac
         // （source_qianqian.rs:743-750）→ 适配层翻译产物
@@ -859,18 +879,22 @@ mod qianqian_slice_tests {
     }
 
     #[test]
-    fn qianqian_slice_is_registered_and_covers_the_migrated_ledger_row() {
+    fn qianqian_slice_is_primary_and_never_shadow_registered() {
+        // V4-s2（§14.3）：legacy qianqian 已删，适配面是唯一实现——manager
+        // 主注册表无条件装配（`SourceManager::new` 的 qianqian 分支），影
+        // 子注册不再有 qianqian 行：register_available 不装配它，账面/构建
+        // 脱节 warn 也显式跳过它。
         let manager = crate::manager::SourceManager::new(SourceId::Kw, &[SourceId::Qianqian]);
         let transport = TransportInjection::new(None, 15);
         let registered = register_available(&manager, &transport);
         assert!(
-            registered.contains(&SourceId::Qianqian),
-            "qianqian 子 feature 在：register_available 必须装配 qianqian 影子源"
+            !registered.contains(&SourceId::Qianqian),
+            "qianqian 是主注册表源（manager::new 直装），不走影子注册"
         );
         assert!(
             !crate::adapter_musid::unregistered_migrated_sources(&registered)
                 .contains(&SourceId::Qianqian),
-            "qianqian 已装配，不得出现在账面/构建脱节 warn 输入里"
+            "qianqian 主注册表装配，不得出现在账面/构建脱节 warn 输入里"
         );
     }
 }

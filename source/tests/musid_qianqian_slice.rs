@@ -25,8 +25,6 @@ use lx_core::model::song::SongInfo;
 use lx_core::model::source::{Quality, SourceId};
 use lx_core::traits::source::{FetchError, MusicSource};
 use lx_source::adapter_musid::{AdapterMusicSource, TransportInjection};
-use lx_source::manager::{MusidRouteConfig, SourceManager};
-use lx_source::parity::{ParityFace, ParityOutcome};
 use musid_dli::provider::{AuthCapability, MusicProvider, ProviderCapabilities};
 
 /// 真实 provider 按装配点同形拆三面（assemble! 的独立重放）。
@@ -40,17 +38,6 @@ fn real_adapter() -> AdapterMusicSource {
         Some(provider),
         TransportInjection::new(None, 15),
     )
-}
-
-fn count_of(manager: &SourceManager, face: ParityFace, outcome: ParityOutcome) -> u64 {
-    manager
-        .musid_parity_snapshot()
-        .into_iter()
-        .find(|record| {
-            record.face == face && record.source == SourceId::Qianqian && record.outcome == outcome
-        })
-        .map(|record| record.count)
-        .unwrap_or(0)
 }
 
 /// 真实 descriptor pin：注册表 qianqian 行（三面全 Migrated + 歌手/榜单/
@@ -128,63 +115,7 @@ async fn lyric_face_fails_offline_for_songs_without_a_tsid() {
     assert!(matches!(error, FetchError::NotFound), "实际: {error:?}");
 }
 
-/// manager 级双侧真实链路（零网络）：真实 legacy 源 + 真实 musid 影子源 +
-/// 注册表放行（三面 Migrated）→ 空 tsid 的歌在流地址面两栈同请求都失败
-/// ——musid 侧 tsid 空 → Error::NotFound（离线）、legacy 侧 url.rs:39-41
-/// 同键同 NotFound（离线）——计 MusidErrLegacyErr，legacy 错误原样向上。
-/// 替换模式的完整失败链一次走通（真实 provider 的搜索/歌词/resolve 成功
-/// 路径是网络面，由运行期 probe 对账覆盖，docs §12.3）。
-#[tokio::test]
-async fn manager_falls_back_to_the_real_legacy_source_when_musid_fails_offline() {
-    let mut manager = SourceManager::new(SourceId::Kw, &[SourceId::Qianqian]);
-    manager.register(Arc::new(lx_source::qianqian::QianqianSource::new()));
-    let registered = lx_source::musid_bootstrap::register_available(
-        &manager,
-        &TransportInjection::new(None, 15),
-    );
-    assert!(
-        registered.contains(&SourceId::Qianqian),
-        "真实装配分支编译并生效"
-    );
-    manager.set_musid_routes(MusidRouteConfig {
-        stack: true,
-        search: true,
-        song_url: true,
-        lyric: true,
-        parity_probe: false,
-    });
-
-    let song = SongInfo::new(
-        "".to_string(),
-        SourceId::Qianqian,
-        "等晴天".to_string(),
-        "周深".to_string(),
-    );
-    let error = manager
-        .get_song_url(&song, Quality::High320)
-        .await
-        .expect_err("两栈同请求都失败");
-    // legacy 侧 tsid 空 → FetchError::NotFound（qianqian/url.rs:39-41），
-    // 内置先行臂把它收敛为错误文本（NotFound 的 Display 是 "not found"），
-    // 统一出口再包 Other——既有旧代码行为逐字保持（manager.rs
-    // get_song_url_inner 的 builtin_error 聚合，fivesing/migu/kugou 切片
-    // 同款）。
-    let legacy_not_found = matches!(&error, FetchError::Other(text) if text == "not found");
-    assert!(
-        legacy_not_found,
-        "用户拿到 legacy 失败文本（musid 的 NotFound 只进计数）: {error:?}"
-    );
-    assert_eq!(
-        count_of(
-            &manager,
-            ParityFace::SongUrl,
-            ParityOutcome::MusidErrLegacyErr
-        ),
-        1,
-        "两栈同请求都失败 → MusidErrLegacyErr（§11.5 流地址面替换模式三态）"
-    );
-    assert_eq!(
-        count_of(&manager, ParityFace::SongUrl, ParityOutcome::MusidOk),
-        0
-    );
-}
+// V4-s2（§14.3）：legacy qianqian 已删，manager 级「musid 失败 → legacy
+// 离线同键失败」双侧链路用例随源注销——qianqian 的失败语义由上方 adapter
+// 级离线用例承载（musid NotFound 是唯一失败形态），「内置先行臂收敛
+// NotFound 文本」的 manager 行为对 joox/qianqian 不再可达（两源恒适配面）。

@@ -86,8 +86,9 @@ jobs:
             exit 1
           fi
           enabled_sources=$(cargo tree -p lx-source -e features -i musid-dli | grep -oE 'musid-dli feature "source-[a-z-]+"' | sort -u)
-          if [ "$enabled_sources" != 'musid-dli feature "source-joox"' ]; then
-            echo "default tree must enable only musid-dli/source-joox, got: $enabled_sources" >&2
+          expected=$(printf 'musid-dli feature "source-joox"\nmusid-dli feature "source-qianqian"')
+          if [ "$enabled_sources" != "$expected" ]; then
+            echo "default tree must enable only musid-dli/source-joox + source-qianqian, got: $enabled_sources" >&2
             exit 1
           fi
           if cargo tree -p lx-source --no-default-features -e normal | grep -q musid-dli; then

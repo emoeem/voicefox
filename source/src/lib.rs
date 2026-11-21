@@ -12,7 +12,6 @@ pub mod jamendo;
 pub mod kg;
 pub mod kw;
 pub mod mg;
-pub mod qianqian;
 pub mod soda;
 pub mod tx;
 pub mod wy;

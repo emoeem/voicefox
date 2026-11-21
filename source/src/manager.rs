@@ -25,7 +25,6 @@ use crate::kg::KgSource;
 use crate::kw::KwSource;
 use crate::local::LocalSource;
 use crate::mg::MgSource;
-use crate::qianqian::QianqianSource;
 use crate::soda::SodaSource;
 use crate::tx::TxSource;
 use crate::wy::WySource;
@@ -225,7 +224,15 @@ impl SourceManager {
         manager.register(Arc::new(MgSource::new()));
         manager.register(Arc::new(TxSource::new()));
         manager.register(Arc::new(WySource::new()));
-        manager.register(Arc::new(QianqianSource::new()));
+        // V4-s2（docs/MUSID_DLI_ADAPTER.md §14.3）起 qianqian 的 legacy 实
+        // 现已删，唯一实现是 musid 适配面：主注册表直装（不走影子 map）。
+        // TransportInjection 仅诊断登记（§4 口径：0.2.0 不注入）。
+        #[cfg(feature = "musid-dli-adapter-qianqian")]
+        if let Some(qianqian) = crate::musid_bootstrap::qianqian(
+            &crate::adapter_musid::TransportInjection::new(None, 15),
+        ) {
+            manager.register(qianqian);
+        }
         // V4-s1（docs/MUSID_DLI_ADAPTER.md §14.1）起 joox 的 legacy 实现已
         // 删，唯一实现是 musid 适配面：主注册表直装（不走影子 map）。
         // TransportInjection 仅诊断登记（§4 口径：0.2.0 不注入）。
@@ -2304,18 +2311,25 @@ mod tests {
         assert!(leaderboards.contains(&SourceId::Bili));
         assert!(!leaderboards.contains(&SourceId::Local));
 
-        // 分类入口只对有实现的音源开放。
+        // 分类入口只对有实现的音源开放。V4-s2（§14.3）：qianqian 的 legacy
+        // 已删——分类面由 musid 适配面承担（default 特性在）；零 musid 树
+        // （--no-default-features）下 qianqian 源整体缺席，不进本列。
+        #[cfg(feature = "musid-dli-adapter-qianqian")]
+        let with_qianqian = vec![SourceId::Qianqian];
+        #[cfg(not(feature = "musid-dli-adapter-qianqian"))]
+        let with_qianqian: Vec<SourceId> = vec![];
+        let mut expected_categories = vec![
+            SourceId::Kw,
+            SourceId::Kg,
+            SourceId::Tx,
+            SourceId::Wy,
+            SourceId::Mg,
+        ];
+        expected_categories.extend(with_qianqian);
+        expected_categories.push(SourceId::Apple);
         assert_eq!(
             manager.sources_supporting(|caps| caps.playlist_categories),
-            vec![
-                SourceId::Kw,
-                SourceId::Kg,
-                SourceId::Tx,
-                SourceId::Wy,
-                SourceId::Mg,
-                SourceId::Qianqian,
-                SourceId::Apple
-            ]
+            expected_categories
         );
     }
 

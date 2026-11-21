@@ -1766,16 +1766,18 @@ musid `read_cover(EmbeddedFirst)` 解析回落——内嵌（缓存化）优先�
 | 源 | legacy 用户可见面 | musid 覆盖 | 缺口 | 可删 |
 |---|---|---|---|---|
 | joox | search/url/lyric/cover + search_playlists/playlist_detail/album_songs/parse_link | **8/8 全覆盖**（M4 逐字移植：CollectionProvider/PlaylistProvider/AlbumProvider/LinkResolver，fixture 钉住） | 无 | **已删（14.1）** |
-| qianqian | 上 8 面 + get_playlist_categories/get_playlists（浏览面） | 9/10（categories/playlists 缺——musid PlaylistProvider 有 search_playlists/detail/album，无 browse；**LinkResolver 无**） | parse_link + 浏览面 | 待 musid 补 |
+| qianqian | 上 8 面 + get_playlist_categories/get_playlists（浏览面） | **10/10 全覆盖**（M4 逐字移植：CollectionProvider/PlaylistProvider（categories+playlists+search_playlists）/AlbumProvider/LinkResolver，§14.0 初版误记 parse_link 缺失——musid 状态日志与 source_qianqian.rs:1015 的 LinkResolver impl 修正） | 无 | **已删（14.3）** |
 | wy/tx/kg/kw/mg/bili | 集合面 + 登录（kg login.rs / bili SESSDATA / tx 个人歌单 / mg SMS / kw VIP） | 数据面 3/4 已迁（V2），集合面/登录缺 | 同左 | 待 musid 补集合面与登录位 |
 | jamendo/fivesing/apple | 集合面（search_playlists/playlist_detail/album_songs/parse_link） | 数据面 3/4 已迁，集合面缺（musid 容器端点匿名挂起） | 集合面 | 待 musid 补 |
 | soda | 全部四面 | musid 无此源 | 全部 | 不迁（voicefox-only，reg-soda 登记） |
 | local | 本地库全集 | musid local 已对账（V3 §13.1），主注册表留 voicefox（schema/状态/UI 属 voicefox，§13.3 边界） | — | 不迁 |
 
-结论：**joox 是唯一满足「全用户可见面覆盖」的源**；其余源的删除全部
-卡在 musid-dli 0.2.0 的集合面/登录缺口上（musid-dli 侧补齐属于上游
-变更，不在本仓 V4 范围内）。qianqian 的 parse_link 缺口最小（其余
-9/10 已覆盖），是下一个可解锁的删除候选。
+结论：**joox 与 qianqian 满足「全用户可见面覆盖」**（均已删，见
+§14.1/§14.3）；其余源的删除卡在 musid-dli 0.2.0 的集合面/登录缺口上
+（musid-dli 侧补齐属于上游变更，不在本仓 V4 范围内）。kw/mg 的 musid
+集合 trait impl 齐全但**逐面真实性未核验**（可能有 Unsupported 桩——
+fivesing 的 playlist_tracks 已验证是桩），删除前必须逐面核验；wy/tx/
+kg/bili 另有登录/个人歌单 legacy 独有面。
 
 ### 14.1 切片 1：joox legacy 实现删除（musid-dli-adapter-joox 升 default）
 
@@ -1882,3 +1884,68 @@ parity 计数对 joox 静默（迁移监控语义已随 legacy 死亡终结，�
   msystem-mingw64` 显式抑制并延后；真实迁移需重验 import table 检查与
   三平台打包（诚实登记：这是抑制而非修复，延后理由如上）。
 - 验证：提交后的 CI run 全绿（run id 见提交说明与 F0 报告）。
+
+### 14.3 切片 2：qianqian legacy 实现删除（musid-dli-adapter-qianqian 升 default）
+
+**删除**：`source/src/qianqian/`（mod.rs + song.rs + url.rs + lyric.rs +
+playlist.rs + album.rs + parse.rs + crypto.rs，legacy 10 面实现）整体删
+除；`manager.rs` 的 `QianqianSource` 注册与 import、`lib.rs` 的
+`pub mod qianqian` 随之注销。
+
+**覆盖核验（删除前提，§14.0 行 2）**：musid-dli 0.2.0
+`QianqianProvider` 十面全覆盖——TrackSearch/StreamResolver/LyricsProvider
+（V2 切片 10 账）+ CollectionProvider/PlaylistProvider（categories :877、
+playlists :923、search_playlists、user_playlists Unsupported 与 legacy
+无个人歌单一致）/AlbumProvider/LinkResolver（:1015，song/songlist|
+tracklist|playlist/album/albumAssetCode=/albumid=/bare-id 路由为 legacy
+parse.rs 逐字移植）。§14.0 初版误记 parse_link 缺失（grep 漏
+LinkResolver impl），以 musid 状态日志 + 源码修正。
+
+**主注册表直装**：`SourceManager::new` 以
+`crate::musid_bootstrap::qianqian(&TransportInjection::new(None, 15))`
+（feature 门控）装配进 `self.sources`——qianqian 的唯一实现路径。
+
+**adapter 集合面接线**：四槽路由实现合并为
+`cfg(any(musid-dli-adapter-joox, musid-dli-adapter-qianqian))` 的通用块
+（search_playlists/get_playlist_detail/get_album_songs/parse_link，错误
+文案去源名）；qianqian 专属浏览面 `get_playlist_categories`/
+`get_playlists`（cfg qianqian：musid categories 带合成「全部」lead、
+playlists 走 subCateId 过滤、pageSize 30 与 legacy 同值硬编码）。
+`playlist_category_to_lx` 为既有 V0 转换（provider 必填语义不变）。
+
+**能力位**：qianqian flags = has_search_playlists + has_categories 为
+true（musid PlaylistProvider 两面真实实现）；playlists/album/link_parse
+位来自 descriptor（本就 true）。与 legacy 声明逐位一致。
+
+**feature flip**：default 扩为
+`["musid-dli-adapter-joox", "musid-dli-adapter-qianqian"]`。
+
+**路由语义**：与 joox 同——影子注册无 qianqian 行，四面回落主注册表 =
+适配面自身；parity 计数静默（无对账对象）；账本 warn 显式跳过。
+
+**测试账**：
+- `qianqian_search_parity_normalized_equivalent`（crate::qianqian::song::
+  parse_song 双侧对账）随源注销——musid 侧形状由 track_qianqian.json
+  fixture 映射用例与 musid 仓 tests/fixtures/qianqian 的 provider 测试
+  继续钉住；
+- slice 测试的 manager 级「musid 失败 → legacy 同键失败」双侧链路用例
+  随源注销（qianqian 失败语义由 adapter 级离线用例承载）；
+- manager 的 `builtin_sources_declare_their_capabilities` 分类入口清单
+  改 feature 感知（零 musid 树下 qianqian 缺席）；
+- bootstrap 切片测试改 primary 口径 + flags pin 翻真（playlist_search/
+  playlist_categories）；
+- 账本测试两处 warn 输入摘 Qianqian（十源 → 九源口径）。
+
+**门禁实跑（2026-11-22，本会话）**：
+- `cargo test -p lx-source --lib`（default，双适配源）：
+  **271 通过 / 0 失败 / 2 忽略**（284 − legacy qianqian 自带单测 +
+  qianqian 适配面测试净变化）；
+- `cargo test -p lx-source --no-default-features --lib`：
+  **199 通过 / 0 失败 / 2 忽略**（零 musid 边界，213 − legacy qianqian
+  库测）；
+- `cargo test -p lx-source --features musid-dli-adapter-qianqian --test
+  musid_qianqian_slice`：**2 通过 / 0 失败**；
+- `cargo test -p lx-source --test musid_dual_stack`：**30 通过 / 0 失败**；
+- `cargo clippy -p lx-source --all-targets -- -D warnings`（default）与
+  `--features musid-dli-adapter --all-targets`：均 0 错误；
+- `cargo fmt --all -- --check`：clean。

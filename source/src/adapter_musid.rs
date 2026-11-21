@@ -1025,10 +1025,10 @@ impl MusicSource for AdapterMusicSource {
     }
 
     /// 诊断对照用能力位（不进 `SourceManager::capabilities` 聚合）。
-    /// V4-s1（§14.1）起面级 flags 按源登记：joox 的 search_playlists 在
-    /// musid `PlaylistProvider` 上有真实实现（legacy 逐字移植），装配后
-    /// playlist_search 位如实为 true（album/link_parse 位来自 provider
-    /// descriptor，本就为 true）。
+    /// V4-s1/s2（§14.1/§14.3）起面级 flags 按源登记：joox/qianqian 的
+    /// search_playlists 与 qianqian 的 categories 在 musid provider 上有
+    /// 真实实现（legacy 逐字移植），装配后相应位如实为 true（playlists/
+    /// album/link_parse 位来自 provider descriptor）。
     fn capabilities(&self) -> SourceCapabilities {
         let Some(search) = &self.search else {
             return SourceCapabilities::default();
@@ -1036,6 +1036,10 @@ impl MusicSource for AdapterMusicSource {
         let mut flags = ProviderFaceFlags::default();
         if self.source == SourceId::Joox {
             flags.has_search_playlists = true;
+        }
+        if self.source == SourceId::Qianqian {
+            flags.has_search_playlists = true;
+            flags.has_categories = true;
         }
         capabilities_from_provider(search.capabilities(), search.auth_capability(), flags)
     }
@@ -1169,16 +1173,23 @@ impl MusicSource for AdapterMusicSource {
     }
 
     // ------------------------------------------------------------------
-    // V4-s1 集合面（docs/MUSID_DLI_ADAPTER.md §14.1，joox = 切片 1）：
-    // musid CollectionProvider/PlaylistProvider/AlbumProvider/LinkResolver
-    // 的四槽路由与模型转换。legacy 侧逐字移植对账见 musid-dli
-    // source_joox.rs 的 M4 fixture 测试与 §12.7 的 §12.3 归一对照。
+    // V4-s1/s2 集合面（docs/MUSID_DLI_ADAPTER.md §14.1/§14.3；joox = 切片
+    // 1、qianqian = 切片 2）：musid CollectionProvider/PlaylistProvider/
+    // AlbumProvider/LinkResolver 的四槽路由与模型转换，cfg(any(joox,
+    // qianqian)) 门控——两源的 musid provider 均为 M4 的 legacy 逐字移植
+    // （fixture 钉住），槽位未装配时走「不支持」错误（trait 默认语义）。
+    // qianqian 另加浏览面 categories/playlists（仅其 musid provider 有真
+    // 实实现）。
     // ------------------------------------------------------------------
 
     /// 关键词歌单搜索（musid `PlaylistProvider::search_playlists`；joox 的
     /// 同名 musid 实现是 legacy 的逐字移植——search type=0 读
-    /// section_list[].editor_playlist，空结果恒 Ok(vec![]) 不报错）。
-    #[cfg(feature = "musid-dli-adapter-joox")]
+    /// section_list[].editor_playlist，空结果恒 Ok(vec![]) 不报错；
+    /// qianqian 同口径）。
+    #[cfg(any(
+        feature = "musid-dli-adapter-joox",
+        feature = "musid-dli-adapter-qianqian"
+    ))]
     async fn search_playlists(
         &self,
         keyword: &str,
@@ -1199,7 +1210,10 @@ impl MusicSource for AdapterMusicSource {
 
     /// 歌单曲目（musid `CollectionProvider::playlist_tracks`；空曲目归
     /// NotFound 与 legacy `get_playlist_detail` 的空守卫同口径）。
-    #[cfg(feature = "musid-dli-adapter-joox")]
+    #[cfg(any(
+        feature = "musid-dli-adapter-joox",
+        feature = "musid-dli-adapter-qianqian"
+    ))]
     async fn get_playlist_detail(&self, id: &str, _page: u32) -> Result<Vec<SongInfo>, FetchError> {
         let Some(collection) = &self.collection else {
             return Err(FetchError::Other("该音源不支持歌单详情".to_string()));
@@ -1220,7 +1234,10 @@ impl MusicSource for AdapterMusicSource {
 
     /// 专辑曲目（musid `AlbumProvider::album_tracks`；OpenJOOX 专辑是特殊
     /// 歌单，与 legacy 同一接口）。
-    #[cfg(feature = "musid-dli-adapter-joox")]
+    #[cfg(any(
+        feature = "musid-dli-adapter-joox",
+        feature = "musid-dli-adapter-qianqian"
+    ))]
     async fn get_album_songs(
         &self,
         album: &lx_core::model::playlist::Album,
@@ -1250,17 +1267,19 @@ impl MusicSource for AdapterMusicSource {
     /// 三分支与 legacy parse_link 同形——playlist 分支的曲目取
     /// `playlist_tracks`，album 分支走 `album_tracks`，与 legacy 的
     /// 「详情 + 曲目一次取齐」产物形状一致）。
-    #[cfg(feature = "musid-dli-adapter-joox")]
+    #[cfg(any(
+        feature = "musid-dli-adapter-joox",
+        feature = "musid-dli-adapter-qianqian"
+    ))]
     async fn parse_link(&self, link: &str) -> Result<ParsedLink, FetchError> {
         let Some(links) = &self.links else {
             return Err(FetchError::Other("该音源不支持链接直解".to_string()));
         };
         match links.resolve_link(link).await {
-            Ok(musid_dli::provider::ResolvedLink::Track(track)) => {
-                Ok(ParsedLink::Song(Box::new(track_to_song(&track).map_err(
-                    |error| FetchError::Other(format!("joox 链接曲目映射失败: {error}")),
-                )?)))
-            }
+            Ok(musid_dli::provider::ResolvedLink::Track(track)) => Ok(ParsedLink::Song(Box::new(
+                track_to_song(&track)
+                    .map_err(|error| FetchError::Other(format!("链接曲目映射失败: {error}")))?,
+            ))),
             Ok(musid_dli::provider::ResolvedLink::Playlist(playlist)) => {
                 let songs = self
                     .playlist_songs_of(&playlist)
@@ -1286,17 +1305,59 @@ impl MusicSource for AdapterMusicSource {
                 })
             }
             Ok(other) => Err(FetchError::Other(format!(
-                "joox 链接指向不支持的资源形态: {other:?}"
+                "链接指向不支持的资源形态: {other:?}"
             ))),
             Err(error) => Err(fetch_error_from_error(&error)),
         }
+    }
+
+    /// 歌单分类目录（V4-s2，§14.3；musid `PlaylistProvider::categories`，
+    /// qianqian 专属——「全部」lead + 分组目录为 legacy 逐字移植；
+    /// `playlist_category_to_lx` 为既有 V0 转换，provider 必填语义不变）。
+    #[cfg(feature = "musid-dli-adapter-qianqian")]
+    async fn get_playlist_categories(&self) -> Result<Vec<PlaylistCategory>, FetchError> {
+        let Some(playlists) = &self.playlists else {
+            return Err(FetchError::Other("该音源不支持歌单分类".to_string()));
+        };
+        let categories = playlists
+            .categories()
+            .await
+            .map_err(|error| fetch_error_from_error(&error))?;
+        categories
+            .iter()
+            .map(|category| {
+                playlist_category_to_lx(category)
+                    .map_err(|error| FetchError::Other(error.to_string()))
+            })
+            .collect()
+    }
+
+    /// 分类歌单列表（V4-s2，§14.3；musid `PlaylistProvider::playlists`；
+    /// tag_id = subCateId 空值表示全部，pageSize 30 与 legacy 同值——musid
+    /// 侧逐字移植硬编码）。
+    #[cfg(feature = "musid-dli-adapter-qianqian")]
+    async fn get_playlists(&self, tag_id: &str, page: u32) -> Result<Vec<Playlist>, FetchError> {
+        let Some(playlists) = &self.playlists else {
+            return Err(FetchError::Other("该音源不支持分类歌单".to_string()));
+        };
+        let items = playlists
+            .playlists(tag_id, page, 30)
+            .await
+            .map_err(|error| fetch_error_from_error(&error))?;
+        items
+            .iter()
+            .map(|item| playlist_to_lx(item).map_err(|error| FetchError::Other(error.to_string())))
+            .collect()
     }
 }
 
 impl AdapterMusicSource {
     /// 歌单实体的曲目：实体自带 tracks 用之，否则按 id 二次取
     /// （musid `CollectionProvider::playlist_tracks`）。
-    #[cfg(feature = "musid-dli-adapter-joox")]
+    #[cfg(any(
+        feature = "musid-dli-adapter-joox",
+        feature = "musid-dli-adapter-qianqian"
+    ))]
     async fn playlist_songs_of(
         &self,
         playlist: &MdPlaylist,
@@ -1322,7 +1383,10 @@ impl AdapterMusicSource {
 
     /// 专辑实体的曲目：musid `Album` 不携带 tracks，按 id 取
     /// （musid `AlbumProvider::album_tracks`）。
-    #[cfg(feature = "musid-dli-adapter-joox")]
+    #[cfg(any(
+        feature = "musid-dli-adapter-joox",
+        feature = "musid-dli-adapter-qianqian"
+    ))]
     async fn album_songs_of(&self, album: &MdAlbum) -> Result<Vec<SongInfo>, musid_dli::Error> {
         let Some(albums) = &self.albums else {
             return Ok(vec![]);
@@ -1777,9 +1841,12 @@ pub fn unregistered_migrated_sources(registered: &[SourceId]) -> Vec<SourceId> {
     migrated_route_sources()
         .into_iter()
         .filter(|source| {
-            // V4-s1（§14.1）：joox legacy 已删，适配面是**唯一**实现——
-            // manager 主注册表无条件装配（不走影子注册），故不进本 warn。
-            !registered.contains(source) && *source != SourceId::Joox
+            // V4-s1/s2（§14.1/§14.3）：joox 与 qianqian 的 legacy 已删，适
+            // 配面是**唯一**实现——manager 主注册表无条件装配（不走影子注
+            // 册），故不进本 warn。
+            !registered.contains(source)
+                && *source != SourceId::Joox
+                && *source != SourceId::Qianqian
         })
         .collect()
 }
@@ -3523,10 +3590,9 @@ mod tests {
                     SourceId::Kg,
                     SourceId::Tx,
                     SourceId::Wy,
-                    SourceId::Qianqian,
                 ],
-                "空注册列表 = 全部 Migrated 子 feature 未启用，warn 输入含十源\
-                 （V4-s1 起 joox 不在其中：legacy 已删，适配面主注册表直装，§14.1）"
+                "空注册列表 = 全部 Migrated 子 feature 未启用，warn 输入含九源\
+                 （V4-s1/s2 起 joox 与 qianqian 不在其中：legacy 已删，适配面主注册表直装，§14.1/§14.3）"
             );
             assert_eq!(
                 unregistered_migrated_sources(&[
@@ -3558,10 +3624,9 @@ mod tests {
                     SourceId::Kg,
                     SourceId::Tx,
                     SourceId::Wy,
-                    SourceId::Qianqian,
                 ],
-                "只装配 jamendo 时其余九个 Migrated 源是账面/构建脱节点\
-                 （V4-s1 起 joox 恒主注册表装配，恒不进 warn）"
+                "只装配 jamendo 时其余八个 Migrated 源是账面/构建脱节点\
+                 （V4-s1/s2 起 joox 与 qianqian 恒主注册表装配，恒不进 warn）"
             );
         }
 
@@ -5086,70 +5151,12 @@ mod tests {
             assert_eq!(rebuilt.extra, track.extra);
         }
 
-        #[test]
-        fn qianqian_search_parity_normalized_equivalent() {
-            // legacy 侧用**真实的** `crate::qianqian::song::parse_song`
-            // （qianqian/song.rs:172，pub(super) → pub(crate) 扩宽，函数体
-            // 零改动，登记见 docs §12.7）从平台原始响应形状组出 SongInfo
-            // ——原始 item 与 musid-dli tests/fixtures/qianqian/
-            // search_songs.json data.typeTrack[0] 同形（state/errno=22000
-            // envelope、artist[] 带 artistCode/pic、title/duration(秒)/
-            // assetId）。musid 侧：track_to_song（voicefox 侧 wire 形状
-            // fixture）。任一侧 parse 改字段必红。
-            let platform_item = json!({
-                "TSID": "T10065400429",
-                "assetId": "T10065400429",
-                "title": "等晴天",
-                "artist": [{ "artistCode": "A10273267", "name": "周深",
-                             "pic": "https://img01.dmhmusic.com/0206/M00/73/60/ChR461tNCq6ATOwZAAG214sWjCA734.jpg" }],
-                "pic": "https://img01.dmhmusic.com/0513/M00/99/81/ChAKFGnMhpKAdxeRAA8QjCMTD1I496.jpg",
-                "duration": 268,
-                "albumTitle": "等晴天",
-                "albumAssetCode": "P10004348672",
-                "rateFileInfo": {
-                    "3000": { "size": 57635329, "format": "flac" },
-                    "320": { "size": 10759932, "format": "mp3" },
-                    "64": { "size": 2151918, "format": "aac" },
-                    "128": { "size": 4304124, "format": "mp3" }
-                }
-            });
-            let legacy = crate::qianqian::song::parse_song(&platform_item)
-                .expect("真实 parse_song 必须能解析捕获形状");
-            assert_eq!(legacy.id, "T10065400429");
-            assert_eq!(legacy.source, SourceId::Qianqian);
-            assert_eq!(legacy.name, "等晴天");
-            assert_eq!(legacy.singer, "周深");
-            assert_eq!(legacy.album_name, "等晴天");
-            assert_eq!(legacy.album_id, "P10004348672");
-            assert_eq!(legacy.duration, Duration::from_secs(268));
-            assert_eq!(
-                legacy.qualities,
-                [Quality::Low128, Quality::High320, Quality::Flac]
-                    .into_iter()
-                    .collect(),
-                "rateFileInfo size>0 → 3000→Flac、320→High320、128|64→Low128"
-            );
-
-            let musid =
-                track_to_song(&qianqian_track_fixture()).expect("qianqian provider must map");
-            // qianqian 搜索面 qualities 完全对齐（两侧 rate 表同形）——
-            // 归一对照可全等命中。
-            assert!(
-                crate::parity::songs_equivalent(&legacy, &musid),
-                "归一对照命中（qualities 集合相等）"
-            );
-            assert!(
-                crate::parity::compare_search_items(
-                    std::slice::from_ref(&legacy),
-                    std::slice::from_ref(&musid)
-                ),
-                "搜索产物集对照命中"
-            );
-
-            let mut different = legacy;
-            different.singer = "告五人、藤冈靛".to_string();
-            assert!(!crate::parity::songs_equivalent(&different, &musid));
-        }
+        // V4-s2（§14.3）：legacy qianqian 已删，`qianqian_search_parity_
+        // normalized_equivalent`（crate::qianqian::song::parse_song 双侧
+        // 对账）随源注销——musid 侧形状由 track_qianqian.json fixture 映射
+        // 用例与 musid 仓 tests/fixtures/qianqian 的 provider 测试继续钉住
+        // （rateFileInfo 3000/320/128|64 折档两侧同表的对账证据在 musid
+        // 仓 source_qianqian.rs 的 fixture 批里）。
 
         // --- V2 切片 11（joox，docs §12.4）：三面全 Migrated ---
 
