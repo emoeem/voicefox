@@ -9,7 +9,6 @@ pub mod sync;
 
 pub mod fivesing;
 pub mod jamendo;
-pub mod joox;
 pub mod kg;
 pub mod kw;
 pub mod mg;

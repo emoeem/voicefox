@@ -21,7 +21,6 @@ use crate::apple::AppleSource;
 use crate::bili::BiliSource;
 use crate::fivesing::FivesingSource;
 use crate::jamendo::JamendoSource;
-use crate::joox::JooxSource;
 use crate::kg::KgSource;
 use crate::kw::KwSource;
 use crate::local::LocalSource;
@@ -227,7 +226,15 @@ impl SourceManager {
         manager.register(Arc::new(TxSource::new()));
         manager.register(Arc::new(WySource::new()));
         manager.register(Arc::new(QianqianSource::new()));
-        manager.register(Arc::new(JooxSource::new()));
+        // V4-s1（docs/MUSID_DLI_ADAPTER.md §14.1）起 joox 的 legacy 实现已
+        // 删，唯一实现是 musid 适配面：主注册表直装（不走影子 map）。
+        // TransportInjection 仅诊断登记（§4 口径：0.2.0 不注入）。
+        #[cfg(feature = "musid-dli-adapter-joox")]
+        if let Some(joox) =
+            crate::musid_bootstrap::joox(&crate::adapter_musid::TransportInjection::new(None, 15))
+        {
+            manager.register(joox);
+        }
         manager.register(Arc::new(FivesingSource::new()));
         manager.register(Arc::new(JamendoSource::new()));
         manager.register(Arc::new(AppleSource::new()));

@@ -31,6 +31,7 @@ pub fn register_available(
     transport: &TransportInjection,
 ) -> Vec<SourceId> {
     // 子 feature 全关：装配体为空，参数按 cfg 静默（类型引用保住 import）。
+    // V4-s1 起 joox 不在本列——它由 `SourceManager::new` 直装主注册表。
     #[cfg(not(any(
         feature = "musid-dli-adapter-netease",
         feature = "musid-dli-adapter-qqmusic",
@@ -42,7 +43,6 @@ pub fn register_available(
         feature = "musid-dli-adapter-fivesing",
         feature = "musid-dli-adapter-bilibili",
         feature = "musid-dli-adapter-qianqian",
-        feature = "musid-dli-adapter-joox",
     )))]
     {
         let _ = manager;
@@ -84,8 +84,10 @@ pub fn register_available(
     register_built(manager, &mut registered, bilibili(transport));
     #[cfg(feature = "musid-dli-adapter-qianqian")]
     register_built(manager, &mut registered, qianqian(transport));
-    #[cfg(feature = "musid-dli-adapter-joox")]
-    register_built(manager, &mut registered, joox(transport));
+
+    // V4-s1（§14.1）：joox 不在此影子注册——legacy 已删，适配面由
+    // `SourceManager::new` 直接装配进主注册表（唯一实现路径），见 joox()
+    // 的装配分支。
 
     registered
 }
@@ -201,13 +203,31 @@ fn qianqian(transport: &TransportInjection) -> Option<Arc<dyn MusicSource>> {
     )
 }
 
+/// joox（V4-s1 切片 1，docs/MUSID_DLI_ADAPTER.md §14.1）：legacy 实现已删，
+/// 本装配分支是 joox 的**唯一**实现路径——集合面（歌单/专辑/链接直解）
+/// 与 search/url/lyrics 四槽同实例装配（musid `JooxProvider` 按 trait 拆
+/// 面：CollectionProvider/PlaylistProvider/AlbumProvider/LinkResolver 均
+/// 为 M4 的 legacy 逐字移植，§12.7 行 11 的账面依据）。子 feature 自本
+/// 切片起进 lx-source default。
 #[cfg(feature = "musid-dli-adapter-joox")]
-fn joox(transport: &TransportInjection) -> Option<Arc<dyn MusicSource>> {
-    assemble!(
-        transport,
-        musid_dli::source_joox::JooxProvider,
-        SourceId::Joox
+pub(crate) fn joox(transport: &TransportInjection) -> Option<Arc<dyn MusicSource>> {
+    let provider =
+        Arc::new(<musid_dli::source_joox::JooxProvider as std::default::Default>::default());
+    let adapter = AdapterMusicSource::new(
+        SourceId::Joox,
+        format!("{}（musid-dli）", provider.name()),
+        Some(provider.clone()),
+        Some(provider.clone()),
+        Some(provider.clone()),
+        transport.clone(),
     )
+    .with_collections(
+        provider.clone(),
+        provider.clone(),
+        provider.clone(),
+        provider,
+    );
+    Some(Arc::new(adapter))
 }
 
 // V2 切片 1（jamendo，docs/MUSID_DLI_ADAPTER.md §12）：真实 provider 的
@@ -898,18 +918,22 @@ mod joox_slice_tests {
     }
 
     #[test]
-    fn joox_slice_is_registered_and_covers_the_migrated_ledger_row() {
+    fn joox_slice_is_primary_and_never_shadow_registered() {
+        // V4-s1（§14.1）：legacy joox 已删，适配面是唯一实现——manager 主
+        // 注册表无条件装配（`SourceManager::new` 的 joox 分支），影子注册
+        // 不再有 joox 行：register_available 不装配它，账面/构建脱节 warn
+        // 也显式跳过它。
         let manager = crate::manager::SourceManager::new(SourceId::Kw, &[SourceId::Joox]);
         let transport = TransportInjection::new(None, 15);
         let registered = register_available(&manager, &transport);
         assert!(
-            registered.contains(&SourceId::Joox),
-            "joox 子 feature 在：register_available 必须装配 joox 影子源"
+            !registered.contains(&SourceId::Joox),
+            "joox 是主注册表源（manager::new 直装），不走影子注册"
         );
         assert!(
             !crate::adapter_musid::unregistered_migrated_sources(&registered)
                 .contains(&SourceId::Joox),
-            "joox 已装配，不得出现在账面/构建脱节 warn 输入里"
+            "joox 主注册表装配，不得出现在账面/构建脱节 warn 输入里"
         );
     }
 }

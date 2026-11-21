@@ -46,7 +46,7 @@ use lx_core::model::playlist::{Album, Artist, Playlist, PlaylistCategory};
 use lx_core::model::song::SongInfo;
 use lx_core::model::source::{AudioProperties, Quality, SourceId};
 use lx_core::traits::source::{
-    FetchError, MusicSource, SearchError, SearchResult, SongUrl, SourceCapabilities,
+    FetchError, MusicSource, ParsedLink, SearchError, SearchResult, SongUrl, SourceCapabilities,
 };
 use musid_dli::models::{
     Album as MdAlbum, Artist as MdArtist, AudioFormat, AudioSpec, ByteRange, Chart, ChartEntry,
@@ -55,12 +55,14 @@ use musid_dli::models::{
     Track, TrackId, provider_to_voicefox_source, voicefox_source_to_provider,
 };
 use musid_dli::provider::{
-    AuthCapability, AuthState, ProviderCapabilities, QrLoginKind, QrLoginPoll, QrLoginSession,
-    QrLoginStatus, ResolveOptions, SearchPage, SearchQuery,
+    AlbumProvider as MdAlbumProvider, CollectionProvider as MdCollectionProvider,
+    LinkResolver as MdLinkResolver, LyricsProvider as MdLyricsProvider,
+    PlaylistProvider as MdPlaylistProvider, StreamResolver as MdStreamResolver,
+    TrackSearch as MdTrackSearch,
 };
 use musid_dli::provider::{
-    LyricsProvider as MdLyricsProvider, StreamResolver as MdStreamResolver,
-    TrackSearch as MdTrackSearch,
+    AuthCapability, AuthState, ProviderCapabilities, QrLoginKind, QrLoginPoll, QrLoginSession,
+    QrLoginStatus, ResolveOptions, SearchPage, SearchQuery,
 };
 use musid_dli::{Error as MdError, ProviderSession};
 
@@ -215,6 +217,28 @@ pub fn singer_to_artists(singer: &str) -> Vec<String> {
         .filter(|name| !name.is_empty())
         .map(str::to_string)
         .collect()
+}
+
+/// musid-dli `Album` 到 voicefox `Playlist` 形（V4-s1 parse_link 的 album
+/// 分支与 legacy 同构：专辑以歌单形状进详情页）。源经 `Album.id.provider`
+/// namespace 表推（查不到为 None → 落装配点源由调用方决定，此处直接报
+/// UnmappedProvider 与其它转换同口径）。`artists` 为 String 元素，首位落
+/// creator 槽（legacy 专辑分支以首个艺人充当，artwork/曲目数同槽位映射）。
+pub fn album_to_lx_playlist(album: &MdAlbum) -> Result<Playlist, AdapterError> {
+    let source = provider_to_source_id(&album.id.provider)
+        .ok_or_else(|| AdapterError::UnmappedProvider(album.id.provider.clone()))?;
+    Ok(Playlist {
+        id: album.id.id.clone(),
+        name: album.title.clone(),
+        source,
+        cover_url: album.artwork_url.clone(),
+        song_count: album.track_count.unwrap_or(0),
+        description: None,
+        play_count: None,
+        creator: album.artists.first().cloned(),
+        link: None,
+        extra: std::collections::HashMap::new(),
+    })
 }
 
 /// musid-dli `Track` 到 voicefox `SongInfo`。
@@ -920,6 +944,16 @@ pub struct AdapterMusicSource {
     /// （单侧 Err 不计结论、双缺两侧都 NotFound、内容对照以真实产物为准）。
     #[cfg(feature = "musid-dli-adapter-lyrics-cache")]
     lyrics_cache: musid_dli::lyrics_cache::LyricsCache,
+    /// 集合面 provider（V4-s1，§14.1）：歌单详情/专辑/链接直解，joox 起
+    /// 装配；未装配时对应 face 走 trait 默认（不支持）。
+    #[cfg(feature = "musid-dli-adapter")]
+    collection: Option<Arc<dyn MdCollectionProvider>>,
+    #[cfg(feature = "musid-dli-adapter")]
+    playlists: Option<Arc<dyn MdPlaylistProvider>>,
+    #[cfg(feature = "musid-dli-adapter")]
+    albums: Option<Arc<dyn MdAlbumProvider>>,
+    #[cfg(feature = "musid-dli-adapter")]
+    links: Option<Arc<dyn MdLinkResolver>>,
     /// voicefox 代理/超时预算记录（§4：0.2.0 无法注入，仅登记供诊断）。
     transport: TransportInjection,
 }
@@ -944,8 +978,34 @@ impl AdapterMusicSource {
             lyrics_cache: musid_dli::lyrics_cache::LyricsCache::new(
                 musid_dli::lyrics_cache::LyricsCacheConfig::default(),
             ),
+            #[cfg(feature = "musid-dli-adapter")]
+            collection: None,
+            #[cfg(feature = "musid-dli-adapter")]
+            playlists: None,
+            #[cfg(feature = "musid-dli-adapter")]
+            albums: None,
+            #[cfg(feature = "musid-dli-adapter")]
+            links: None,
             transport,
         }
+    }
+
+    /// 装配集合面（V4-s1，§14.1）：四个槽共用同一 provider 实例（musid
+    /// 按 trait 拆面，装配形态与 search/stream/lyrics 三槽同形）。未装配
+    /// 的源集合面走 trait 默认（不支持）。
+    #[cfg(feature = "musid-dli-adapter")]
+    pub fn with_collections(
+        mut self,
+        collection: Arc<dyn MdCollectionProvider>,
+        playlists: Arc<dyn MdPlaylistProvider>,
+        albums: Arc<dyn MdAlbumProvider>,
+        links: Arc<dyn MdLinkResolver>,
+    ) -> Self {
+        self.collection = Some(collection);
+        self.playlists = Some(playlists);
+        self.albums = Some(albums);
+        self.links = Some(links);
+        self
     }
 
     /// 已登记的 voicefox 网络（代理/超时）预算。
@@ -965,17 +1025,19 @@ impl MusicSource for AdapterMusicSource {
     }
 
     /// 诊断对照用能力位（不进 `SourceManager::capabilities` 聚合）。
-    /// 面级 flags（search_playlists/categories/user_playlists）V1 装配点
-    /// 未探测，按缺省 false 登记。
+    /// V4-s1（§14.1）起面级 flags 按源登记：joox 的 search_playlists 在
+    /// musid `PlaylistProvider` 上有真实实现（legacy 逐字移植），装配后
+    /// playlist_search 位如实为 true（album/link_parse 位来自 provider
+    /// descriptor，本就为 true）。
     fn capabilities(&self) -> SourceCapabilities {
         let Some(search) = &self.search else {
             return SourceCapabilities::default();
         };
-        capabilities_from_provider(
-            search.capabilities(),
-            search.auth_capability(),
-            ProviderFaceFlags::default(),
-        )
+        let mut flags = ProviderFaceFlags::default();
+        if self.source == SourceId::Joox {
+            flags.has_search_playlists = true;
+        }
+        capabilities_from_provider(search.capabilities(), search.auth_capability(), flags)
     }
 
     async fn search(
@@ -1104,6 +1166,173 @@ impl MusicSource for AdapterMusicSource {
             .into_iter()
             .filter_map(quality_from_stream)
             .collect()
+    }
+
+    // ------------------------------------------------------------------
+    // V4-s1 集合面（docs/MUSID_DLI_ADAPTER.md §14.1，joox = 切片 1）：
+    // musid CollectionProvider/PlaylistProvider/AlbumProvider/LinkResolver
+    // 的四槽路由与模型转换。legacy 侧逐字移植对账见 musid-dli
+    // source_joox.rs 的 M4 fixture 测试与 §12.7 的 §12.3 归一对照。
+    // ------------------------------------------------------------------
+
+    /// 关键词歌单搜索（musid `PlaylistProvider::search_playlists`；joox 的
+    /// 同名 musid 实现是 legacy 的逐字移植——search type=0 读
+    /// section_list[].editor_playlist，空结果恒 Ok(vec![]) 不报错）。
+    #[cfg(feature = "musid-dli-adapter-joox")]
+    async fn search_playlists(
+        &self,
+        keyword: &str,
+        page: u32,
+    ) -> Result<Vec<Playlist>, SearchError> {
+        let Some(playlists) = &self.playlists else {
+            return Err(SearchError::Other("该音源不支持歌单搜索".to_string()));
+        };
+        let items = playlists
+            .search_playlists(keyword, page)
+            .await
+            .map_err(|error| search_error_from_error(&error))?;
+        items
+            .iter()
+            .map(|item| playlist_to_lx(item).map_err(|error| SearchError::Other(error.to_string())))
+            .collect()
+    }
+
+    /// 歌单曲目（musid `CollectionProvider::playlist_tracks`；空曲目归
+    /// NotFound 与 legacy `get_playlist_detail` 的空守卫同口径）。
+    #[cfg(feature = "musid-dli-adapter-joox")]
+    async fn get_playlist_detail(&self, id: &str, _page: u32) -> Result<Vec<SongInfo>, FetchError> {
+        let Some(collection) = &self.collection else {
+            return Err(FetchError::Other("该音源不支持歌单详情".to_string()));
+        };
+        let tracks = collection
+            .playlist_tracks(id)
+            .await
+            .map_err(|error| fetch_error_from_error(&error))?;
+        if tracks.is_empty() {
+            return Err(FetchError::NotFound);
+        }
+        tracks
+            .iter()
+            .map(track_to_song)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| FetchError::Other(error.to_string()))
+    }
+
+    /// 专辑曲目（musid `AlbumProvider::album_tracks`；OpenJOOX 专辑是特殊
+    /// 歌单，与 legacy 同一接口）。
+    #[cfg(feature = "musid-dli-adapter-joox")]
+    async fn get_album_songs(
+        &self,
+        album: &lx_core::model::playlist::Album,
+        _page: u32,
+        _limit: u32,
+    ) -> Result<SearchResult, SearchError> {
+        let Some(albums) = &self.albums else {
+            return Err(SearchError::Other("该音源不支持专辑曲目".to_string()));
+        };
+        let tracks = albums
+            .album_tracks(&album.id)
+            .await
+            .map_err(|error| search_error_from_error(&error))?;
+        let items = tracks
+            .iter()
+            .map(track_to_song)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| SearchError::Other(error.to_string()))?;
+        Ok(SearchResult {
+            total: items.len() as u32,
+            has_more: false,
+            items,
+        })
+    }
+
+    /// 链接直解（musid `LinkResolver::resolve_link`；song/playlist/album
+    /// 三分支与 legacy parse_link 同形——playlist 分支的曲目取
+    /// `playlist_tracks`，album 分支走 `album_tracks`，与 legacy 的
+    /// 「详情 + 曲目一次取齐」产物形状一致）。
+    #[cfg(feature = "musid-dli-adapter-joox")]
+    async fn parse_link(&self, link: &str) -> Result<ParsedLink, FetchError> {
+        let Some(links) = &self.links else {
+            return Err(FetchError::Other("该音源不支持链接直解".to_string()));
+        };
+        match links.resolve_link(link).await {
+            Ok(musid_dli::provider::ResolvedLink::Track(track)) => {
+                Ok(ParsedLink::Song(Box::new(track_to_song(&track).map_err(
+                    |error| FetchError::Other(format!("joox 链接曲目映射失败: {error}")),
+                )?)))
+            }
+            Ok(musid_dli::provider::ResolvedLink::Playlist(playlist)) => {
+                let songs = self
+                    .playlist_songs_of(&playlist)
+                    .await
+                    .map_err(|error| fetch_error_from_error(&error))?;
+                let converted = playlist_to_lx(&playlist)
+                    .map_err(|error| FetchError::Other(error.to_string()))?;
+                Ok(ParsedLink::Playlist {
+                    playlist: Box::new(converted),
+                    songs,
+                })
+            }
+            Ok(musid_dli::provider::ResolvedLink::Album(album)) => {
+                let songs = self
+                    .album_songs_of(&album)
+                    .await
+                    .map_err(|error| fetch_error_from_error(&error))?;
+                let converted = album_to_lx_playlist(&album)
+                    .map_err(|error| FetchError::Other(error.to_string()))?;
+                Ok(ParsedLink::Album {
+                    playlist: Box::new(converted),
+                    songs,
+                })
+            }
+            Ok(other) => Err(FetchError::Other(format!(
+                "joox 链接指向不支持的资源形态: {other:?}"
+            ))),
+            Err(error) => Err(fetch_error_from_error(&error)),
+        }
+    }
+}
+
+impl AdapterMusicSource {
+    /// 歌单实体的曲目：实体自带 tracks 用之，否则按 id 二次取
+    /// （musid `CollectionProvider::playlist_tracks`）。
+    #[cfg(feature = "musid-dli-adapter-joox")]
+    async fn playlist_songs_of(
+        &self,
+        playlist: &MdPlaylist,
+    ) -> Result<Vec<SongInfo>, musid_dli::Error> {
+        if !playlist.tracks.is_empty() {
+            return playlist
+                .tracks
+                .iter()
+                .map(track_to_song)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| musid_dli::Error::InvalidInput(error.to_string()));
+        }
+        let Some(collection) = &self.collection else {
+            return Ok(vec![]);
+        };
+        let tracks = collection.playlist_tracks(&playlist.id.id).await?;
+        tracks
+            .iter()
+            .map(track_to_song)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| musid_dli::Error::InvalidInput(error.to_string()))
+    }
+
+    /// 专辑实体的曲目：musid `Album` 不携带 tracks，按 id 取
+    /// （musid `AlbumProvider::album_tracks`）。
+    #[cfg(feature = "musid-dli-adapter-joox")]
+    async fn album_songs_of(&self, album: &MdAlbum) -> Result<Vec<SongInfo>, musid_dli::Error> {
+        let Some(albums) = &self.albums else {
+            return Ok(vec![]);
+        };
+        let tracks = albums.album_tracks(&album.id.id).await?;
+        tracks
+            .iter()
+            .map(track_to_song)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| musid_dli::Error::InvalidInput(error.to_string()))
     }
 }
 
@@ -1547,7 +1776,11 @@ pub fn migrated_route_sources() -> Vec<SourceId> {
 pub fn unregistered_migrated_sources(registered: &[SourceId]) -> Vec<SourceId> {
     migrated_route_sources()
         .into_iter()
-        .filter(|source| !registered.contains(source))
+        .filter(|source| {
+            // V4-s1（§14.1）：joox legacy 已删，适配面是**唯一**实现——
+            // manager 主注册表无条件装配（不走影子注册），故不进本 warn。
+            !registered.contains(source) && *source != SourceId::Joox
+        })
         .collect()
 }
 
@@ -3291,9 +3524,9 @@ mod tests {
                     SourceId::Tx,
                     SourceId::Wy,
                     SourceId::Qianqian,
-                    SourceId::Joox,
                 ],
-                "空注册列表 = 全部 Migrated 子 feature 未启用，warn 输入含十一源"
+                "空注册列表 = 全部 Migrated 子 feature 未启用，warn 输入含十源\
+                 （V4-s1 起 joox 不在其中：legacy 已删，适配面主注册表直装，§14.1）"
             );
             assert_eq!(
                 unregistered_migrated_sources(&[
@@ -3326,9 +3559,9 @@ mod tests {
                     SourceId::Tx,
                     SourceId::Wy,
                     SourceId::Qianqian,
-                    SourceId::Joox,
                 ],
-                "只装配 jamendo 时其余十个 Migrated 源是账面/构建脱节点"
+                "只装配 jamendo 时其余九个 Migrated 源是账面/构建脱节点\
+                 （V4-s1 起 joox 恒主注册表装配，恒不进 warn）"
             );
         }
 
@@ -4953,79 +5186,12 @@ mod tests {
             assert_eq!(rebuilt.extra, track.extra);
         }
 
-        #[test]
-        fn joox_search_parity_normalized_equivalent() {
-            // legacy 侧用**真实的** `crate::joox::api::songs_from_search`
-            // （joox/api.rs:150，pub(super) → pub(crate) 扩宽，函数体零改
-            // 动，登记见 docs §12.7）从平台原始响应形状组出 SongInfo——
-            // 原始响应与 musid-dli tests/fixtures/joox/search_songs.json
-            // 同形（tracks 为嵌套数组、id/album_id 加密串）。musid 侧：
-            // track_to_song（voicefox 侧 wire 形状 fixture，样本值取自同
-            // fixture 的首项）。任一侧 parse 改字段必红。
-            let response = json!({
-                "error": "",
-                "error_code": 0,
-                "has_more": true,
-                "next_page": 1,
-                "tracks": [
-                    [
-                        {
-                            "album_id": "YiT3xohoUs5qeo9aJ2yjDw==",
-                            "id": "bLnv0PqDX_qAlIqapc+Okw==",
-                            "name": "晴天",
-                            "album_name": "葉惠美",
-                            "artist_list": [
-                                { "id": "JlwrqRxx2ztLLil3yooBkw==", "name": "周杰倫" }
-                            ],
-                            "play_duration": 269,
-                            "images": [
-                                { "width": 1000, "height": 1000,
-                                  "url": "https://image.joox.com/JOOXcover/0/aaf707b7fa2e2c8c/1000" },
-                                { "width": 300, "height": 300,
-                                  "url": "https://image.joox.com/JOOXcover/0/aaf707b7fa2e2c8c/300" }
-                            ],
-                            "vip_flag": 1,
-                            "auth_terminal": 1,
-                            "is_playable": false,
-                            "track_free_action_control": 0
-                        }
-                    ]
-                ]
-            });
-            let legacy = crate::joox::api::songs_from_search(&response);
-            assert_eq!(legacy.len(), 1, "嵌套数组的单项解包两侧同构");
-            let legacy = &legacy[0];
-            assert_eq!(legacy.id, "bLnv0PqDX_qAlIqapc+Okw==");
-            assert_eq!(legacy.source, SourceId::Joox);
-            assert_eq!(legacy.name, "晴天");
-            assert_eq!(legacy.singer, "周杰倫");
-            assert_eq!(legacy.album_name, "葉惠美");
-            assert_eq!(legacy.duration, Duration::from_secs(269));
-            assert!(
-                legacy.qualities.is_empty(),
-                "legacy 搜索产物同样不带档位（parse_song_info 不填 qualities）"
-            );
-
-            let musid = track_to_song(&joox_track_fixture()).expect("joox provider must map");
-            // 歌手 join 分歧（legacy " / " vs musid Track.artists 经 '、'
-            // join）在单项歌手下同串；多项歌手经 parity 归一（filter_str
-            // 分隔符集含 /）无损——簿记分歧登记见 §12.2 joox 块。
-            assert!(
-                crate::parity::songs_equivalent(legacy, &musid),
-                "归一对照命中（qualities 双侧同空集合）"
-            );
-            assert!(
-                crate::parity::compare_search_items(
-                    std::slice::from_ref(legacy),
-                    std::slice::from_ref(&musid)
-                ),
-                "搜索产物集对照命中"
-            );
-
-            let mut different = legacy.clone();
-            different.name = "晴天 (cover)".to_string();
-            assert!(!crate::parity::songs_equivalent(&different, &musid));
-        }
+        // V4-s1（§14.1）：legacy joox 已删，`joox_search_parity_normalized_
+        // equivalent`（crate::joox::api::songs_from_search 双侧对账）随源
+        // 注销——musid 侧形状由 track_joox.json fixture 映射用例与 musid
+        // 仓 tests/fixtures/joox 的 provider 测试继续钉住；§12.2 joox 块
+        // 的歌手 join 分歧（legacy " / " vs musid '、'）随 legacy 死亡
+        // 收敛为 musid 口径（voicefox SongInfo 约定即 '、'）。
 
         // --- 登记切片（reg-soda / reg-ytm，docs §12.4 末段）：不迁，断言
         // --- 随所在 feature 门进外层门禁（--lib）。

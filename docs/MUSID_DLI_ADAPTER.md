@@ -1749,3 +1749,112 @@ musid `read_cover(EmbeddedFirst)` 解析回落——内嵌（缓存化）优先�
   （实跑数字随提交记录）。
 
 **CI**：musid-stack job 新增「Tests (V3 local cover parity slice)」步。
+
+---
+
+## 14. V4 冗余实现删除（2026-11-22 起；逐切片）
+
+规则（master plan §13.1 + 交接文档删除规则）：每源**只在** parity 绿且
+用户可见面全覆盖后删除旧实现；每次删除一个 commit、parity 证据进提交
+说明；musid 缺覆盖的面保留 legacy 路径，不为「统一」砍功能。
+
+### 14.0 逐源删除账本（V4 起点，2026-11-22 盘点）
+
+全仓盘点（`source/src/<source>/` 的 `impl MusicSource` 面 × musid-dli
+0.2.0 provider trait 实现面）：
+
+| 源 | legacy 用户可见面 | musid 覆盖 | 缺口 | 可删 |
+|---|---|---|---|---|
+| joox | search/url/lyric/cover + search_playlists/playlist_detail/album_songs/parse_link | **8/8 全覆盖**（M4 逐字移植：CollectionProvider/PlaylistProvider/AlbumProvider/LinkResolver，fixture 钉住） | 无 | **已删（14.1）** |
+| qianqian | 上 8 面 + get_playlist_categories/get_playlists（浏览面） | 9/10（categories/playlists 缺——musid PlaylistProvider 有 search_playlists/detail/album，无 browse；**LinkResolver 无**） | parse_link + 浏览面 | 待 musid 补 |
+| wy/tx/kg/kw/mg/bili | 集合面 + 登录（kg login.rs / bili SESSDATA / tx 个人歌单 / mg SMS / kw VIP） | 数据面 3/4 已迁（V2），集合面/登录缺 | 同左 | 待 musid 补集合面与登录位 |
+| jamendo/fivesing/apple | 集合面（search_playlists/playlist_detail/album_songs/parse_link） | 数据面 3/4 已迁，集合面缺（musid 容器端点匿名挂起） | 集合面 | 待 musid 补 |
+| soda | 全部四面 | musid 无此源 | 全部 | 不迁（voicefox-only，reg-soda 登记） |
+| local | 本地库全集 | musid local 已对账（V3 §13.1），主注册表留 voicefox（schema/状态/UI 属 voicefox，§13.3 边界） | — | 不迁 |
+
+结论：**joox 是唯一满足「全用户可见面覆盖」的源**；其余源的删除全部
+卡在 musid-dli 0.2.0 的集合面/登录缺口上（musid-dli 侧补齐属于上游
+变更，不在本仓 V4 范围内）。qianqian 的 parse_link 缺口最小（其余
+9/10 已覆盖），是下一个可解锁的删除候选。
+
+### 14.1 切片 1：joox legacy 实现删除（musid-dli-adapter-joox 升 default）
+
+**删除**：`source/src/joox/`（mod.rs + api.rs，legacy 8 面实现）整体
+删除；`manager.rs` 的 `JooxSource` 注册与 import、`lib.rs` 的
+`pub mod joox` 随之注销。
+
+**主注册表直装**：`SourceManager::new` 的注册块以
+`crate::musid_bootstrap::joox(&TransportInjection::new(None, 15))`
+（feature 门控）装配 musid 适配面进 `self.sources`——joox 的唯一实现
+路径。TransportInjection 仅诊断登记（§4 口径：0.2.0 不注入 transport，
+voicefox 代理/超时对 musid provider 不生效——该缺口原为影子面登记，自
+本切片起对 joox 全面生效，如实入账）。
+
+**adapter 集合面接线（§12 注册表的原「无行」位）**：
+`AdapterMusicSource` 新增四个集合槽位（collection/playlists/albums/
+links，`musid-dli-adapter` 门控）+ `with_collections` 装配器；joox 装配
+分支四槽同实例（musid `JooxProvider` 按 trait 拆面）。四个 trait face
+实装（`musid-dli-adapter-joox` 门控）：
+
+- `search_playlists`：musid `PlaylistProvider::search_playlists`（legacy
+  逐字移植：search type=0 读 section_list，空结果恒 Ok 不报错）→
+  `playlist_to_lx` 逐条转换；
+- `get_playlist_detail`：musid `CollectionProvider::playlist_tracks` →
+  `track_to_song` 逐条；空曲目归 `NotFound`（legacy 空守卫同口径）；
+- `get_album_songs`：musid `AlbumProvider::album_tracks` →
+  `SearchResult { total, has_more: false, items }`（OpenJOOX 专辑是特殊
+  歌单，与 legacy 同一接口）；
+- `parse_link`：musid `LinkResolver::resolve_link` →
+  `ParsedLink::Song/Playlist/Album` 三分支（playlist 分支曲目取
+  `playlist_tracks`、album 分支取 `album_tracks`，与 legacy「详情 +
+  曲目一次取齐」同形）；`Artist` 变体归 Other（joox 不产）。
+
+**模型转换**：`playlist_to_lx` 复用既有 V0 转换（namespace 表推源、
+extra 透传）；新增 `album_to_lx_playlist`（专辑以歌单形状进详情页，
+artists 首位落 creator 槽，legacy 专辑分支同构）。
+
+**能力位**：`capabilities()` 的面级 flags 按源登记——joox
+`has_search_playlists = true`（musid `PlaylistProvider` 有真实实现）；
+playlists/album/link_parse 位来自 provider descriptor（本就 true）。与
+legacy joox/mod.rs:103-110 的声明逐位一致。
+
+**feature flip**：`lx-source` 新增 `default =
+["musid-dli-adapter-joox"]`——legacy 删除后 joox 子 feature 是源存续的
+前提，进 default 保默认构建不缺源；`--no-default-features` 仍可构建零
+musid 树（此时 joox 源整体缺席）。V1 的「默认树零 musid」口径自此由
+V4 的目标架构（master plan §1.3：musid-dli 是 provider 引擎）取代，仅
+joox 一个源先行。
+
+**路由语义**：joox 的 §12 注册表行保持 Migrated 不变；影子注册不再有
+joox（`register_available` 不装配，`unregistered_migrated_sources` 显式
+跳过）——四面路由判定影子查空后回落主注册表 = 适配面自身，行为一致；
+parity 计数对 joox 静默（迁移监控语义已随 legacy 死亡终结，无对账对
+象）。`bootstrap_musid_stack` 的启动 warn 不再出现 joox。
+
+**测试账**：
+- `joox_search_parity_normalized_equivalent`（crate::joox::api 真实
+  legacy parse 双侧对账）随源注销——musid 侧形状由 track_joox.json
+  fixture 映射用例与 musid 仓 tests/fixtures/joox 的 provider 测试继续
+  钉住；§12.2 joox 块的歌手 join 分歧（legacy " / " vs musid '、'）随
+  legacy 死亡收敛为 musid 口径（voicefox SongInfo 约定即 '、'）；
+- bootstrap 切片测试 `joox_slice_is_registered_...` 改为
+  `joox_slice_is_primary_and_never_shadow_registered`（影子注册无 joox
+  行 + warn 输入跳过）；
+- 账本测试两处 warn 输入列表 Joox 摘除（十一源 → 十源口径）；
+- `musid_joox_slice.rs`（musid-only import）不受影响继续通过；
+- 封面面口径差：legacy get_cover_url 缺封面返回 `Ok("")`，适配面返回
+  `NotFound`（V0 消费面口径）——行为收紧如实登记。
+
+**门禁实跑（2026-11-22，本会话）**：
+- `cargo test -p lx-source --lib`（default，含 joox 适配面测试）：
+  **284 通过 / 0 失败 / 2 忽略**；
+- `cargo test -p lx-source --no-default-features --lib`（零 musid 边
+  界）：**213 通过 / 0 失败 / 2 忽略**（218 − 5 个随 legacy 死亡的
+  joox 库测，边界语义不变）；
+- `cargo test -p lx-source --features musid-dli-adapter-joox --test
+  musid_joox_slice`：**2 通过 / 0 失败**；
+- `cargo test -p lx-source --test musid_dual_stack`：**30 通过 /
+  0 失败**；
+- `cargo clippy -p lx-source --all-targets -- -D warnings`（default）与
+  `--features musid-dli-adapter --all-targets`：均 0 错误；
+- `cargo fmt --all -- --check`：clean。
