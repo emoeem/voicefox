@@ -58,6 +58,45 @@ fn json_u32(value: &Value) -> Option<u32> {
         .or_else(|| value.as_str().and_then(|s| s.parse().ok()))
 }
 
+/// 单条 abslist 条目 → SongInfo（`pub(crate)` 供 musid 适配层 V2 对账测试
+/// 消费真实 legacy parse 产物，docs/MUSID_DLI_ADAPTER.md §12.5 登记）。
+/// 函数体是 `search` 内联逐项解析的**逐字搬出**（评审 P2 同款机械重排：
+/// fivesing/api.rs parse_search_song 先例）——当前实现恒 `Some`，与搬出前
+/// "每条必 push"的行为逐字一致。
+pub(crate) fn parse_search_song(item: &Value) -> Option<SongInfo> {
+    // 歌曲 ID：去掉 "MUSIC_" 前缀
+    let music_rid = item["MUSICRID"].as_str().unwrap_or("");
+    let song_id = music_rid
+        .strip_prefix("MUSIC_")
+        .unwrap_or(music_rid)
+        .to_string();
+
+    let name = item["SONGNAME"].as_str().unwrap_or("").to_string();
+
+    // 歌手名：& 替换为 、
+    let artist = item["ARTIST"].as_str().unwrap_or("").replace('&', "、");
+
+    let album = item["ALBUM"].as_str().unwrap_or("").to_string();
+    let album_id = item["ALBUMID"].as_str().unwrap_or("").to_string();
+
+    // 时长：秒 → Duration
+    let duration_secs = item["DURATION"]
+        .as_str()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(0);
+
+    // 音质列表
+    let n_minfo = item["N_MINFO"].as_str().unwrap_or("");
+    let qualities = parse_qualities_for_playlist(n_minfo);
+
+    let mut song = SongInfo::new(song_id, SourceId::Kw, name, artist);
+    song.album_name = album;
+    song.album_id = album_id;
+    song.duration = Duration::from_secs(duration_secs);
+    song.qualities = qualities;
+    Some(song)
+}
+
 pub async fn search(keyword: &str, page: u32, limit: u32) -> Result<SearchResult, SearchError> {
     let encoded_keyword = urlencoding::encode(keyword);
     let url = format!(
@@ -98,38 +137,9 @@ pub async fn search(keyword: &str, page: u32, limit: u32) -> Result<SearchResult
     let mut items = Vec::with_capacity(abslist.len());
 
     for item in abslist {
-        // 歌曲 ID：去掉 "MUSIC_" 前缀
-        let music_rid = item["MUSICRID"].as_str().unwrap_or("");
-        let song_id = music_rid
-            .strip_prefix("MUSIC_")
-            .unwrap_or(music_rid)
-            .to_string();
-
-        let name = item["SONGNAME"].as_str().unwrap_or("").to_string();
-
-        // 歌手名：& 替换为 、
-        let artist = item["ARTIST"].as_str().unwrap_or("").replace('&', "、");
-
-        let album = item["ALBUM"].as_str().unwrap_or("").to_string();
-        let album_id = item["ALBUMID"].as_str().unwrap_or("").to_string();
-
-        // 时长：秒 → Duration
-        let duration_secs = item["DURATION"]
-            .as_str()
-            .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(0);
-
-        // 音质列表
-        let n_minfo = item["N_MINFO"].as_str().unwrap_or("");
-        let qualities = parse_qualities_for_playlist(n_minfo);
-
-        let mut song = SongInfo::new(song_id, SourceId::Kw, name, artist);
-        song.album_name = album;
-        song.album_id = album_id;
-        song.duration = Duration::from_secs(duration_secs);
-        song.qualities = qualities;
-
-        items.push(song);
+        if let Some(song) = parse_search_song(item) {
+            items.push(song);
+        }
     }
 
     // 判断是否还有更多结果

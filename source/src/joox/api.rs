@@ -147,7 +147,11 @@ pub(super) async fn search(keyword: &str) -> Result<Value, ApiError> {
 }
 
 /// v2 `search_type` 的歌曲结果位于 `tracks`，部分版本会把单项再包一层数组。
-pub(super) fn songs_from_search(json: &Value) -> Vec<SongInfo> {
+///
+/// `pub(crate)` 可见性扩宽（V2 切片 11，docs/MUSID_DLI_ADAPTER.md §12.7）：
+/// parity 对账测试用真实 `songs_from_search` 产物组 legacy 侧搜索结果
+/// （与 musid 侧 wire 形状 fixture 对照）——仅可见性扩宽，函数体零改动。
+pub(crate) fn songs_from_search(json: &Value) -> Vec<SongInfo> {
     let mut songs = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for entry in json["tracks"].as_array().into_iter().flatten() {

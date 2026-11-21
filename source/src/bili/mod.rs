@@ -2,7 +2,9 @@
 
 mod leaderboard;
 mod playlist;
-mod search;
+/// `pub(crate)` 供 musid 适配层 V2 对账测试经 `crate::bili::search::parse_song`
+/// 消费真实 legacy parse 产物（docs/MUSID_DLI_ADAPTER.md §12.5 登记）。
+pub(crate) mod search;
 mod url;
 
 use std::collections::BTreeMap;

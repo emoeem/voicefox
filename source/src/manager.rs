@@ -280,10 +280,17 @@ impl SourceManager {
         self.parity.snapshot()
     }
 
-    /// 四面共用的路由判定：总闸 && 面开关 && 源可映射（`soda`/`local`/`bili`
-    /// 恒旧路径）&& 影子源已注册 && 用户 enabled 集含该源。
+    /// 四面共用的路由判定：总闸 && 面开关 && 源可映射（`soda`/`local`
+    /// 恒旧路径；bili 的面级账面由注册表行承载，V2 切片 4 起）&& V2 逐源
+    /// 路由注册表放行该面（docs §12）&& 影子源已注册 && 用户 enabled 集
+    /// 含该源。
     #[cfg(feature = "musid-dli-adapter")]
-    fn musid_route(&self, face_gate: bool, source: SourceId) -> Option<Arc<dyn MusicSource>> {
+    fn musid_route(
+        &self,
+        face_gate: bool,
+        face: crate::parity::ParityFace,
+        source: SourceId,
+    ) -> Option<Arc<dyn MusicSource>> {
         if !self
             .musid_routes
             .stack
@@ -292,11 +299,22 @@ impl SourceManager {
         {
             return None;
         }
-        // 命名表可映射的才可路由；bili 虽在 §1 命名表内，但它是独立存储 +
-        // 登录链路，双栈期恒旧路径（P4）。
-        if matches!(source, SourceId::Local | SourceId::Soda | SourceId::Bili)
+        // 命名表可映射的才可路由。V2 切片 4（docs §12.4）起 bili 的排除由
+        // 注册表行承载（搜索/流地址 Migrated、歌词 LegacyOnly）——这里只
+        // 拒绝 §1 命名表外的 soda/local；bili 的登录/会话/用户数据本就不
+        // 经本判定（manager 登录链路不读影子 map，V1 边界 §11.8），扫码
+        // 链路与 SESSDATA 独立存储恒走 voicefox 旧路径。
+        if matches!(source, SourceId::Local | SourceId::Soda)
             || crate::adapter_musid::source_id_to_provider(source).is_none()
         {
+            return None;
+        }
+        // V2 逐源路由注册表（adapter_musid::face_route，docs §12.1）：面级
+        // 账面不放行 = 恒旧路径。LegacyOnly 是能力缺失回落规则的静态层——
+        // musid 侧 stub/语义不等价的面（如 jamendo 歌词）在此被拒，用户
+        // 永远拿不到 musid 的"该音源不支持"类错误。probe 影子同门（未迁移
+        // 面的 probe 不烧 musid 配额）。
+        if !crate::adapter_musid::face_route(face, source).routes_to_musid() {
             return None;
         }
         if !self
@@ -698,7 +716,11 @@ impl SourceManager {
         if !search_flag && !probe {
             return None;
         }
-        let musid = self.musid_route(search_flag || probe, source)?;
+        let musid = self.musid_route(
+            search_flag || probe,
+            crate::parity::ParityFace::Search,
+            source,
+        )?;
         if probe {
             // 对账影子模式（纯观测）：旧路径权威，musid 影子任务后台真双跑
             // （限 10s，与聚合每源预算同口径）；旧路径产物经 oneshot 交接给
@@ -935,7 +957,11 @@ impl SourceManager {
         if !search_flag && !probe {
             return false;
         }
-        let Some(musid) = self.musid_route(search_flag || probe, source_id) else {
+        let Some(musid) = self.musid_route(
+            search_flag || probe,
+            crate::parity::ParityFace::Search,
+            source_id,
+        ) else {
             return false;
         };
         let parity = Arc::clone(&self.parity);
@@ -1362,13 +1388,46 @@ impl SourceManager {
             return Err(FetchError::Other("本地音源不可用".to_string()));
         }
         if song.source == SourceId::Bili {
-            return self
-                .sources
-                .get(&SourceId::Bili)
-                .ok_or_else(|| FetchError::Other("哔哩哔哩音源不可用".to_string()))?
-                .get_song_url(song, quality)
-                .await
-                .map(|url| (url, None));
+            // V2 切片 4（docs/MUSID_DLI_ADAPTER.md §12.4 行 4）：bili 的
+            // musid 流地址槽位在旧早退臂**之前**（注册表 bili 行 SongUrl=
+            // Migrated 放行时；js_first 对本臂无意义——bili 歌从不参与 JS
+            // 链）。musid Err/未路由/预算耗尽 → 旧早退臂照旧（独立存储 +
+            // 扫码登录链路的旧实现逐字保持）；簿记三件套与主链同款
+            // （MusidOk 在 try 内、legacy-ok 在旧链成功、err 侧在本臂错误
+            // 出口）。
+            #[cfg(feature = "musid-dli-adapter")]
+            {
+                let mut musid_url = self.musid_url_slot_route(song);
+                if let Some(url) = self.musid_url_try(&mut musid_url, song, quality).await {
+                    return Ok((url, None));
+                }
+                let legacy = self
+                    .sources
+                    .get(&SourceId::Bili)
+                    .ok_or_else(|| FetchError::Other("哔哩哔哩音源不可用".to_string()))?
+                    .get_song_url(song, quality)
+                    .await;
+                return match legacy {
+                    Ok(url) => {
+                        self.musid_url_record_legacy_ok(&musid_url);
+                        Ok((url, None))
+                    }
+                    Err(error) => {
+                        self.musid_url_err_exit(&mut musid_url, song, quality).await;
+                        Err(error)
+                    }
+                };
+            }
+            #[cfg(not(feature = "musid-dli-adapter"))]
+            {
+                return self
+                    .sources
+                    .get(&SourceId::Bili)
+                    .ok_or_else(|| FetchError::Other("哔哩哔哩音源不可用".to_string()))?
+                    .get_song_url(song, quality)
+                    .await
+                    .map(|url| (url, None));
+            }
         }
 
         // js_start_index > 0 说明上一轮已经解析过一次（播放失败后从下一个
@@ -1503,7 +1562,9 @@ impl SourceManager {
         if !face && !probe {
             return none;
         }
-        let Some(musid) = self.musid_route(face || probe, source) else {
+        let Some(musid) =
+            self.musid_route(face || probe, crate::parity::ParityFace::SongUrl, source)
+        else {
             return none;
         };
         MusidUrlSlot {
@@ -1718,7 +1779,8 @@ impl SourceManager {
         if !lyric_flag || probe {
             return none;
         }
-        let Some(musid) = self.musid_route(lyric_flag, source) else {
+        let Some(musid) = self.musid_route(lyric_flag, crate::parity::ParityFace::Lyric, source)
+        else {
             return none;
         };
         match musid.get_lyric(song).await {
@@ -1765,7 +1827,11 @@ impl SourceManager {
             let Some(source) = Self::musid_effective_source(song) else {
                 return (self.get_lyric(song).await, None);
             };
-            let Some(musid) = self.musid_route(lyric_flag || probe, source) else {
+            let Some(musid) = self.musid_route(
+                lyric_flag || probe,
+                crate::parity::ParityFace::Lyric,
+                source,
+            ) else {
                 return (self.get_lyric(song).await, None);
             };
             // 真双跑（纯观测，评审 P4）：musid 影子在后台任务对账（oneshot

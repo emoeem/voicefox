@@ -7,7 +7,9 @@
 
 use async_trait::async_trait;
 
-mod api;
+/// `pub(crate)` 供 musid 适配层 V2 对账测试经 `crate::apple::api::parse_song`
+/// 消费真实 legacy parse 产物（docs/MUSID_DLI_ADAPTER.md §12.5 登记）。
+pub(crate) mod api;
 
 use lx_core::model::lyric::LyricData;
 use lx_core::model::playlist::{Album, Playlist};

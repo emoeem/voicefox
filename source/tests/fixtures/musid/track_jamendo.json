@@ -1,0 +1,17 @@
+{
+  "derivation_note": "musid-dli Track wire shape (pinned by musid-dli models/track.rs legacy+round-trip tests). Sample values from musid-dli tests/fixtures/jamendo/track_parse.json (its self-described item shape, rebuilt from a 2026-11-18 live /api/search capture for trackid 1538710 — the original capture was NOT committed upstream, per tests/fixtures/jamendo/README.md; the upstream fixture file is the only in-repo provenance) and pick_stream.json case 4: id 1538710, title 'Love Recycle', artist LoveRecycle, album LoveRecycle (id 176100), duration 245s, artwork usercontent.jamendo.com type=album&id=176100, download group wins so stream_url = /download/track/1538710/mp32/ (192k VBR measured upstream; the mp3 key's 'Low' quality tag is the upstream label, approximate per pick_stream.json note), stream_format/stream_quality are the parser's {:?} strings (source_jamendo.rs jam_parse_track). extra carries track_id + stream_url/stream_format/stream_quality — the stream_url embedding is JamendoProvider::resolve's offline data premise. Reconstructed, not captured; shape provenance in docs/MUSID_DLI_ADAPTER.md §7/§12.3.",
+  "id": { "provider": "jamendo", "id": "1538710" },
+  "title": "Love Recycle",
+  "artists": ["LoveRecycle"],
+  "album": "LoveRecycle",
+  "album_id": "176100",
+  "duration": { "secs": 245, "nanos": 0 },
+  "artwork_url": "https://usercontent.jamendo.com?type=album&id=176100&width=300&trackid=1538710",
+  "available_qualities": ["Low"],
+  "extra": {
+    "track_id": "1538710",
+    "stream_url": "https://prod-1.storage.jamendo.com/download/track/1538710/mp32/",
+    "stream_format": "Mp3",
+    "stream_quality": "Low"
+  }
+}

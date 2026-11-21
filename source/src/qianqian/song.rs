@@ -169,7 +169,10 @@ fn qualities_from_rates(value: &Value) -> BTreeSet<Quality> {
     qualities
 }
 
-pub(super) fn parse_song(resource: &Value) -> Option<SongInfo> {
+/// `pub(crate)` 可见性扩宽（V2 切片 10，docs/MUSID_DLI_ADAPTER.md §12.7）：
+/// parity 对账测试用真实 parse 产物组 legacy 侧 SongInfo（与 musid 侧
+/// wire 形状 fixture 对照）——仅可见性扩宽，函数体零改动。
+pub(crate) fn parse_song(resource: &Value) -> Option<SongInfo> {
     let tsid = field(resource, "tsid").map(value_string)?;
     if tsid.is_empty() {
         return None;

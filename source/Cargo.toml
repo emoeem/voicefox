@@ -54,8 +54,9 @@ musid-dli-adapter-lyrics = ["musid-dli-adapter", "musid-dli/lyrics-conversions"]
 # 对照 musid-dli Cargo.toml 的 source-*（注意 apple 是 source-apple，不是
 # source-applemusic）。默认构建（不开任何 adapter feature）依旧零 musid 边；
 # musid-dli 保持 "=0.2.0" 精确 pin（wire 形状测试即 pin，放宽到 "0.2" 随外层
-# CI feature 矩阵落地后执行）。bilibili 不设子 feature：bili 恒走旧路径
-# （独立存储 + 扫码登录链路，docs/MUSID_DLI_ADAPTER.md §11）。
+# CI feature 矩阵落地后执行）。bilibili 子 feature 随 V2 切片 4 落地增设
+# （docs/MUSID_DLI_ADAPTER.md §12.4）：搜索/流地址两面路由，登录/会话/
+# 用户数据恒旧路径（影子源恒匿名 new()，SESSDATA 扫码链路不接 musid）。
 musid-dli-adapter-netease = ["musid-dli-adapter", "musid-dli/source-netease"]
 musid-dli-adapter-qqmusic = ["musid-dli-adapter", "musid-dli/source-qqmusic"]
 musid-dli-adapter-kugou = ["musid-dli-adapter", "musid-dli/source-kugou"]
@@ -64,8 +65,23 @@ musid-dli-adapter-migu = ["musid-dli-adapter", "musid-dli/source-migu"]
 musid-dli-adapter-jamendo = ["musid-dli-adapter", "musid-dli/source-jamendo"]
 musid-dli-adapter-apple = ["musid-dli-adapter", "musid-dli/source-apple"]
 musid-dli-adapter-fivesing = ["musid-dli-adapter", "musid-dli/source-fivesing"]
+musid-dli-adapter-bilibili = ["musid-dli-adapter", "musid-dli/source-bilibili"]
 musid-dli-adapter-qianqian = ["musid-dli-adapter", "musid-dli/source-qianqian"]
 musid-dli-adapter-joox = ["musid-dli-adapter", "musid-dli/source-joox"]
+# 登记切片（reg-soda，docs/MUSID_DLI_ADAPTER.md §12.4 末段）：soda 是
+# voicefox-only 源（musid-dli 0.2.0 的 12 个 source 模块无 source_soda，
+# §1 命名表显式拒绝）——没有 musid-dli/source-* 可挂，本 feature 只作为
+# 门禁/账面载体启用 adapter 基座，承载"无注册表行 + 命名表拒绝"的登记
+# 断言（adapter_musid.rs 的 reg-soda 测试）。四面恒旧路径，运行行为零变化。
+musid-dli-adapter-reg-soda = ["musid-dli-adapter"]
+# 登记切片（reg-ytm，docs/MUSID_DLI_ADAPTER.md §12.4 末段）：youtube-music
+# 是 musid-dli-only 源（voicefox SourceId 无对应变体；musid 侧
+# RustyPipeProvider 走自己的 rustypipe 栈，`source-youtube-music` feature
+# 依赖 rustypipe）——voicefox 侧不启用该 source feature（rustypipe 不进
+# voicefox feature 树），本 feature 同样只作为门禁/账面载体，承载
+# UnmappedProvider 拒绝路径的登记断言。若 voicefox 未来引入 ytm 源，属
+# 新源接入（扩 SourceId + 命名表 + 评估 rustypipe 依赖），不在迁移序列。
+musid-dli-adapter-reg-ytm = ["musid-dli-adapter"]
 
 [dev-dependencies]
 # 仅测试目标需要：用虚拟时间验证"每源超时"而不用真的等 8 秒。

@@ -116,28 +116,34 @@ pub(super) async fn search_songs(keyword: &str) -> Result<Vec<SongInfo>, ApiErro
         .as_array()
         .into_iter()
         .flatten()
-        .filter_map(|item| {
-            let id = value_string(&item["songId"]);
-            let kind = item["typeEname"].as_str().unwrap_or_default().to_string();
-            let name = clean_text(item["songName"].as_str().unwrap_or_default());
-            if id.is_empty() || kind.is_empty() || name.is_empty() {
-                return None;
-            }
-            let singer = clean_text(item["singer"].as_str().unwrap_or_default());
-            let mut song = SongInfo::new(format!("{id}|{kind}"), SourceId::Fivesing, name, singer);
-            // 站点只给文件大小，按 320kbps 反推时长作为展示值。
-            if let Some(size) = value_u64(&item["songSize"]).filter(|size| *size > 0) {
-                song.duration = std::time::Duration::from_secs(size * 8 / 320_000);
-            }
-            song.extra.insert("songid".to_string(), id.clone());
-            song.extra.insert("songtype".to_string(), kind.clone());
-            song.cover_url = item["user"]["I"]
-                .as_str()
-                .filter(|url| !url.is_empty())
-                .map(str::to_string);
-            Some(song)
-        })
+        .filter_map(parse_search_song)
         .collect())
+}
+
+/// 解析一条 `home/json`（type=0）搜索条目；缺 songId/typeEname/songName 的
+/// 条目丢弃。函数体从 `search_songs` 的内联闭包逐字搬出（语义零变化）：
+/// `pub(crate)` 供 musid 适配层 V2 对账测试消费真实 legacy parse 产物
+/// （与 jamendo 的 `parse_track` 同形，登记见设计文档 §12.5）。
+pub(crate) fn parse_search_song(item: &Value) -> Option<SongInfo> {
+    let id = value_string(&item["songId"]);
+    let kind = item["typeEname"].as_str().unwrap_or_default().to_string();
+    let name = clean_text(item["songName"].as_str().unwrap_or_default());
+    if id.is_empty() || kind.is_empty() || name.is_empty() {
+        return None;
+    }
+    let singer = clean_text(item["singer"].as_str().unwrap_or_default());
+    let mut song = SongInfo::new(format!("{id}|{kind}"), SourceId::Fivesing, name, singer);
+    // 站点只给文件大小，按 320kbps 反推时长作为展示值。
+    if let Some(size) = value_u64(&item["songSize"]).filter(|size| *size > 0) {
+        song.duration = std::time::Duration::from_secs(size * 8 / 320_000);
+    }
+    song.extra.insert("songid".to_string(), id.clone());
+    song.extra.insert("songtype".to_string(), kind.clone());
+    song.cover_url = item["user"]["I"]
+        .as_str()
+        .filter(|url| !url.is_empty())
+        .map(str::to_string);
+    Some(song)
 }
 
 pub(super) async fn search_playlists(keyword: &str) -> Result<Vec<Playlist>, ApiError> {

@@ -1,0 +1,19 @@
+{
+  "derivation_note": "musid-dli Track wire shape (pinned by musid-dli models/track.rs legacy+round-trip tests). Sample values from musid-dli tests/fixtures/qqmusic/search_songs.json data.song.list[0]: id 483034200 / mid 003aAYrm3GE0Ac / 晴天 / singers 周杰伦+杨瑞代 / album 叶惠美 (mid 002Neh8l0uciQ1) / interval 269s / file.size_128mp3 4312832, size_320mp3 10781692, size_flac 23706814, size_hires 54915322. Shape per source_qqmusic.rs parse_song (:598-661): artwork_url built from album.mid (T002R500x500M000{mid}.jpg), available_qualities [Low,High,Lossless,HiRes] (Low always declared, the rest gated on size>0), extra songId/strMediaMid/size_* as strings. Provenance limit (that directory's README, honesty note): NOTHING in tests/fixtures/qqmusic/ is a captured HTTP response — RECONSTRUCTED shape with placeholder sample values chosen to exercise parser branches; no live-capture claim. docs/MUSID_DLI_ADAPTER.md §12.3/§12.7.",
+  "id": { "provider": "qqmusic", "id": "003aAYrm3GE0Ac" },
+  "title": "晴天",
+  "artists": ["周杰伦", "杨瑞代"],
+  "album": "叶惠美",
+  "album_id": "002Neh8l0uciQ1",
+  "duration": { "secs": 269, "nanos": 0 },
+  "artwork_url": "https://y.gtimg.cn/music/photo_new/T002R500x500M000002Neh8l0uciQ1.jpg",
+  "available_qualities": ["Low", "High", "Lossless", "HiRes"],
+  "extra": {
+    "songId": "483034200",
+    "strMediaMid": "003aAYrm3GE0Ac",
+    "size_128mp3": "4312832",
+    "size_320mp3": "10781692",
+    "size_flac": "23706814",
+    "size_hires": "54915322"
+  }
+}

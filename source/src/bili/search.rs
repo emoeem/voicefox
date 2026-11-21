@@ -306,7 +306,9 @@ fn parse_search_result(json: &Value, page: u32) -> Result<SearchResult, SearchEr
     })
 }
 
-fn parse_song(item: &Value) -> Option<SongInfo> {
+/// `pub(crate)` 供 musid 适配层 V2 对账测试消费真实 legacy parse 产物
+/// （docs/MUSID_DLI_ADAPTER.md §12.5：仅可见性扩宽，函数体零改动）。
+pub(crate) fn parse_song(item: &Value) -> Option<SongInfo> {
     let bvid = item["bvid"].as_str()?.trim();
     if bvid.is_empty() {
         return None;

@@ -1,0 +1,11 @@
+{
+  "derivation_note": "musid-dli Track wire shape (pinned by musid-dli models/track.rs legacy+round-trip tests). Sample values from musid-dli tests/fixtures/kuwo/search_page.json abslist[0] — a RECONSTRUCTED response-shape fixture per that directory's README (not a live capture). Fields: MUSICRID MUSIC_228908 → id 228908 (MUSIC_ prefix stripped by both parsers), SONGNAME 晴天, ARTIST 周杰伦&费玉清 (legacy replaces '&' with '、'; musid splits on '&' back into artists and track_to_song rejoins with '、' — equivalent), ALBUM 叶惠美, ALBUMID 104004, DURATION 270. N_MINFO bitrates 22000/20900 are outside both sides' tables (legacy kw/search.rs bitrate_to_quality and musid parse_n_minfo_qualities agree on 128/320/2000/4000), 320/128/2000 → available_qualities [High, Low, Lossless] → folded {Low128, High320, Flac}: identical to the legacy set, so the kuwo search face has no qualities bookkeeping gap. extra empty — both parsers set none for search items.",
+  "id": { "provider": "kuwo", "id": "228908" },
+  "title": "晴天",
+  "artists": ["周杰伦", "费玉清"],
+  "album": "叶惠美",
+  "album_id": "104004",
+  "duration": { "secs": 270, "nanos": 0 },
+  "available_qualities": ["High", "Low", "Lossless"],
+  "extra": {}
+}

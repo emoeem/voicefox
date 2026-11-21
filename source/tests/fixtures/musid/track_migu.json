@@ -1,0 +1,11 @@
+{
+  "derivation_note": "musid-dli Track wire shape (pinned by musid-dli models/track.rs legacy+round-trip tests). Sample values from musid-dli tests/fixtures/migu/search_response.json ok_numeric_total.resultList[0][0] — a RECONSTRUCTED response-shape fixture per that directory's README (not a live capture). Fields: songId 3790007 / songName 晴天 / singerList 周杰伦 / album 叶惠美 / copyrightId 60054701923 / contentId 600902000006889366 / duration 269 / img3 cover. audioFormats [{formatType PQ},{formatType SQ}] is mg_parse_song's available_qualities source ([Low, Lossless] → folded {Low128, Flac} via §2.4; identical to the legacy mg/song.rs format_to_quality table — the migu search face has no qualities bookkeeping gap). extra carries copyrightId/contentId: the stream face reads extra[\"contentId\"] first (source_migu.rs resource_id :596-603) and the lyric face reads the mrcUrl/lrcUrl/trcUrl keys this search shape also ships (absent here — the live playlist/detail shapes carry them).",
+  "id": { "provider": "migu", "id": "3790007" },
+  "title": "晴天",
+  "artists": ["周杰伦"],
+  "album": "叶惠美",
+  "duration": { "secs": 269, "nanos": 0 },
+  "artwork_url": "https://img.example/a.jpg",
+  "available_qualities": ["Low", "Lossless"],
+  "extra": { "copyrightId": "60054701923", "contentId": "600902000006889366" }
+}

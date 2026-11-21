@@ -8,7 +8,9 @@ pub mod lyric;
 pub mod parse;
 pub mod playlist;
 pub mod search;
-mod song;
+/// `pub(crate)` 供 musid 适配层 V2 对账测试经 `crate::mg::song::parse_song`
+/// 消费真实 legacy parse 产物（docs/MUSID_DLI_ADAPTER.md §12.5 登记）。
+pub(crate) mod song;
 pub mod url;
 
 use async_trait::async_trait;

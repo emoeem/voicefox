@@ -1,0 +1,9 @@
+{
+  "derivation_note": "musid-dli Track wire shape (pinned by musid-dli models/track.rs legacy+round-trip tests). Sample values from musid-dli tests/fixtures/fivesing/search_songs.json item 1 — a trimmed VERBATIM live capture of search.5sing.kugou.com/home/json?keyword=晴天&type=0 (anonymous, 2026-11-18, per that directory's README; provenance is stronger than the jamendo slice's rebuilt shape: the capture IS committed upstream): songId 15622111, typeEname 'fc', songName '<em class=\"keyword\">晴天</em>' (highlight stripped by both sides' clean_text), singer 'Vk' (the live item also carries originSinger 周杰伦 — both parsers read item['singer']), songSize 10462607 bytes → duration 261s via the shared 320kbps estimate size*8/320000 (upstream api.rs:129-131 == musid-dli source_fivesing.rs:183-186). Live search items carry no 'user' key (README) so artwork_url is None on both sides; album is not in the 5sing search item shape. available_qualities [Lossless, High, Low] is fs_parse_search_song's static tier declaration (source_fivesing.rs:422-426) — the live item has no per-item quality fields, and the legacy SongInfo carries no qualities at all: that asymmetry is the registered search-face bookkeeping divergence (docs §12.2, probe search-face signal caveat). extra carries songid/songtype (both parsers set them).",
+  "id": { "provider": "fivesing", "id": "15622111|fc" },
+  "title": "晴天",
+  "artists": ["Vk"],
+  "duration": { "secs": 261, "nanos": 0 },
+  "available_qualities": ["Lossless", "High", "Low"],
+  "extra": { "songid": "15622111", "songtype": "fc" }
+}

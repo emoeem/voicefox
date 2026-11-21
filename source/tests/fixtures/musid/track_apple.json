@@ -1,0 +1,11 @@
+{
+  "derivation_note": "musid-dli Track wire shape (pinned by musid-dli models/track.rs legacy+round-trip tests). Sample values from musid-dli tests/fixtures/apple/song_parse.json (search_item/expected). Provenance (that directory's README, plain text): NOTHING in tests/fixtures/apple/ is a captured HTTP response — RECONSTRUCTED shape; the golden values (id 1440833098 / 晴天 / 周杰伦 / 叶惠美 / durationInMillis 269000 / {w}x{h} artwork template) follow the shared inline parse test values (voicefox apple/api.rs:520-536). artwork resolved at 600 like apple_parse_song (musid-dli source_apple.rs artwork_url). available_qualities [Low] is the preview-only contract (source_apple.rs:589-617 comment-pinned; resolve() always answers a 30-second M4a preview at quality Low regardless of the requested tier). extra carries song_id + preview_only=true, both set by apple_parse_song (source_apple.rs:415-421); the adapter's resolve/lyrics faces read extra[\"song_id\"] back (source_apple.rs:671-676, :706-710).",
+  "id": { "provider": "applemusic", "id": "1440833098" },
+  "title": "晴天",
+  "artists": ["周杰伦"],
+  "album": "叶惠美",
+  "duration": { "secs": 269, "nanos": 0 },
+  "artwork_url": "https://is1-ssl.mzstatic.com/image/thumb/Music125/v4/600x600bb.jpg",
+  "available_qualities": ["Low"],
+  "extra": { "song_id": "1440833098", "preview_only": "true" }
+}

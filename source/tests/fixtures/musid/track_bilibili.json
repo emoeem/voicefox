@@ -1,0 +1,12 @@
+{
+  "derivation_note": "musid-dli Track wire shape (pinned by musid-dli models/track.rs legacy+round-trip tests). Sample values from musid-dli tests/fixtures/bilibili/search_title_em.json result[0] — a RECONSTRUCTED response-shape fixture per that directory's README (not a live capture), chosen because it exercises the <em> highlight strip that both sides share (voicefox bili/search.rs strip_html == musid-dli source_bilibili.rs strip_html). Fields: bvid BV1xx411c7mD / title 测试<em>视频</em> stripped to 测试视频 / author UP主 / cid 1001 / aid 170001 / duration '03:00' parsed to 180s / pic //example.com normalized to https:. available_qualities empty — bilibili declares no per-item tiers (both parsers agree); the resolve face picks the DASH audio by bandwidth at play time. extra carries bvid/cid/aid, both parsers set them (bili/search.rs parse_song == source_bilibili.rs bili_parse_search_song port).",
+  "id": { "provider": "bilibili", "id": "BV1xx411c7mD" },
+  "title": "测试视频",
+  "artists": ["UP主"],
+  "album": "测试视频",
+  "album_id": "BV1xx411c7mD",
+  "duration": { "secs": 180, "nanos": 0 },
+  "artwork_url": "https://example.com/cover.jpg",
+  "available_qualities": [],
+  "extra": { "bvid": "BV1xx411c7mD", "cid": "1001", "aid": "170001" }
+}

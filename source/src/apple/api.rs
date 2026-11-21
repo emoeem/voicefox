@@ -185,7 +185,9 @@ pub(super) fn artwork_url(template: &str, size: u32) -> Option<String> {
     )
 }
 
-fn parse_song(item: &Value) -> Option<SongInfo> {
+/// `pub(crate)` 供 musid 适配层 V2 对账测试消费真实 legacy parse 产物
+/// （docs/MUSID_DLI_ADAPTER.md §12.5：仅可见性扩宽，函数体零改动）。
+pub(crate) fn parse_song(item: &Value) -> Option<SongInfo> {
     let id = item["id"].as_str()?.trim().to_string();
     let attributes = item.get("attributes")?;
     let name = attributes["name"].as_str()?.trim().to_string();

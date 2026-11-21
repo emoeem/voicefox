@@ -5,7 +5,8 @@
 //!   登录链路 / 健康检测不读 musid map；
 //! - 替换模式：musid 先行，失败立即按旧路径重试并计 fallback；
 //! - probe 影子模式：旧路径权威，恒展示旧路径结果，仅计数对照；
-//! - `soda`/`local`/`bili` 恒旧路径；未启用源不路由。
+//! - `soda`/`local` 恒旧路径；bili 的面级账面由 V2 注册表行承载（切片 4
+//!   起搜索/流地址路由、歌词 LegacyOnly）；未启用源不路由。
 //!
 //! 歌词面路由（替换 + probe 双跑）依赖歌词转换变体：相关用例内联在本文件
 //! 尾部，逐个挂 `#[cfg(feature = "musid-dli-adapter-lyrics")]` 门。
@@ -298,9 +299,12 @@ async fn routes_default_off_keep_legacy_only() {
     );
 }
 
-/// `soda`/`bili`（不在 §1 命名表 / 独立登录链路）恒旧路径；未启用的源不路由。
+/// `soda`（不在 §1 命名表）恒旧路径；未启用的源不路由。bili 的面级账面在
+/// V2 切片 4 起由注册表行承载（搜索/流地址路由、歌词 LegacyOnly）——
+/// bili 的路由行为由本文件尾部 `v2_registry_bilibili_routes_search_and_song_url_but_never_lyric`
+/// 承载，不再在本用例断言"恒旧路径"。
 #[tokio::test]
-async fn soda_bili_and_disabled_sources_never_route_to_musid() {
+async fn soda_and_disabled_sources_never_route_to_musid() {
     // soda 不在 §1 命名表：即使注册了影子源也走旧路径。
     let legacy_soda = Arc::new(ScriptedSource {
         id: SourceId::Soda,
@@ -334,36 +338,6 @@ async fn soda_bili_and_disabled_sources_never_route_to_musid() {
         Vec::<String>::new(),
         "soda 影子源零调用"
     );
-
-    // bili 在 §1 命名表但恒旧路径（独立存储 + 登录链路）。
-    let legacy_bili = Arc::new(ScriptedSource {
-        id: SourceId::Bili,
-        name: "legacy-bili",
-        search: Script::Value(vec![song_item("B1", SourceId::Bili, "哔哩", "歌手")]),
-        url: Script::Fail,
-        lyric: Script::Fail,
-        playlists: false,
-        calls: Arc::new(Mutex::new(Vec::new())),
-    });
-    let musid_bili = Arc::new(ScriptedSource {
-        id: SourceId::Bili,
-        name: "musid-bili",
-        search: Script::Value(vec![song_item("B1", SourceId::Bili, "哔哩", "歌手")]),
-        url: Script::Fail,
-        lyric: Script::Fail,
-        playlists: false,
-        calls: Arc::new(Mutex::new(Vec::new())),
-    });
-    let mut manager = SourceManager::new(SourceId::Kw, &[SourceId::Bili]);
-    manager.register(legacy_bili.clone());
-    manager.register_musid_source(musid_bili.clone());
-    manager.set_musid_routes(routes(true, true, true, true, false));
-    let result = manager
-        .search_scoped("普通关键词", 1, 20, Some(SourceId::Bili))
-        .await
-        .expect("bili 走旧路径");
-    assert_eq!(result.items[0].name, "哔哩");
-    assert_eq!(musid_bili.calls(), Vec::<String>::new());
 
     // 未启用的源：整体报「未启用」，影子源不参与。
     let musid_wy = Arc::new(ScriptedSource {
@@ -1769,4 +1743,995 @@ async fn lyric_cross_source_rescue_is_not_attributed_to_the_routed_source() {
     // 主请求链确实走过：musid 槽位 + 内置 wy 都被调用且都无词。
     assert!(musid_wy.calls().contains(&"musid-wy/lyric".to_string()));
     assert!(legacy_wy.calls().contains(&"legacy-wy/lyric".to_string()));
+}
+
+// ---------------------------------------------------------------------------
+// V2 逐源路由注册表（docs/MUSID_DLI_ADAPTER.md §12；jamendo = 切片 1 模板）
+// ---------------------------------------------------------------------------
+// 上方 V1 用例以 Wy 为载体继续全绿 = 注册表放行行为保持的回归 pin（切片
+// 9 起 Wy 三面账面为 Migrated，放行结论与 V1Routed 完全一致——运行行为
+// 零变化，V2 只补对账与登记）。
+
+/// jamendo（切片 1）：搜索面 + 流地址面（Migrated）路由到 musid；歌词面
+/// （LegacyOnly，musid 歌词 stub 的 Other 不许污染旧路径 NotFound）恒旧
+/// 路径——即便 musid 影子源"有词"也不参与。
+#[tokio::test]
+async fn v2_registry_jamendo_routes_search_and_song_url_but_never_lyric() {
+    let legacy = Arc::new(ScriptedSource {
+        id: SourceId::Jamendo,
+        name: "legacy-jamendo",
+        search: Script::Value(vec![song_item("J1", SourceId::Jamendo, "旧路", "歌手")]),
+        url: Script::Value("legacy.example".to_string()),
+        // 与真实旧路径同形：jamendo/mod.rs:421-424 恒 FetchError::NotFound。
+        lyric: Script::Fail,
+        playlists: false,
+        calls: Arc::new(Mutex::new(Vec::new())),
+    });
+    let musid = Arc::new(ScriptedSource {
+        id: SourceId::Jamendo,
+        name: "musid-jamendo",
+        search: Script::Value(vec![song_item("J1", SourceId::Jamendo, "双栈", "歌手")]),
+        url: Script::Value("musid.example".to_string()),
+        // 若注册表歌词门失效，这个"有词"的 stub 会被歌词槽位命中。
+        lyric: Script::Value(lyric("[00:01.00]musid-stub")),
+        playlists: false,
+        calls: Arc::new(Mutex::new(Vec::new())),
+    });
+    let manager = wired_manager(&[SourceId::Jamendo], legacy.clone(), musid.clone());
+
+    // 搜索面（Migrated）：musid 先行命中，计 MusidOk。
+    let result = manager
+        .search_scoped("kw", 1, 20, Some(SourceId::Jamendo))
+        .await
+        .expect("musid 路径搜索");
+    assert_eq!(result.items[0].name, "双栈");
+    assert_eq!(
+        count_of(
+            &manager,
+            ParityFace::Search,
+            SourceId::Jamendo,
+            ParityOutcome::MusidOk
+        ),
+        1
+    );
+
+    // 流地址面（Migrated）：musid 命中。
+    let url = manager
+        .get_song_url(
+            &song_item("J1", SourceId::Jamendo, "双栈", "歌手"),
+            Quality::Low128,
+        )
+        .await
+        .expect("musid 解析");
+    assert_eq!(url.url, "https://musid.example/audio.mp3");
+    assert_eq!(
+        count_of(
+            &manager,
+            ParityFace::SongUrl,
+            SourceId::Jamendo,
+            ParityOutcome::MusidOk
+        ),
+        1
+    );
+
+    // 歌词面（LegacyOnly）：用户拿到旧路径 NotFound，musid stub 的
+    // "musid-stub" 歌词与"该音源不支持"错误都到不了用户；影子源歌词面
+    // 零调用。
+    let error = manager
+        .get_lyric_with_fallback(&song_item("J1", SourceId::Jamendo, "双栈", "歌手"))
+        .await
+        .expect_err("歌词面恒旧路径");
+    assert!(matches!(error, FetchError::NotFound));
+    assert!(
+        !musid.calls().contains(&"musid-jamendo/lyric".to_string()),
+        "注册表拒绝后 musid 歌词面零调用（probe 影子同门），实际: {:?}",
+        musid.calls()
+    );
+    assert_eq!(
+        count_of(
+            &manager,
+            ParityFace::Lyric,
+            SourceId::Jamendo,
+            ParityOutcome::MusidOk
+        ),
+        0
+    );
+    assert_eq!(
+        musid.calls(),
+        vec![
+            "musid-jamendo/search".to_string(),
+            "musid-jamendo/url".to_string()
+        ],
+        "musid 只参与搜索/流地址两面，歌词面（注册表拒绝）零调用"
+    );
+    assert!(
+        legacy.calls().contains(&"legacy-jamendo/lyric".to_string()),
+        "歌词走旧路径（find_music 跨源 rescue 会再触发同源 search，故按 contains 断言）"
+    );
+}
+
+/// fivesing（切片 2）：搜索面 + 流地址面 Migrated——musid 先行命中、旧链
+/// 零调用（与 jamendo 同形；歌词面在下方歌词门用例）。
+#[tokio::test]
+async fn v2_registry_fivesing_routes_search_and_song_url() {
+    let legacy = Arc::new(ScriptedSource {
+        id: SourceId::Fivesing,
+        name: "legacy-fivesing",
+        search: Script::Value(vec![song_item("F1", SourceId::Fivesing, "旧路", "歌手")]),
+        url: Script::Value("legacy.example".to_string()),
+        lyric: Script::Value(lyric("[00:01.00]legacy")),
+        playlists: false,
+        calls: Arc::new(Mutex::new(Vec::new())),
+    });
+    let musid = Arc::new(ScriptedSource {
+        id: SourceId::Fivesing,
+        name: "musid-fivesing",
+        search: Script::Value(vec![song_item("F1", SourceId::Fivesing, "双栈", "歌手")]),
+        url: Script::Value("musid.example".to_string()),
+        lyric: Script::Value(lyric("[00:01.00]musid-stub")),
+        playlists: false,
+        calls: Arc::new(Mutex::new(Vec::new())),
+    });
+    let manager = wired_manager(&[SourceId::Fivesing], legacy.clone(), musid.clone());
+
+    // 搜索面（Migrated）：musid 先行命中，计 MusidOk。
+    let result = manager
+        .search_scoped("kw", 1, 20, Some(SourceId::Fivesing))
+        .await
+        .expect("musid 路径搜索");
+    assert_eq!(result.items[0].name, "双栈");
+    assert_eq!(
+        count_of(
+            &manager,
+            ParityFace::Search,
+            SourceId::Fivesing,
+            ParityOutcome::MusidOk
+        ),
+        1
+    );
+
+    // 流地址面（Migrated）：musid 命中，旧链零调用。
+    let url = manager
+        .get_song_url(
+            &song_item("F1", SourceId::Fivesing, "双栈", "歌手"),
+            Quality::Low128,
+        )
+        .await
+        .expect("musid 解析");
+    assert_eq!(url.url, "https://musid.example/audio.mp3");
+    assert_eq!(
+        count_of(
+            &manager,
+            ParityFace::SongUrl,
+            SourceId::Fivesing,
+            ParityOutcome::MusidOk
+        ),
+        1
+    );
+    assert!(
+        !legacy.calls().contains(&"legacy-fivesing/url".to_string()),
+        "musid 命中后旧链不重试，实际: {:?}",
+        legacy.calls()
+    );
+    assert_eq!(
+        musid.calls(),
+        vec![
+            "musid-fivesing/search".to_string(),
+            "musid-fivesing/url".to_string()
+        ],
+        "musid 参与搜索/流地址两面（歌词面在本文件歌词门用例）"
+    );
+}
+
+/// fivesing 歌词面（Migrated，切片 2）：musid 歌词槽位先于内置 fallback
+/// 命中——与 jamendo 的 LegacyOnly 拒绝互为镜像：账面从 V1Routed 改
+/// Migrated 后运行行为不变（V1 起即放行），本用例把"三面全路由"的第三面
+/// 钉进 manager 级门禁。
+#[cfg(feature = "musid-dli-adapter-lyrics")]
+#[tokio::test]
+async fn v2_registry_fivesing_lyric_face_hits_the_musid_slot() {
+    let legacy = Arc::new(ScriptedSource {
+        id: SourceId::Fivesing,
+        name: "legacy-fivesing",
+        search: Script::Fail,
+        url: Script::Fail,
+        lyric: Script::Value(lyric("[00:01.00]legacy")),
+        playlists: false,
+        calls: Arc::new(Mutex::new(Vec::new())),
+    });
+    let musid = Arc::new(ScriptedSource {
+        id: SourceId::Fivesing,
+        name: "musid-fivesing",
+        search: Script::Fail,
+        url: Script::Fail,
+        lyric: Script::Value(lyric("[00:01.00]musid-stub")),
+        playlists: false,
+        calls: Arc::new(Mutex::new(Vec::new())),
+    });
+    let manager = wired_manager(&[SourceId::Fivesing], legacy.clone(), musid.clone());
+
+    let data = manager
+        .get_lyric_with_fallback(&song_item("F1", SourceId::Fivesing, "双栈", "歌手"))
+        .await
+        .expect("歌词面 Migrated：musid 槽位命中");
+    assert_eq!(data.lyric, "[00:01.00]musid-stub");
+    assert_eq!(
+        count_of(
+            &manager,
+            ParityFace::Lyric,
+            SourceId::Fivesing,
+            ParityOutcome::MusidOk
+        ),
+        1
+    );
+    assert!(
+        !legacy
+            .calls()
+            .contains(&"legacy-fivesing/lyric".to_string()),
+        "musid 有词时内置 fallback 零调用，实际: {:?}",
+        legacy.calls()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// V2 切片 3-7（apple/bilibili/migu/kuwo/kugou）：注册表放行/拒绝的 manager
+// 行为（桩源双栈用例，与 jamendo/fivesing 同形；真网对账靠 probe 计数）。
+// ---------------------------------------------------------------------------
+
+/// apple（切片 3）：搜索面 + 流地址面 Migrated——musid 先行命中、旧链
+/// 零调用（与 fivesing 同形；歌词面见下方 apple LegacyOnly 形态说明）。
+#[tokio::test]
+async fn v2_registry_apple_routes_search_and_song_url() {
+    let legacy = Arc::new(ScriptedSource {
+        id: SourceId::Apple,
+        name: "legacy-apple",
+        search: Script::Value(vec![song_item("A1", SourceId::Apple, "旧路", "歌手")]),
+        url: Script::Value("legacy.example".to_string()),
+        lyric: Script::Value(lyric("[00:01.00]legacy")),
+        playlists: false,
+        calls: Arc::new(Mutex::new(Vec::new())),
+    });
+    let musid = Arc::new(ScriptedSource {
+        id: SourceId::Apple,
+        name: "musid-apple",
+        search: Script::Value(vec![song_item("A1", SourceId::Apple, "双栈", "歌手")]),
+        url: Script::Value("musid.example".to_string()),
+        lyric: Script::Value(lyric("[00:01.00]musid-stub")),
+        playlists: false,
+        calls: Arc::new(Mutex::new(Vec::new())),
+    });
+    let manager = wired_manager(&[SourceId::Apple], legacy.clone(), musid.clone());
+
+    // 搜索面（Migrated）：musid 先行命中，计 MusidOk。
+    let result = manager
+        .search_scoped("kw", 1, 20, Some(SourceId::Apple))
+        .await
+        .expect("musid 路径搜索");
+    assert_eq!(result.items[0].name, "双栈");
+    assert_eq!(
+        count_of(
+            &manager,
+            ParityFace::Search,
+            SourceId::Apple,
+            ParityOutcome::MusidOk
+        ),
+        1
+    );
+
+    // 流地址面（Migrated）：musid 命中，旧链零调用。
+    let url = manager
+        .get_song_url(
+            &song_item("A1", SourceId::Apple, "双栈", "歌手"),
+            Quality::Low128,
+        )
+        .await
+        .expect("musid 解析");
+    assert_eq!(url.url, "https://musid.example/audio.mp3");
+    assert_eq!(
+        count_of(
+            &manager,
+            ParityFace::SongUrl,
+            SourceId::Apple,
+            ParityOutcome::MusidOk
+        ),
+        1
+    );
+    assert!(
+        !legacy.calls().contains(&"legacy-apple/url".to_string()),
+        "musid 命中后旧链不重试，实际: {:?}",
+        legacy.calls()
+    );
+}
+
+/// bilibili（切片 4）：搜索 + 流地址 Migrated、歌词 LegacyOnly——V1 显式
+/// matches! 排除放开后由注册表行承载路由判定：搜索/流地址 musid 先行
+/// 命中；歌词面用户拿到旧路径 NotFound，musid stub 的歌词到不了用户、
+/// 影子源歌词面零调用（与 jamendo 歌词面同形镜像）。登录/会话/用户数据
+/// 不经本判定（manager 登录链路不读影子 map），恒旧路径。
+#[tokio::test]
+async fn v2_registry_bilibili_routes_search_and_song_url_but_never_lyric() {
+    let legacy = Arc::new(ScriptedSource {
+        id: SourceId::Bili,
+        name: "legacy-bili",
+        search: Script::Value(vec![song_item("B1", SourceId::Bili, "旧路", "歌手")]),
+        url: Script::Value("legacy.example".to_string()),
+        // 与真实旧路径同形：bili/mod.rs:497-499 恒 FetchError::NotFound。
+        lyric: Script::Fail,
+        playlists: false,
+        calls: Arc::new(Mutex::new(Vec::new())),
+    });
+    let musid = Arc::new(ScriptedSource {
+        id: SourceId::Bili,
+        name: "musid-bili",
+        search: Script::Value(vec![song_item("B1", SourceId::Bili, "双栈", "歌手")]),
+        url: Script::Value("musid.example".to_string()),
+        // 若注册表歌词门失效，这个"有词"的 stub 会被歌词槽位命中。
+        lyric: Script::Value(lyric("[00:01.00]musid-stub")),
+        playlists: false,
+        calls: Arc::new(Mutex::new(Vec::new())),
+    });
+    let manager = wired_manager(&[SourceId::Bili], legacy.clone(), musid.clone());
+
+    // 搜索面（Migrated）：musid 先行命中，计 MusidOk。
+    let result = manager
+        .search_scoped("普通关键词", 1, 20, Some(SourceId::Bili))
+        .await
+        .expect("musid 路径搜索");
+    assert_eq!(result.items[0].name, "双栈");
+    assert_eq!(
+        count_of(
+            &manager,
+            ParityFace::Search,
+            SourceId::Bili,
+            ParityOutcome::MusidOk
+        ),
+        1
+    );
+
+    // 流地址面（Migrated）：musid 命中。
+    let url = manager
+        .get_song_url(
+            &song_item("B1", SourceId::Bili, "双栈", "歌手"),
+            Quality::Low128,
+        )
+        .await
+        .expect("musid 解析");
+    assert_eq!(url.url, "https://musid.example/audio.mp3");
+    assert_eq!(
+        count_of(
+            &manager,
+            ParityFace::SongUrl,
+            SourceId::Bili,
+            ParityOutcome::MusidOk
+        ),
+        1
+    );
+
+    // 歌词面（LegacyOnly）：用户拿到旧路径 NotFound，musid stub 的
+    // "musid-stub" 歌词到不了用户；影子源歌词面零调用。
+    let error = manager
+        .get_lyric_with_fallback(&song_item("B1", SourceId::Bili, "双栈", "歌手"))
+        .await
+        .expect_err("歌词面恒旧路径");
+    assert!(matches!(error, FetchError::NotFound));
+    assert!(
+        !musid.calls().contains(&"musid-bili/lyric".to_string()),
+        "注册表拒绝后 musid 歌词面零调用（probe 影子同门），实际: {:?}",
+        musid.calls()
+    );
+    assert_eq!(
+        count_of(
+            &manager,
+            ParityFace::Lyric,
+            SourceId::Bili,
+            ParityOutcome::MusidOk
+        ),
+        0
+    );
+    assert_eq!(
+        musid.calls(),
+        vec![
+            "musid-bili/search".to_string(),
+            "musid-bili/url".to_string()
+        ],
+        "musid 只参与搜索/流地址两面，歌词面（注册表拒绝）零调用"
+    );
+}
+
+/// migu（切片 5）：搜索面 + 流地址面 Migrated（与 apple 同形；登录面双侧
+/// 匿名不设行项，本用例的桩无登录面可断言——登录链路本就不读影子 map）。
+#[tokio::test]
+async fn v2_registry_migu_routes_search_and_song_url() {
+    let legacy = Arc::new(ScriptedSource {
+        id: SourceId::Mg,
+        name: "legacy-migu",
+        search: Script::Value(vec![song_item("M1", SourceId::Mg, "旧路", "歌手")]),
+        url: Script::Value("legacy.example".to_string()),
+        lyric: Script::Value(lyric("[00:01.00]legacy")),
+        playlists: false,
+        calls: Arc::new(Mutex::new(Vec::new())),
+    });
+    let musid = Arc::new(ScriptedSource {
+        id: SourceId::Mg,
+        name: "musid-migu",
+        search: Script::Value(vec![song_item("M1", SourceId::Mg, "双栈", "歌手")]),
+        url: Script::Value("musid.example".to_string()),
+        lyric: Script::Value(lyric("[00:01.00]musid-stub")),
+        playlists: false,
+        calls: Arc::new(Mutex::new(Vec::new())),
+    });
+    let manager = wired_manager(&[SourceId::Mg], legacy.clone(), musid.clone());
+
+    let result = manager
+        .search_scoped("kw", 1, 20, Some(SourceId::Mg))
+        .await
+        .expect("musid 路径搜索");
+    assert_eq!(result.items[0].name, "双栈");
+    assert_eq!(
+        count_of(
+            &manager,
+            ParityFace::Search,
+            SourceId::Mg,
+            ParityOutcome::MusidOk
+        ),
+        1
+    );
+
+    let url = manager
+        .get_song_url(
+            &song_item("M1", SourceId::Mg, "双栈", "歌手"),
+            Quality::Low128,
+        )
+        .await
+        .expect("musid 解析");
+    assert_eq!(url.url, "https://musid.example/audio.mp3");
+    assert_eq!(
+        count_of(
+            &manager,
+            ParityFace::SongUrl,
+            SourceId::Mg,
+            ParityOutcome::MusidOk
+        ),
+        1
+    );
+    assert!(
+        !legacy.calls().contains(&"legacy-migu/url".to_string()),
+        "musid 命中后旧链不重试，实际: {:?}",
+        legacy.calls()
+    );
+}
+
+/// kuwo（切片 6）：搜索面 + 流地址面 Migrated（与 migu 同形；Anonymous
+/// web token 登录恒旧路径——登录链路本就不读影子 map）。
+#[tokio::test]
+async fn v2_registry_kuwo_routes_search_and_song_url() {
+    let legacy = Arc::new(ScriptedSource {
+        id: SourceId::Kw,
+        name: "legacy-kuwo",
+        search: Script::Value(vec![song_item("K1", SourceId::Kw, "旧路", "歌手")]),
+        url: Script::Value("legacy.example".to_string()),
+        lyric: Script::Value(lyric("[00:01.00]legacy")),
+        playlists: false,
+        calls: Arc::new(Mutex::new(Vec::new())),
+    });
+    let musid = Arc::new(ScriptedSource {
+        id: SourceId::Kw,
+        name: "musid-kuwo",
+        search: Script::Value(vec![song_item("K1", SourceId::Kw, "双栈", "歌手")]),
+        url: Script::Value("musid.example".to_string()),
+        lyric: Script::Value(lyric("[00:01.00]musid-stub")),
+        playlists: false,
+        calls: Arc::new(Mutex::new(Vec::new())),
+    });
+    let manager = wired_manager(&[SourceId::Kw], legacy.clone(), musid.clone());
+
+    let result = manager
+        .search_scoped("kw", 1, 20, Some(SourceId::Kw))
+        .await
+        .expect("musid 路径搜索");
+    assert_eq!(result.items[0].name, "双栈");
+    assert_eq!(
+        count_of(
+            &manager,
+            ParityFace::Search,
+            SourceId::Kw,
+            ParityOutcome::MusidOk
+        ),
+        1
+    );
+
+    let url = manager
+        .get_song_url(
+            &song_item("K1", SourceId::Kw, "双栈", "歌手"),
+            Quality::Low128,
+        )
+        .await
+        .expect("musid 解析");
+    assert_eq!(url.url, "https://musid.example/audio.mp3");
+    assert_eq!(
+        count_of(
+            &manager,
+            ParityFace::SongUrl,
+            SourceId::Kw,
+            ParityOutcome::MusidOk
+        ),
+        1
+    );
+    assert!(
+        !legacy.calls().contains(&"legacy-kuwo/url".to_string()),
+        "musid 命中后旧链不重试，实际: {:?}",
+        legacy.calls()
+    );
+}
+
+/// kugou（切片 7）：搜索面 + 流地址面 Migrated（与 kuwo 同形；登录/扫码
+/// 恒旧路径——登录链路本就不读影子 map，流地址面匿名硬退化在真实 provider
+/// 侧由 musid_kugou_slice.rs 钉住）。
+#[tokio::test]
+async fn v2_registry_kugou_routes_search_and_song_url() {
+    let legacy = Arc::new(ScriptedSource {
+        id: SourceId::Kg,
+        name: "legacy-kugou",
+        search: Script::Value(vec![song_item("G1", SourceId::Kg, "旧路", "歌手")]),
+        url: Script::Value("legacy.example".to_string()),
+        lyric: Script::Value(lyric("[00:01.00]legacy")),
+        playlists: false,
+        calls: Arc::new(Mutex::new(Vec::new())),
+    });
+    let musid = Arc::new(ScriptedSource {
+        id: SourceId::Kg,
+        name: "musid-kugou",
+        search: Script::Value(vec![song_item("G1", SourceId::Kg, "双栈", "歌手")]),
+        url: Script::Value("musid.example".to_string()),
+        lyric: Script::Value(lyric("[00:01.00]musid-stub")),
+        playlists: false,
+        calls: Arc::new(Mutex::new(Vec::new())),
+    });
+    let manager = wired_manager(&[SourceId::Kg], legacy.clone(), musid.clone());
+
+    let result = manager
+        .search_scoped("kw", 1, 20, Some(SourceId::Kg))
+        .await
+        .expect("musid 路径搜索");
+    assert_eq!(result.items[0].name, "双栈");
+    assert_eq!(
+        count_of(
+            &manager,
+            ParityFace::Search,
+            SourceId::Kg,
+            ParityOutcome::MusidOk
+        ),
+        1
+    );
+
+    let url = manager
+        .get_song_url(
+            &song_item("G1", SourceId::Kg, "双栈", "歌手"),
+            Quality::Low128,
+        )
+        .await
+        .expect("musid 解析");
+    assert_eq!(url.url, "https://musid.example/audio.mp3");
+    assert_eq!(
+        count_of(
+            &manager,
+            ParityFace::SongUrl,
+            SourceId::Kg,
+            ParityOutcome::MusidOk
+        ),
+        1
+    );
+    assert!(
+        !legacy.calls().contains(&"legacy-kugou/url".to_string()),
+        "musid 命中后旧链不重试，实际: {:?}",
+        legacy.calls()
+    );
+}
+
+/// kugou 歌词面（Migrated，切片 7）：musid 歌词槽位先于内置 fallback 命中
+/// ——账面从 V1Routed 改 Migrated 后运行行为不变（V1 起即放行），本用例
+/// 把"三面全路由"的第三面钉进 manager 级门禁（逐字降级的产物形态在
+/// musid_kugou_slice.rs 的指纹 parity 用例钉住）。
+#[cfg(feature = "musid-dli-adapter-lyrics")]
+#[tokio::test]
+async fn v2_registry_kugou_lyric_face_hits_the_musid_slot() {
+    let legacy = Arc::new(ScriptedSource {
+        id: SourceId::Kg,
+        name: "legacy-kugou",
+        search: Script::Fail,
+        url: Script::Fail,
+        lyric: Script::Value(lyric("[00:01.00]legacy")),
+        playlists: false,
+        calls: Arc::new(Mutex::new(Vec::new())),
+    });
+    let musid = Arc::new(ScriptedSource {
+        id: SourceId::Kg,
+        name: "musid-kugou",
+        search: Script::Fail,
+        url: Script::Fail,
+        lyric: Script::Value(lyric("[00:01.00]musid-stub")),
+        playlists: false,
+        calls: Arc::new(Mutex::new(Vec::new())),
+    });
+    let manager = wired_manager(&[SourceId::Kg], legacy.clone(), musid.clone());
+
+    let data = manager
+        .get_lyric_with_fallback(&song_item("G1", SourceId::Kg, "双栈", "歌手"))
+        .await
+        .expect("歌词面 Migrated：musid 槽位命中");
+    assert_eq!(data.lyric, "[00:01.00]musid-stub");
+    assert_eq!(
+        count_of(
+            &manager,
+            ParityFace::Lyric,
+            SourceId::Kg,
+            ParityOutcome::MusidOk
+        ),
+        1
+    );
+    assert!(
+        !legacy.calls().contains(&"legacy-kugou/lyric".to_string()),
+        "musid 有词时内置 fallback 零调用，实际: {:?}",
+        legacy.calls()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// V2 切片 8-11（tx/wy/qianqian/joox，v2-batch-2）：注册表放行的 manager
+// 行为（桩源双栈用例，与切片 1-7 同形；三面 V1 起即放行，账面改 Migrated
+// 不改运行行为——本组把"三面全路由"钉进 manager 级门禁；真网对账靠 probe
+// 计数与各 musid_<source>_slice.rs 的真实 provider 用例）。
+// ---------------------------------------------------------------------------
+
+/// tx（切片 8）：搜索面 + 流地址面 Migrated——musid 先行命中、旧链零调用
+/// （与 kugou 同形；登录/扫码/微信扫码恒旧路径——登录链路本就不读影子
+/// map，wechat_login 双栈期恒 false §2.8）。
+#[tokio::test]
+async fn v2_registry_tx_routes_search_and_song_url() {
+    let legacy = Arc::new(ScriptedSource {
+        id: SourceId::Tx,
+        name: "legacy-tx",
+        search: Script::Value(vec![song_item("T1", SourceId::Tx, "旧路", "歌手")]),
+        url: Script::Value("legacy.example".to_string()),
+        lyric: Script::Value(lyric("[00:01.00]legacy")),
+        playlists: false,
+        calls: Arc::new(Mutex::new(Vec::new())),
+    });
+    let musid = Arc::new(ScriptedSource {
+        id: SourceId::Tx,
+        name: "musid-tx",
+        search: Script::Value(vec![song_item("T1", SourceId::Tx, "双栈", "歌手")]),
+        url: Script::Value("musid.example".to_string()),
+        lyric: Script::Value(lyric("[00:01.00]musid-stub")),
+        playlists: false,
+        calls: Arc::new(Mutex::new(Vec::new())),
+    });
+    let manager = wired_manager(&[SourceId::Tx], legacy.clone(), musid.clone());
+
+    let result = manager
+        .search_scoped("kw", 1, 20, Some(SourceId::Tx))
+        .await
+        .expect("musid 路径搜索");
+    assert_eq!(result.items[0].name, "双栈");
+    assert_eq!(
+        count_of(
+            &manager,
+            ParityFace::Search,
+            SourceId::Tx,
+            ParityOutcome::MusidOk
+        ),
+        1
+    );
+
+    let url = manager
+        .get_song_url(
+            &song_item("T1", SourceId::Tx, "双栈", "歌手"),
+            Quality::Low128,
+        )
+        .await
+        .expect("musid 解析");
+    assert_eq!(url.url, "https://musid.example/audio.mp3");
+    assert_eq!(
+        count_of(
+            &manager,
+            ParityFace::SongUrl,
+            SourceId::Tx,
+            ParityOutcome::MusidOk
+        ),
+        1
+    );
+    assert!(
+        !legacy.calls().contains(&"legacy-tx/url".to_string()),
+        "musid 命中后旧链不重试，实际: {:?}",
+        legacy.calls()
+    );
+}
+
+/// wy（切片 9）：搜索面 + 流地址面 Migrated——musid 先行命中、旧链零调用。
+/// wy 的 V1 载体用例（上方 V1 组）在本片后继续全绿 = Migrated 行为与
+/// V1Routed 一致的双证；登录态不对称（P5）的计数解读口径见 §11.8 (b)。
+#[tokio::test]
+async fn v2_registry_wy_routes_search_and_song_url() {
+    let legacy = Arc::new(ScriptedSource {
+        id: SourceId::Wy,
+        name: "legacy-wy",
+        search: Script::Value(vec![song_item("W1", SourceId::Wy, "旧路", "歌手")]),
+        url: Script::Value("legacy.example".to_string()),
+        lyric: Script::Value(lyric("[00:01.00]legacy")),
+        playlists: false,
+        calls: Arc::new(Mutex::new(Vec::new())),
+    });
+    let musid = Arc::new(ScriptedSource {
+        id: SourceId::Wy,
+        name: "musid-wy",
+        search: Script::Value(vec![song_item("W1", SourceId::Wy, "双栈", "歌手")]),
+        url: Script::Value("musid.example".to_string()),
+        lyric: Script::Value(lyric("[00:01.00]musid-stub")),
+        playlists: false,
+        calls: Arc::new(Mutex::new(Vec::new())),
+    });
+    let manager = wired_manager(&[SourceId::Wy], legacy.clone(), musid.clone());
+
+    let result = manager
+        .search_scoped("kw", 1, 20, Some(SourceId::Wy))
+        .await
+        .expect("musid 路径搜索");
+    assert_eq!(result.items[0].name, "双栈");
+    assert_eq!(
+        count_of(
+            &manager,
+            ParityFace::Search,
+            SourceId::Wy,
+            ParityOutcome::MusidOk
+        ),
+        1
+    );
+
+    let url = manager
+        .get_song_url(
+            &song_item("W1", SourceId::Wy, "双栈", "歌手"),
+            Quality::Low128,
+        )
+        .await
+        .expect("musid 解析");
+    assert_eq!(url.url, "https://musid.example/audio.mp3");
+    assert_eq!(
+        count_of(
+            &manager,
+            ParityFace::SongUrl,
+            SourceId::Wy,
+            ParityOutcome::MusidOk
+        ),
+        1
+    );
+    assert!(
+        !legacy.calls().contains(&"legacy-wy/url".to_string()),
+        "musid 命中后旧链不重试，实际: {:?}",
+        legacy.calls()
+    );
+}
+
+/// qianqian（切片 10，用户启用源）：搜索面 + 流地址面 Migrated——musid
+/// 先行命中、旧链零调用；空 tsid 双失败链在 musid_qianqian_slice.rs 的
+/// manager 级真实用例钉住。
+#[tokio::test]
+async fn v2_registry_qianqian_routes_search_and_song_url() {
+    let legacy = Arc::new(ScriptedSource {
+        id: SourceId::Qianqian,
+        name: "legacy-qianqian",
+        search: Script::Value(vec![song_item("Q1", SourceId::Qianqian, "旧路", "歌手")]),
+        url: Script::Value("legacy.example".to_string()),
+        lyric: Script::Value(lyric("[00:01.00]legacy")),
+        playlists: false,
+        calls: Arc::new(Mutex::new(Vec::new())),
+    });
+    let musid = Arc::new(ScriptedSource {
+        id: SourceId::Qianqian,
+        name: "musid-qianqian",
+        search: Script::Value(vec![song_item("Q1", SourceId::Qianqian, "双栈", "歌手")]),
+        url: Script::Value("musid.example".to_string()),
+        lyric: Script::Value(lyric("[00:01.00]musid-stub")),
+        playlists: false,
+        calls: Arc::new(Mutex::new(Vec::new())),
+    });
+    let manager = wired_manager(&[SourceId::Qianqian], legacy.clone(), musid.clone());
+
+    let result = manager
+        .search_scoped("kw", 1, 20, Some(SourceId::Qianqian))
+        .await
+        .expect("musid 路径搜索");
+    assert_eq!(result.items[0].name, "双栈");
+    assert_eq!(
+        count_of(
+            &manager,
+            ParityFace::Search,
+            SourceId::Qianqian,
+            ParityOutcome::MusidOk
+        ),
+        1
+    );
+
+    let url = manager
+        .get_song_url(
+            &song_item("Q1", SourceId::Qianqian, "双栈", "歌手"),
+            Quality::Low128,
+        )
+        .await
+        .expect("musid 解析");
+    assert_eq!(url.url, "https://musid.example/audio.mp3");
+    assert_eq!(
+        count_of(
+            &manager,
+            ParityFace::SongUrl,
+            SourceId::Qianqian,
+            ParityOutcome::MusidOk
+        ),
+        1
+    );
+    assert!(
+        !legacy.calls().contains(&"legacy-qianqian/url".to_string()),
+        "musid 命中后旧链不重试，实际: {:?}",
+        legacy.calls()
+    );
+}
+
+/// joox（切片 11，用户启用源）：搜索面 + 流地址面 Migrated——musid 先行
+/// 命中、旧链零调用；封面面不接 musid（get_cover_url 走歌曲模型回填，
+/// 恒旧路径语义）。
+#[tokio::test]
+async fn v2_registry_joox_routes_search_and_song_url() {
+    let legacy = Arc::new(ScriptedSource {
+        id: SourceId::Joox,
+        name: "legacy-joox",
+        search: Script::Value(vec![song_item("X1", SourceId::Joox, "旧路", "歌手")]),
+        url: Script::Value("legacy.example".to_string()),
+        lyric: Script::Value(lyric("[00:01.00]legacy")),
+        playlists: false,
+        calls: Arc::new(Mutex::new(Vec::new())),
+    });
+    let musid = Arc::new(ScriptedSource {
+        id: SourceId::Joox,
+        name: "musid-joox",
+        search: Script::Value(vec![song_item("X1", SourceId::Joox, "双栈", "歌手")]),
+        url: Script::Value("musid.example".to_string()),
+        lyric: Script::Value(lyric("[00:01.00]musid-stub")),
+        playlists: false,
+        calls: Arc::new(Mutex::new(Vec::new())),
+    });
+    let manager = wired_manager(&[SourceId::Joox], legacy.clone(), musid.clone());
+
+    let result = manager
+        .search_scoped("kw", 1, 20, Some(SourceId::Joox))
+        .await
+        .expect("musid 路径搜索");
+    assert_eq!(result.items[0].name, "双栈");
+    assert_eq!(
+        count_of(
+            &manager,
+            ParityFace::Search,
+            SourceId::Joox,
+            ParityOutcome::MusidOk
+        ),
+        1
+    );
+
+    let url = manager
+        .get_song_url(
+            &song_item("X1", SourceId::Joox, "双栈", "歌手"),
+            Quality::Low128,
+        )
+        .await
+        .expect("musid 解析");
+    assert_eq!(url.url, "https://musid.example/audio.mp3");
+    assert_eq!(
+        count_of(
+            &manager,
+            ParityFace::SongUrl,
+            SourceId::Joox,
+            ParityOutcome::MusidOk
+        ),
+        1
+    );
+    assert!(
+        !legacy.calls().contains(&"legacy-joox/url".to_string()),
+        "musid 命中后旧链不重试，实际: {:?}",
+        legacy.calls()
+    );
+}
+
+/// qianqian 歌词面（Migrated，切片 10）：musid 歌词槽位先于内置 fallback
+/// 命中——账面从 V1Routed 改 Migrated 后运行行为不变（V1 起即放行），
+/// 本用例把"三面全路由"的第三面钉进 manager 级门禁（纯 LRC 无逐字，
+/// legacy 千千本就无逐字，无降级登记）。
+#[cfg(feature = "musid-dli-adapter-lyrics")]
+#[tokio::test]
+async fn v2_registry_qianqian_lyric_face_hits_the_musid_slot() {
+    let legacy = Arc::new(ScriptedSource {
+        id: SourceId::Qianqian,
+        name: "legacy-qianqian",
+        search: Script::Fail,
+        url: Script::Fail,
+        lyric: Script::Value(lyric("[00:01.00]legacy")),
+        playlists: false,
+        calls: Arc::new(Mutex::new(Vec::new())),
+    });
+    let musid = Arc::new(ScriptedSource {
+        id: SourceId::Qianqian,
+        name: "musid-qianqian",
+        search: Script::Fail,
+        url: Script::Fail,
+        lyric: Script::Value(lyric("[00:01.00]musid-stub")),
+        playlists: false,
+        calls: Arc::new(Mutex::new(Vec::new())),
+    });
+    let manager = wired_manager(&[SourceId::Qianqian], legacy.clone(), musid.clone());
+
+    let data = manager
+        .get_lyric_with_fallback(&song_item("Q1", SourceId::Qianqian, "双栈", "歌手"))
+        .await
+        .expect("歌词面 Migrated：musid 槽位命中");
+    assert_eq!(data.lyric, "[00:01.00]musid-stub");
+    assert_eq!(
+        count_of(
+            &manager,
+            ParityFace::Lyric,
+            SourceId::Qianqian,
+            ParityOutcome::MusidOk
+        ),
+        1
+    );
+    assert!(
+        !legacy
+            .calls()
+            .contains(&"legacy-qianqian/lyric".to_string()),
+        "musid 有词时内置 fallback 零调用，实际: {:?}",
+        legacy.calls()
+    );
+}
+
+/// joox 歌词面（Migrated，切片 11）：与 qianqian 同形——musid 歌词槽位
+/// 先于内置 fallback 命中（纯 LRC，musid lyric_live base64 解码后无逐字，
+/// legacy 本就无逐字，无降级登记）。
+#[cfg(feature = "musid-dli-adapter-lyrics")]
+#[tokio::test]
+async fn v2_registry_joox_lyric_face_hits_the_musid_slot() {
+    let legacy = Arc::new(ScriptedSource {
+        id: SourceId::Joox,
+        name: "legacy-joox",
+        search: Script::Fail,
+        url: Script::Fail,
+        lyric: Script::Value(lyric("[00:01.00]legacy")),
+        playlists: false,
+        calls: Arc::new(Mutex::new(Vec::new())),
+    });
+    let musid = Arc::new(ScriptedSource {
+        id: SourceId::Joox,
+        name: "musid-joox",
+        search: Script::Fail,
+        url: Script::Fail,
+        lyric: Script::Value(lyric("[00:01.00]musid-stub")),
+        playlists: false,
+        calls: Arc::new(Mutex::new(Vec::new())),
+    });
+    let manager = wired_manager(&[SourceId::Joox], legacy.clone(), musid.clone());
+
+    let data = manager
+        .get_lyric_with_fallback(&song_item("X1", SourceId::Joox, "双栈", "歌手"))
+        .await
+        .expect("歌词面 Migrated：musid 槽位命中");
+    assert_eq!(data.lyric, "[00:01.00]musid-stub");
+    assert_eq!(
+        count_of(
+            &manager,
+            ParityFace::Lyric,
+            SourceId::Joox,
+            ParityOutcome::MusidOk
+        ),
+        1
+    );
+    assert!(
+        !legacy.calls().contains(&"legacy-joox/lyric".to_string()),
+        "musid 有词时内置 fallback 零调用，实际: {:?}",
+        legacy.calls()
+    );
 }

@@ -1068,6 +1068,450 @@ impl MusicSource for AdapterMusicSource {
 }
 
 // ---------------------------------------------------------------------------
+// V2 逐源路由注册表（docs/MUSID_DLI_ADAPTER.md §12；manager `musid_route` 消费）
+// ---------------------------------------------------------------------------
+
+/// 单个源单个面的路由账面（三态）。
+///
+/// V2 逐源迁移 = 每源一行、每面一格的注册表；`manager::musid_route` 在
+/// V1 判定（总闸 && 面开关 && 命名表可映射 && 非 Local/Soda/Bili &&
+/// enabled && 影子源已注册）之上追加本表的放行结论。行内各面**独立**
+/// 改账：切片落地时把对过账的面改 [`FaceRoute::Migrated`]、语义不等价的
+/// 面改 [`FaceRoute::LegacyOnly`]，其余源不受影响（每源独立可回退）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FaceRoute {
+    /// V1 双栈已路由、V2 逐源对账未做：路由放行，运行行为与 V1 完全一致
+    /// （V1 代码面上 10 源全部"已接"，差异只在子 feature 与运行期 config）。
+    /// 该源的对账切片落地时逐面改 [`FaceRoute::Migrated`] 或
+    /// [`FaceRoute::LegacyOnly`]。
+    V1Routed,
+    /// V2 切片已落地：对账 fixture 与回落规则已登记（docs §12.4），路由放行。
+    Migrated,
+    /// 恒旧路径：musid 侧能力缺失或语义不等价，路由判定拒绝并登记原因。
+    /// 这是"能力缺失回落旧路径（不是 Unsupported 直接抛给用户）"的静态层
+    /// ——LegacyOnly 面上 musid 的"该音源不支持"类错误永远到不了用户。
+    LegacyOnly(&'static str),
+}
+
+impl FaceRoute {
+    /// 路由判定用：该面是否允许经 musid-dli。
+    pub fn routes_to_musid(self) -> bool {
+        matches!(self, FaceRoute::V1Routed | FaceRoute::Migrated)
+    }
+}
+
+/// 注册表行：一个源的三个运行时面各自的账面。
+///
+/// 集合面（歌单/专辑/歌手/榜单/链接直解）与登录/会话面不在 V2 迁移序列
+/// （§12.4），不设行项：影子源本就不实现 fat-trait 集合方法、登录方法
+/// （V1 边界 §11.8），manager 路径上不可达，恒旧路径。歌曲详情面无独立
+/// 运行时开关（§11.4 第 4 条），由搜索/流地址承载面携带，同样不设行项。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SourceRouteEntry {
+    pub source: SourceId,
+    /// 对账切片指针（盘点切片 id；已落地切片注明状态）。
+    pub slice: &'static str,
+    pub search: FaceRoute,
+    pub song_url: FaceRoute,
+    pub lyric: FaceRoute,
+}
+
+/// 逐源路由注册表（V2 初始账面，2026-11-21）。行覆盖 §1 命名表的全部
+/// 11 个映射源；`soda`/`local` 不在表内（命名表拒绝 + manager 显式排除，
+/// 恒旧路径）。测试 pin"行数 = 命名表映射源数"，防漏行。
+const V2_ROUTE_REGISTRY: &[SourceRouteEntry] = &[
+    // 切片 1（v2-jamendo，已落地，docs §12.4）。可路由面：搜索 + 流地址。
+    // 歌词面 LegacyOnly 的登记依据：musid 侧 LyricsProvider 是显式
+    // unsupported stub（musid-dli source_jamendo.rs "the CC catalog exposes
+    // no lyrics"），voicefox 旧路径 get_lyric 恒 NotFound
+    // （jamendo/mod.rs:421-424）——若路由，无词语义会从 NotFound 污染成
+    // Other("该音源不支持…")，故不路由（能力缺失回落规则 §12.2 静态层）。
+    // 集合面：musid capabilities 恒 false（container endpoints 匿名挂起，
+    // source_jamendo.rs:364-368），影子源不实现集合方法，无行项。
+    SourceRouteEntry {
+        source: SourceId::Jamendo,
+        slice: "v2-jamendo（已落地）",
+        search: FaceRoute::Migrated,
+        song_url: FaceRoute::Migrated,
+        lyric: FaceRoute::LegacyOnly(
+            "musid 歌词面是显式 unsupported stub（CC 曲库无词）；旧路径恒 \
+             NotFound，路由会把无词语义污染成 Other",
+        ),
+    },
+    // 切片 2（v2-fivesing，本次落地，docs §12.4）。三面全路由：musid
+    // FivesingProvider 的 track_search/stream_resolve/lyrics 全 true
+    // （musid-dli source_fivesing.rs:494-503，authentication=false 无登录态
+    // + AuthCapability::None，上游注册测试 pin）。流地址面是**现取**语义
+    // （resolve 恒走 getSongUrl 网络端点，source_fivesing.rs:546-596），无
+    // jamendo 式"搜索时快照"动态层盲区。两侧差异逐条登记（§12.2）：
+    // (a) headers——legacy 恒挂 MEDIA_REFERER（fivesing/mod.rs:110，播放侧
+    //     playback.rs:123 消费 url.headers）、musid headers 恒空
+    //     （source_fivesing.rs:377）；上游 fixture README 明文 live probe
+    //     结论（2026-11-18）：CDN 已不再强制 Referer，musid 对齐 live 行为，
+    //     legacy 头是历史残留、无害，不做改写。
+    // (b) getSongUrl 直链内嵌时间戳+hash 会过期且无 expires 信号 → G4 门
+    //     不设防；两侧同是现取，同病，无回退盲区。
+    // (c) 搜索面 qualities 簿记——legacy 产物不携带档位（api.rs
+    //     search_songs）、musid 静态声明三档（fs_parse_search_song），
+    //     songs_equivalent 的 qualities 集合比对（parity.rs:180）系统性
+    //     false → probe 搜索面 ParityMatch/Mismatch 对该源无鉴别力（身份
+    //     字段 id/name/singer/时长全对齐，adapter 单测 pin 唯一分歧字段）。
+    // 保持旧路径：歌单面（musid PlaylistProvider 存在且
+    //     capabilities.playlists=true，但 V1 影子源不实现 fat-trait 集合
+    //     方法、manager 路径不可达，search_playlists/fetch_playlist 恒旧
+    //     路径，登记可后续片）；链接直解（musid LinkResolver 存在但 V1/V2
+    //     四面范围不接，parse_link 恒旧路径）；专辑/歌手/榜单双侧同缺
+    //     （musid 无对应 provider，voicefox fivesing/mod.rs:70-74 仅
+    //     playlists/playlist_search/link_parse），不设行项。
+    SourceRouteEntry {
+        source: SourceId::Fivesing,
+        slice: "v2-fivesing（已落地）",
+        search: FaceRoute::Migrated,
+        song_url: FaceRoute::Migrated,
+        lyric: FaceRoute::Migrated,
+    },
+    // 切片 3（v2-apple，本次落地，docs §12.4）。三面全路由：musid
+    // AppleMusicProvider 的 track_search/stream_resolve/lyrics 全 true
+    // （musid-dli source_apple.rs:586-610；authentication=false + 无
+    // auth_capability 覆写 → AuthCapability::None，登录态恒 LoggedOut，
+    // source_apple.rs:783-798 有注释 pin）。
+    // preview-only 契约两侧同形：musid resolve 忽略请求档位，恒回 30 秒
+    // M4a 试听（quality Low、duration 30s、descriptor supported_qualities
+    // = [Low]，source_apple.rs:589-617 有注释 pin 该契约）；voicefox
+    // apple/mod.rs:75-99 同样恒 Low128 试听（"Apple Music 仅提供 30 秒
+    // 试听片段"）、supported_qualities [Low128]（:117-119）——路由后用户
+    // 可感知行为不变，quality 可严格断言双侧均 Low/Low128。
+    // 逐条登记的差异（§12.2 apple 块）：
+    // (a) SongUrl.duration——legacy 带整曲时长（apple/mod.rs:89
+    //     detail.song.duration）、musid 带 preview 物理时长 30s；
+    // (b) 搜索面 qualities 簿记——legacy parse_song 不填档位
+    //     （apple/api.rs parse_song）、musid 静态 [Low]→{Low128}，
+    //     songs_equivalent 的 qualities 集合比对系统性 false → probe
+    //     搜索面对 apple 无鉴别力（同 fivesing 口径：簿记差异，不是歌曲
+    //     身份差异；adapter 单测 pin 唯一分歧字段）；
+    // (c) 歌词面 PlainText 无时间戳（catalog 无 timing）→
+    //     document_to_lyric_data 的 lyric 为空、原文落 raw_lrc——musid
+    //     槽位产物过不了 lyric_has_content 内容门，动态层恒回落旧路径
+    //     （MusidErrLegacyOk），无错误语义污染（V1Routed 时该面已路由，
+    //     本切片不改运行行为）。
+    // 保持旧路径：歌单分类/歌单（musid PlaylistProvider categories/
+    //     playlists 恒 Unsupported、search_playlists 存在；voicefox
+    //     apple/mod.rs:121-153 恒旧路径）；专辑面（musid AlbumProvider、
+    //     albums=true；voicefox get_album_songs 恒旧路径）；歌手/榜单双侧
+    //     皆无（musid artists/charts 缺省 false）不设行项；链接直解不接
+    //     （parse_link 恒旧路径）。
+    SourceRouteEntry {
+        source: SourceId::Apple,
+        slice: "v2-apple（已落地）",
+        search: FaceRoute::Migrated,
+        song_url: FaceRoute::Migrated,
+        lyric: FaceRoute::Migrated,
+    },
+    // 切片 4（v2-bilibili，本次落地，docs §12.4）。三件结构前置已落地：
+    // 子 feature `musid-dli-adapter-bilibili`（source/Cargo.toml）+
+    // musid_bootstrap 装配分支（BilibiliProvider::new 匿名）+ manager
+    // matches! 放开 Bili——路由判定完全由本行承载。搜索 + 流地址
+    // Migrated：musid BilibiliProvider track_search/stream_resolve true
+    // （musid-dli source_bilibili.rs:907-916）。
+    // 歌词面 LegacyOnly：双侧皆无——musid LyricsProvider 硬 stub
+    // （"no lyric API exists on Bilibili"，capabilities.lyrics=false，
+    // source_bilibili.rs:1094-1099）；voicefox bili/mod.rs:497-499 恒
+    // FetchError::NotFound。不路由：旧路径 NotFound 语义不被 musid
+    // UnsupportedOperation 污染（同 jamendo 歌词面口径）。
+    // 登录/会话/用户数据恒旧路径（本切片的硬边界）：musid
+    // authentication=true（Cookie/SESSDATA）但影子源恒匿名 new()（§11.8
+    // 双栈零凭据流动）；manager 登录链路（create_qr_login/check_qr_login/
+    // logout/is_logged_in）不读影子 map（V1 边界），voicefox bili 扫码
+    // 登录 + SESSDATA 独立存储完全走旧路径。musid resolve 匿名可用性
+    // （playurl 带 try_look=1 试看参数，DASH 四分支 fixture pin）的真网
+    // 验证属运行期 probe 对账口径（本切片不实测，如实登记）。
+    // 流地址面 DASH 形状（adapter 单测 pin）：headers（Referer + UA）
+    // 两侧同形（legacy bili/url.rs:61-64 恒挂、musid StreamInfo.headers
+    // 恒挂）；backupUrl 镜像进 fallback_endpoints → candidate_urls 折叠；
+    // index/init range 走 G3 伴随字段（musid 不产 → None，descriptive-
+    // only）；format=Aac 不反推档位（quality 来自带宽挑选）。
+    // 保持旧路径：歌单/榜单/收藏夹（musid PlaylistProvider :1337/
+    // ChartProvider :1395 存在，集合面 V2 四面范围不路由）；user 数据
+    // （fav_folders）；链接直解（voicefox parse_link 复用搜索，恒旧路径）。
+    SourceRouteEntry {
+        source: SourceId::Bili,
+        slice: "v2-bilibili（已落地）",
+        search: FaceRoute::Migrated,
+        song_url: FaceRoute::Migrated,
+        lyric: FaceRoute::LegacyOnly(
+            "双侧皆无歌词面（musid 硬 stub no lyric API + voicefox bili 恒 NotFound）",
+        ),
+    },
+    // 切片 5（v2-migu，本次落地，docs §12.4）。三面全路由：musid
+    // MiguProvider track_search/stream_resolve/lyrics 全 true（musid-dli
+    // source_migu.rs:1388-1397）。登录面：musid authentication=false +
+    // 无 auth_capability 覆写 → AuthCapability::None；voicefox mg/mod.rs
+    // 亦无 login/qr_login 位——双侧匿名（musid 侧匿名 sid 设备会话属
+    // AuthCapability::Anonymous 家族，provider/traits.rs:51-53），不设
+    // 登录行项。搜索面 qualities 两侧同表（formatType PQ/HQ/SQ/ZQ*，
+    // mg/song.rs format_to_quality 与 musid format_to_quality 逐档同形
+    // 折档后相等）——无 fivesing/apple 式簿记分歧，parity 可全对齐。
+    // 歌词面 MRC/lrc/trc 链：extra 键（mrcUrl/lrcUrl/trcUrl）经
+    // track_to_song 原样透传回 musid；lxlyric 恒 None（musid 无 YRC/QRC
+    // 序列化器）——legacy parse_mrc 产逐字，路由后逐字降级为纯 LRC 正文
+    // + tlyric 保留（trc → translation），compare_lyrics 正文指纹对照
+    // 不比逐字（§11.6 口径，同 kugou/kuwo 登记）。
+    // 保持旧路径：榜单/专辑/歌单/链接直解（musid ChartProvider :1274/
+    // AlbumProvider :1302/PlaylistProvider :1155/LinkResolver :1323 全
+    // 存在且 capabilities true）——集合面 V2 四面范围不路由，musid 侧
+    // 可用性登记供后续片；歌手面双侧皆无（musid artists 位缺省 false、
+    // 无 ArtistProvider 实现；voicefox mg/mod.rs artist=true 位是搜索
+    // 归一类能力，恒旧路径；后续片接 ArtistProvider 需先在 musid-dli
+    // 侧补实现）。
+    SourceRouteEntry {
+        source: SourceId::Mg,
+        slice: "v2-migu（已落地）",
+        search: FaceRoute::Migrated,
+        song_url: FaceRoute::Migrated,
+        lyric: FaceRoute::Migrated,
+    },
+    // 切片 6（v2-kuwo，本次落地，docs §12.4）。三面全路由：musid
+    // KuwoProvider track_search/stream_resolve/lyrics 全 true（musid-dli
+    // source_kuwo.rs:1918-1930 前块）。登录面：authentication=false +
+    // auth_capability() 覆写为 AuthCapability::Anonymous（kuwo web token
+    // 非账号登录，source_kuwo.rs:1936-1940 有测试 pin；§2.8 机制细分
+    // 口径 Anonymous 不置 voicefox login 位）——voicefox kw/mod.rs 亦无
+    // login 位，恒旧路径。搜索面 N_MINFO 档位两侧同表（bitrate 128/320/
+    // 2000/4000 → Low/High/Lossless/HiRes，折档后与 legacy 128/320/2000/
+    // 4000 → Low128/High320/Flac/Flac24 相等）——qualities parity 可全
+    // 对齐。流地址面双通道（mobile/web 并发，无档位请求降级 320k 再
+    // 128k；lossless 请求 web 为主、移动端档位 URL 进候选）与 legacy
+    // kw/url.rs:228-256 同形；headers：移动端通道两侧同挂 okhttp UA
+    // （legacy kw/url.rs 恒挂、musid 移动端 StreamInfo.headers 恒挂）。
+    // 歌词面 lrcx 逐字降级同 migu/kugou 口径（legacy kw/lyric.rs:93-107
+    // 先 lrcx=1 逐字；musid LyricDocument 无 lxlyric 序列化器），正文
+    // 指纹对照不比逐字。
+    // 保持旧路径：登录（Anonymous web token，双侧无账号登录入口）；
+    // 歌手面（musid 无 ArtistProvider 实现、artists 位缺省 false，
+    // voicefox kw/mod.rs artist=true 位恒旧路径并登记缺口）；榜单/专辑/
+    // 歌单/链接（musid ChartProvider :2151/AlbumProvider :1879/
+    // PlaylistProvider :2216/LinkResolver :2197 全存在）集合面不路由登记。
+    SourceRouteEntry {
+        source: SourceId::Kw,
+        slice: "v2-kuwo（已落地）",
+        search: FaceRoute::Migrated,
+        song_url: FaceRoute::Migrated,
+        lyric: FaceRoute::Migrated,
+    },
+    // 切片 7（v2-kugou，本次落地，docs §12.4）。三面全路由：musid
+    // KugouProvider track_search/stream_resolve/lyrics 全 true（musid-dli
+    // source_kugou.rs:648-663，artists=true 为 search-based fallback）。
+    // 登录/扫码面恒旧路径（本片最重要的边界）：musid authentication=true
+    // （Cookie）→ 影子源 capabilities 诊断位 login=true，但登录/扫码链路
+    // 不读影子 map（V1 边界）且影子源恒匿名 new()（§11.8 双栈零凭据
+    // 流动）。**匿名退化在 kugou 流地址面是硬性的**：musid resolve 在
+    // login_parts() 处无会话即失败（"Kugou playback requires login"，
+    // source_kugou.rs:239-258）——影子源恒匿名 → 流地址面 musid 槽位
+    // 在双栈下必然失败、动态层回落旧链现取（MusidErrLegacyOk）；该面
+    // V1Routed 时已如此路由，本切片不改运行行为。缺 hash 的歌在
+    // select_hash 处先于 login_parts 离线 NotFound（source_kugou.rs:
+    // 519-536、:717）——manager 级真实双侧链路的确定性触发点。
+    // 逐字歌词降级（本片登记的最重要行为差异）：musid 无 YRC/QRC 序列
+    // 化器、lxlyric 恒 None（§2.10）；legacy kg/lyric.rs parse_krc 产
+    // 逐字 lxlyric——歌词面路由接受"逐字 → 纯 LRC 正文"降级（KRC 词级
+    // 时间在 musid LyricDocument.lines[].words，不伪造 lxlyric），
+    // compare_lyrics 正文指纹对照不比逐字（§11.6）。片级决策：本切片
+    // 按 ask 落地三面全路由，降级如实登记于此与 §12.2/§12.4。
+    // 搜索面 qualities 两侧同表（FileSize/HQFileSize/SQFileSize/
+    // ResFileSize > 0 → 四档），parity 全对齐。
+    // 保持旧路径：登录/扫码（voicefox kg/login.rs + session.rs 扫码链路）；
+    // 歌手（musid artists=true 但 ArtistProvider 是 search-based
+    // fallback，voicefox artist 位恒旧路径）；榜单/专辑/歌单/链接
+    // （musid ChartProvider :1007/AlbumProvider :1239/PlaylistProvider
+    // :1688/LinkResolver :1135 全存在）集合面不路由登记。
+    SourceRouteEntry {
+        source: SourceId::Kg,
+        slice: "v2-kugou（已落地）",
+        search: FaceRoute::Migrated,
+        song_url: FaceRoute::Migrated,
+        lyric: FaceRoute::Migrated,
+    },
+    // 切片 8（v2-qqmusic，本次落地，docs §12.4）。三面全路由：musid
+    // QqMusicProvider 的 track_search/stream_resolve/lyrics 全 true
+    // （musid-dli source_qqmusic.rs:760-772）。登录/扫码面恒旧路径（本片
+    // 硬边界）：musid authentication=true（Cookie）→ 影子源 capabilities
+    // 诊断位 login=true，但登录链路不读影子 map（V1 边界 §11.8）且影子源
+    // 恒匿名 new()；微信扫码（voicefox wechat_login 位）双栈期恒 false
+    // （§2.8）。musid 匿名面对 cookie 登录用户的 VIP 曲目/档位变窄是 P5
+    // 已登记口径（§11.8 (a)）——tx 用户基数最大，probe 对账的系统性
+    // mismatch 噪声须先剥离登录态不对称再解读（§11.8 (b)）。
+    // 流地址面：musid resolve 走 vkey 请求链（source_qqmusic.rs:809-863，
+    // 上游 stream_vkey_ok/stream_vkey_empty_sip 形状 pin），strMediaMid/
+    // songId/size_* 键经 extra 透传回 musid（适配层 fixture 单测 pin）；
+    // 无档位尺寸声明时 Low 恒在（两侧同口径），size_128mp3 缺席时 musid
+    // 恒产 Low 而 legacy 不产 Low128——搜索面 parity 用 size 全正的真实
+    // 形状对账（簿记分歧随 track_to_song 折档集合承载，见 §12.2 qqmusic
+    // 块）。歌词面：musid GetPlayLyricInfo crypt/qrc 0（plain LRC）→
+    // lxlyric 恒 None；legacy crypt:1/qrc:1 产 QRC 逐字——路由后逐字
+    // 降级为纯 LRC 正文 + 翻译/罗马音保留（§11.6 compare_lyrics 不比逐字，
+    // 同 kugou/kuwo/migu 口径）。歌词离线失败形态：extra 无 songId 数值 →
+    // InvalidInput（source_qqmusic.rs:873-877）。
+    // 保持旧路径：登录/扫码（tx/login.rs + session.rs，QQ/微信双扫码）；
+    // 歌手面（musid 无 ArtistProvider、artists 位缺省 false，voicefox
+    // tx/mod.rs artist=true 恒旧路径并登记缺口）；榜单/专辑/歌单/链接
+    // （musid ChartProvider :1467/AlbumProvider :1408/PlaylistProvider
+    // :1313/LinkResolver :913 全存在且 capabilities true）集合面不路由
+    // 登记。
+    SourceRouteEntry {
+        source: SourceId::Tx,
+        slice: "v2-qqmusic（已落地）",
+        search: FaceRoute::Migrated,
+        song_url: FaceRoute::Migrated,
+        lyric: FaceRoute::Migrated,
+    },
+    // 切片 9（v2-netease，本次落地，docs §12.4）。三面全路由：musid
+    // NeteaseProvider 的 track_search/stream_resolve/lyrics/artists 等
+    // 全 true（musid-dli source_netease.rs:443-456 全家桶）。wy 是主源且
+    // 登录态依赖最重——放最后：登录/扫码面恒旧路径（voicefox
+    // wy/mod.rs login+qr_login+user_playlists；musid authentication=true
+    // 但影子源恒匿名 new()，§11.8 零凭据流动）；**musid 恒匿名 vs
+    // voicefox cookie 登录的结果集/档位系统性收窄是 P5 已登记口径，
+    // probe 对账会产生系统性 mismatch 噪声，解读计数时须先剥离登录态
+    // 不对称（§11.8 (b)）**。流地址面：musid eapi
+    // song/enhance/player/url/v1（source_netease.rs:494-601，带
+    // outer-url 死兜底 HEAD 探测与 expires_at_unix 提取——后者使 G4
+    // 过期门对该源**设防**，与 jamendo/fivesing 的 None 形态不同）；
+    // pl_level 键经 extra 透传。歌词面 eapi song/lyric/v1 → lxlyric 恒
+    // None（musid 无 YRC/QRC 序列化器）；legacy wy/lyric.rs 的 yrc 逐字
+    // 路由后降级为纯 LRC 正文（compare_lyrics 不比逐字，同批内 kugou/
+    // kuwo/migu/qqmusic 口径）。搜索面 ±1s 时长容差与折档后 qualities
+    // 集合相等的 parity 归一在适配层单测 pin（legacy Low128 恒在 =
+    // musid Low 恒在，两侧同口径无簿记分歧）。
+    // 保持旧路径：登录/扫码/用户歌单；集合面（musid ArtistProvider
+    // :766/ChartProvider :809/AlbumProvider :735/PlaylistProvider :652/
+    // LinkResolver :840 全存在且 capabilities 全 true）不路由登记——
+    // wy 的歌单同步若依赖 by-id 详情（songs_from_detail 类路径），前置
+    // 是 musid-dli 0.2.0 无公开 per-provider detail trait（track_details
+    // 是 crate 内部方法，§11.4 第 4 条），需上游先公开。
+    SourceRouteEntry {
+        source: SourceId::Wy,
+        slice: "v2-netease（已落地）",
+        search: FaceRoute::Migrated,
+        song_url: FaceRoute::Migrated,
+        lyric: FaceRoute::Migrated,
+    },
+    // 切片 10（v2-qianqian，本次落地，docs §12.4）。用户启用源。三面全
+    // 路由：musid QianqianProvider 的 track_search/stream_resolve/lyrics/
+    // playlists/albums/link_resolve true（musid-dli source_qianqian.rs
+    // :732-742），authentication=false + 无 auth_capability 覆写 →
+    // AuthCapability::None——登录面双侧皆无认证位，不设行项。
+    // 流地址面 tracklink 双分支两侧同形（source_qianqian.rs:779-825 vs
+    // qianqian/url.rs:33-70）：free_128 完整文件分支 + vip_nopath 阶梯
+    // 耗尽退 trail_audio_info 试听分支；VIP 曲目匿名恒 path-less →
+    // NotFound（上游 live-pinned）——与 legacy 同病同回落，无回退盲区；
+    // expireTime 进 expires_at_unix（G4 对该源设防）。**空 tsid 的歌在
+    // 两栈都在任何网络调用之前失败**（musid :791-793 / legacy url.rs
+    // :39-41 同键同 NotFound）——manager 级真实双侧链路的确定性触发点
+    // （musid_qianqian_slice.rs pin MusidErrLegacyErr）。搜索面 rate
+    // 表两侧同形（3000/320/128|64 → Lossless/High/Low 折档后相等）。
+    // 歌词面 song_infoandlrc 类形状（signed_get song/info + lyric 文本
+    // 下载）→ lxlyric 恒 None，纯 LRC（legacy 千千本就无逐字，无降级）。
+    // 保持旧路径：歌手面（musid 无 ArtistProvider、artists 位缺省
+    // false，voicefox qianqian/mod.rs artist=true 恒旧路径并登记缺口）；
+    // 榜单面双侧皆无（voicefox qianqian capabilities 无 leaderboard 位，
+    // musid 无 ChartProvider）不设；专辑/歌单/链接（musid AlbumProvider
+    // :999/PlaylistProvider :874/LinkResolver :1015 且 capabilities true）
+    // 集合面不路由登记——musid 侧 search_playlist_refused.json（歌单搜索
+    // 被拒形状）在后续接集合面时须处理该语义（envelope 恒不按 state/
+    // errno 把关、data:[] 解析为空页，source_qianqian.rs:762-764）。
+    // 用户启用源：翻源后首周盯 MusidErrLegacyOk 计数（§12.3）。
+    SourceRouteEntry {
+        source: SourceId::Qianqian,
+        slice: "v2-qianqian（已落地）",
+        search: FaceRoute::Migrated,
+        song_url: FaceRoute::Migrated,
+        lyric: FaceRoute::Migrated,
+    },
+    // 切片 11（v2-joox，本次落地，docs §12.4）。用户启用源。三面全路由：
+    // musid JooxProvider 的 track_search/stream_resolve/lyrics/playlists/
+    // albums/link_resolve true（musid-dli source_joox.rs:706-716），
+    // authentication=false + 无 auth_capability 覆写 → None——登录面双侧
+    // 皆无认证位，不设行项。搜索面 search_songs 形状两侧同构（tracks 嵌
+    // 套数组、id/album_id 加密串、normalize_id 两侧逐字同实现）；歌手
+    // join 分歧（legacy " / " vs musid Track.artists 向量经 '、' join）
+    // 经 parity 归一（filter_str 分隔符集含 /）无损，单测 pin。流地址面
+    // songinfo_stream 形状两侧同构（select_candidate 与 legacy 同序：
+    // sort desc → 第一个 ≤ 请求档 → 首选兜底；size/md5/expiry 两侧同弃，
+    // size_is_advisory=true）；kbps 档两侧同表（320/192/128 → High/Low/
+    // Low）。**空 songid 的歌 musid 侧在任何网络调用之前离线 NotFound**
+    // （source_joox.rs:754-756）；legacy 同请求走 fetch_song_detail
+    // 网络（无离线守卫）——manager 级双失败链不可确定性复现，joox 的
+    // 流地址面失败侧对账由 adapter 级离线用例 + 运行期 probe 承载。
+    // 歌词面 lyric_live 形状（web_lyric base64 字段，decode_lyric_field
+    // live 偏差上游已登记）→ lxlyric 恒 None，纯 LRC（legacy 本就无逐
+    // 字）。封面面不接 musid ArtworkProvider：legacy joox/mod.rs:167
+    // get_cover_url 走歌曲模型回填，适配层 get_cover_url 同口径
+    // （adapter_musid.rs enrich_song_url_from_song 消费侧），不设行项。
+    // 保持旧路径：榜单/歌手双侧皆无（voicefox joox/mod.rs:103-111 仅
+    // playlists/playlist_search/album/link_parse；musid 无 ChartProvider/
+    // ArtistProvider）不设；专辑/歌单/链接（musid AlbumProvider :873/
+    // PlaylistProvider :839/LinkResolver :908 且 capabilities true）集合
+    // 面不路由登记——musid 侧 playlist_dead_404.html 死链形状在后续接
+    // 集合面时须处理。用户启用源：翻源后同 qianqian 盯 MusidErrLegacyOk。
+    SourceRouteEntry {
+        source: SourceId::Joox,
+        slice: "v2-joox（已落地）",
+        search: FaceRoute::Migrated,
+        song_url: FaceRoute::Migrated,
+        lyric: FaceRoute::Migrated,
+    },
+];
+
+/// 注册表行（`soda`/`local` 与任何未列源返回 `None`）。
+pub fn source_route_entry(source: SourceId) -> Option<&'static SourceRouteEntry> {
+    V2_ROUTE_REGISTRY.iter().find(|row| row.source == source)
+}
+
+/// 路由判定入口（`manager::musid_route` 消费）：面 + 源的放行结论。
+/// 无行（`soda`/`local`）= 恒旧路径。
+pub fn face_route(face: crate::parity::ParityFace, source: SourceId) -> FaceRoute {
+    let Some(row) = source_route_entry(source) else {
+        return FaceRoute::LegacyOnly("源不在 §1 命名表（soda/local），恒旧路径");
+    };
+    match face {
+        crate::parity::ParityFace::Search => row.search,
+        crate::parity::ParityFace::SongUrl => row.song_url,
+        crate::parity::ParityFace::Lyric => row.lyric,
+    }
+}
+
+/// 注册表中标记为 [`FaceRoute::Migrated`] 的源（账面侧）。
+///
+/// **生效前提**（P4 登记，docs §12.1）：行的放行还要求对应
+/// `musid-dli-adapter-<source>` 子 feature 在本次构建中启用（影子源被
+/// `musid_bootstrap` 装配）。子 feature 未启用时影子源不在 map 里，
+/// 路由判定返回 None → 该源静默走旧路径、parity 计数恒零——账面
+/// "已迁移"与运行时能力可能脱节，本函数与
+/// [`unregistered_migrated_sources`] 供 `bootstrap_musid_stack` 启动时
+/// 显式 warn 暴露该脱节。
+pub fn migrated_route_sources() -> Vec<SourceId> {
+    V2_ROUTE_REGISTRY
+        .iter()
+        .filter(|row| {
+            row.search == FaceRoute::Migrated
+                || row.song_url == FaceRoute::Migrated
+                || row.lyric == FaceRoute::Migrated
+        })
+        .map(|row| row.source)
+        .collect()
+}
+
+/// 账面 Migrated 但本次构建未装配影子源的源（`bootstrap_musid_stack`
+/// 启动 warn 的输入；`registered` 是 `musid_bootstrap::register_available`
+/// 的返回值）。
+pub fn unregistered_migrated_sources(registered: &[SourceId]) -> Vec<SourceId> {
+    migrated_route_sources()
+        .into_iter()
+        .filter(|source| !registered.contains(source))
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
 // 歌词（复用 musid-dli 内置转换器；feature musid-dli-adapter-lyrics）
 // ---------------------------------------------------------------------------
 
@@ -2446,6 +2890,2000 @@ mod tests {
                 without_lyrics.get_lyric(&wy_song()).await,
                 Err(FetchError::NotFound)
             ));
+        }
+    }
+
+    // --- V2 逐源路由注册表（docs §12；jamendo = 切片 1 模板） ---
+
+    mod v2_registry {
+        use super::*;
+        use crate::parity::ParityFace;
+        use async_trait::async_trait;
+        use musid_dli::provider::MusicProvider;
+
+        #[test]
+        fn registry_ledger_pins_the_slice_states() {
+            // 切片 1（jamendo）：搜索 + 流地址 Migrated；歌词 LegacyOnly 并
+            // 登记原因（musid stub 的 Other 不许污染旧路径的 NotFound 语义）。
+            let jamendo = source_route_entry(SourceId::Jamendo).expect("jamendo 在注册表");
+            assert_eq!(jamendo.slice, "v2-jamendo（已落地）");
+            assert_eq!(jamendo.search, FaceRoute::Migrated);
+            assert_eq!(jamendo.song_url, FaceRoute::Migrated);
+            assert!(matches!(jamendo.lyric, FaceRoute::LegacyOnly(_)));
+            assert!(
+                !face_route(ParityFace::Lyric, SourceId::Jamendo).routes_to_musid(),
+                "jamendo 歌词面恒旧路径"
+            );
+
+            // 切片 2（fivesing）：三面全 Migrated（可路由依据 = musid
+            // FivesingProvider 的 track_search/stream_resolve/lyrics 全 true、
+            // authentication=false 无登录态，musid-dli source_fivesing.rs:494-511
+            // 有测试 pin；两侧差异登记见本行注释与 docs §12.2/§12.4）。
+            let fivesing = source_route_entry(SourceId::Fivesing).expect("fivesing 在注册表");
+            assert_eq!(fivesing.slice, "v2-fivesing（已落地）");
+            assert_eq!(fivesing.search, FaceRoute::Migrated);
+            assert_eq!(fivesing.song_url, FaceRoute::Migrated);
+            assert_eq!(fivesing.lyric, FaceRoute::Migrated);
+            for face in [ParityFace::Search, ParityFace::SongUrl, ParityFace::Lyric] {
+                assert!(
+                    face_route(face, SourceId::Fivesing).routes_to_musid(),
+                    "fivesing {} 三面全路由",
+                    face.as_str()
+                );
+            }
+
+            // 切片 3-7（apple/bilibili/migu/kuwo/kugou，本次落地）：账面
+            // 逐源 pin——apple/migu/kuwo/kugou 三面全 Migrated（可路由
+            // 依据与登记差异见各注册表行注释与 docs §12.2/§12.4）；
+            // bilibili 搜索/流地址 Migrated、歌词 LegacyOnly（双侧皆无）。
+            for source in [SourceId::Apple, SourceId::Mg, SourceId::Kw, SourceId::Kg] {
+                let row = source_route_entry(source).expect("切片源在注册表");
+                assert!(
+                    row.slice.ends_with("（已落地）"),
+                    "{} 行必须标已落地",
+                    source.as_str()
+                );
+                for face in [ParityFace::Search, ParityFace::SongUrl, ParityFace::Lyric] {
+                    assert_eq!(
+                        face_route(face, source),
+                        FaceRoute::Migrated,
+                        "{} 切片已落地，三面全路由",
+                        source.as_str()
+                    );
+                }
+            }
+            let bili = source_route_entry(SourceId::Bili).expect("bilibili 在注册表");
+            assert_eq!(bili.slice, "v2-bilibili（已落地）");
+            assert_eq!(bili.search, FaceRoute::Migrated);
+            assert_eq!(bili.song_url, FaceRoute::Migrated);
+            assert!(matches!(bili.lyric, FaceRoute::LegacyOnly(_)));
+            assert!(
+                face_route(ParityFace::Search, SourceId::Bili).routes_to_musid()
+                    && face_route(ParityFace::SongUrl, SourceId::Bili).routes_to_musid(),
+                "bilibili 搜索/流地址两面路由（三件结构前置已落地）"
+            );
+            assert!(
+                !face_route(ParityFace::Lyric, SourceId::Bili).routes_to_musid(),
+                "bilibili 歌词面恒旧路径（双侧皆无）"
+            );
+
+            // 切片 8-11（tx/wy/qianqian/joox，v2-batch-2 落地）：三面全
+            // Migrated（可路由依据 = musid 侧三面 capabilities 全 true；
+            // 登录/扫码、歌手、集合面恒旧路径——登记见各注册表行注释与
+            // docs §12.2/§12.4；行为与 V1 一致——三面 V1 起即放行，本批
+            // 只补对账与登记）。
+            for source in [
+                SourceId::Tx,
+                SourceId::Wy,
+                SourceId::Qianqian,
+                SourceId::Joox,
+            ] {
+                let row = source_route_entry(source).expect("切片源在注册表");
+                assert!(
+                    row.slice.ends_with("（已落地）"),
+                    "{} 行必须标已落地",
+                    source.as_str()
+                );
+                for face in [ParityFace::Search, ParityFace::SongUrl, ParityFace::Lyric] {
+                    assert_eq!(
+                        face_route(face, source),
+                        FaceRoute::Migrated,
+                        "{} 切片已落地，三面全路由（与 V1 行为一致）",
+                        source.as_str()
+                    );
+                }
+            }
+
+            // soda/local：无行 → LegacyOnly（命名表拒绝的镜像）。
+            assert!(source_route_entry(SourceId::Soda).is_none());
+            assert!(source_route_entry(SourceId::Local).is_none());
+            for face in [ParityFace::Search, ParityFace::SongUrl, ParityFace::Lyric] {
+                assert!(matches!(
+                    face_route(face, SourceId::Soda),
+                    FaceRoute::LegacyOnly(_)
+                ));
+                assert!(matches!(
+                    face_route(face, SourceId::Local),
+                    FaceRoute::LegacyOnly(_)
+                ));
+            }
+        }
+
+        #[test]
+        fn registry_covers_every_namespace_mappable_source() {
+            // 行覆盖 = §1 命名表的全部映射源（防漏行）：namespace 表新增
+            // 映射而注册表漏行时，face_route 会把该源静默压成 LegacyOnly。
+            let mapped: Vec<SourceId> = SourceId::all_known()
+                .iter()
+                .copied()
+                .filter(|source| source_id_to_provider(*source).is_some())
+                .collect();
+            assert_eq!(mapped.len(), 11, "§1 命名表映射源数（V0 盘点口径）");
+            // 行数本身也 pin（P5）：source_route_entry 用 find() 取首行，
+            // 同源重复行不会被"可映射源⊆注册表"类断言抓到。
+            assert_eq!(
+                V2_ROUTE_REGISTRY.len(),
+                mapped.len(),
+                "注册表行数必须等于映射源数（重复行/缺行都算漂移）"
+            );
+            let mut seen: Vec<SourceId> = Vec::new();
+            for row in V2_ROUTE_REGISTRY {
+                assert!(
+                    source_id_to_provider(row.source).is_some(),
+                    "注册表行 {} 必须可映射（namespace 一致）",
+                    row.source.as_str()
+                );
+                assert!(
+                    !seen.contains(&row.source),
+                    "注册表重复行：{}（find() 只取首行，重复行是账面歧义）",
+                    row.source.as_str()
+                );
+                seen.push(row.source);
+            }
+            for source in mapped {
+                assert!(
+                    seen.contains(&source),
+                    "{} 可映射但注册表缺行",
+                    source.as_str()
+                );
+            }
+        }
+
+        #[test]
+        fn migrated_route_sources_are_visible_to_the_build_wiring() {
+            // P4：账面 Migrated 与构建形态可能脱节（子 feature 未启用时影子
+            // 源不装配，运行时静默旧路径且 parity 恒零）。助手供
+            // bootstrap_musid_stack 启动 warn 显式暴露该脱节。切片 1-11 落地
+            // 后账面有 11 个 Migrated 源（注册表行序 = jamendo → fivesing →
+            // apple → bilibili → migu → kuwo → kugou → tx → wy → qianqian
+            // → joox；§1 命名表 11 个映射源全部完成逐源对账）。
+            assert_eq!(
+                migrated_route_sources(),
+                vec![
+                    SourceId::Jamendo,
+                    SourceId::Fivesing,
+                    SourceId::Apple,
+                    SourceId::Bili,
+                    SourceId::Mg,
+                    SourceId::Kw,
+                    SourceId::Kg,
+                    SourceId::Tx,
+                    SourceId::Wy,
+                    SourceId::Qianqian,
+                    SourceId::Joox,
+                ]
+            );
+            assert_eq!(
+                unregistered_migrated_sources(&[]),
+                vec![
+                    SourceId::Jamendo,
+                    SourceId::Fivesing,
+                    SourceId::Apple,
+                    SourceId::Bili,
+                    SourceId::Mg,
+                    SourceId::Kw,
+                    SourceId::Kg,
+                    SourceId::Tx,
+                    SourceId::Wy,
+                    SourceId::Qianqian,
+                    SourceId::Joox,
+                ],
+                "空注册列表 = 全部 Migrated 子 feature 未启用，warn 输入含十一源"
+            );
+            assert_eq!(
+                unregistered_migrated_sources(&[
+                    SourceId::Jamendo,
+                    SourceId::Fivesing,
+                    SourceId::Apple,
+                    SourceId::Bili,
+                    SourceId::Mg,
+                    SourceId::Kw,
+                    SourceId::Kg,
+                    SourceId::Tx,
+                    SourceId::Wy,
+                    SourceId::Qianqian,
+                    SourceId::Joox,
+                ]),
+                Vec::<SourceId>::new(),
+                "已装配的 Migrated 源不进 warn 输入"
+            );
+            // 部分装配形态（单子 feature 构建）：缺的 Migrated 源进 warn
+            // 输入——bootstrap 切片测试按"不含本切片源"口径断言即源于此。
+            assert_eq!(
+                unregistered_migrated_sources(&[SourceId::Jamendo]),
+                vec![
+                    SourceId::Fivesing,
+                    SourceId::Apple,
+                    SourceId::Bili,
+                    SourceId::Mg,
+                    SourceId::Kw,
+                    SourceId::Kg,
+                    SourceId::Tx,
+                    SourceId::Wy,
+                    SourceId::Qianqian,
+                    SourceId::Joox,
+                ],
+                "只装配 jamendo 时其余十个 Migrated 源是账面/构建脱节点"
+            );
+        }
+
+        fn jamendo_track_fixture() -> Track {
+            from_str::<Track>(fixture!("track_jamendo.json"))
+                .expect("jamendo track fixture must parse")
+        }
+
+        #[test]
+        fn jamendo_track_fixture_maps_with_stream_extra_passthrough() {
+            let track = jamendo_track_fixture();
+            let song = track_to_song(&track).expect("jamendo provider must map");
+            assert_eq!(song.source, SourceId::Jamendo);
+            assert_eq!(song.id, "1538710");
+            assert_eq!(song.name, "Love Recycle");
+            assert_eq!(song.singer, "LoveRecycle");
+            assert_eq!(song.album_name, "LoveRecycle");
+            assert_eq!(song.album_id, "176100");
+            assert_eq!(song.duration, Duration::from_secs(245));
+            assert_eq!(
+                song.qualities,
+                [Quality::Low128].into_iter().collect(),
+                "available_qualities [Low] 折档后进集合（§2.4 Low→Low128）"
+            );
+            // stream_url 伴随键经 extra 原样透传：流地址面路由的数据前提
+            // （musid-dli JamendoProvider::resolve 从 extra["stream_url"]
+            // 离线取址，source_jamendo.rs:402-444）。
+            assert_eq!(
+                song.extra.get("stream_url").map(String::as_str),
+                Some("https://prod-1.storage.jamendo.com/download/track/1538710/mp32/")
+            );
+            assert_eq!(
+                song.extra.get("stream_format").map(String::as_str),
+                Some("Mp3")
+            );
+            assert_eq!(
+                song.extra.get("stream_quality").map(String::as_str),
+                Some("Low")
+            );
+            // 反向回组 Track：extra/id 保真（resolve 的数据链闭合——musid
+            // 搜到的歌再请求地址时，extra 里的嵌入地址原样回到 musid）。
+            let rebuilt = song_to_track(&song).expect("jamendo source must map");
+            assert_eq!(rebuilt.id, track.id);
+            assert_eq!(rebuilt.extra, track.extra);
+        }
+
+        #[test]
+        fn jamendo_search_parity_normalized_equivalent() {
+            // P2：legacy 侧用**真实的** `crate::jamendo::parse_track`
+            // （jamendo/mod.rs:156-181，pub(crate) 可见性扩宽登记见 §12.5）
+            // 从平台原始响应形状组出 SongInfo——legacy 或 musid 任一侧
+            // parse 改字段，本测试必红。原始 item 与 musid-dli
+            // tests/fixtures/jamendo/track_parse.json 的 "item" 同形（该
+            // 文件自述为按 2026-11-18 live 捕获**重建**的形状记录，原始
+            // 捕获未随上游仓提交——provenance 限定见 §12.3）。musid 侧：
+            // track_to_song(voicefox 侧 wire 形状 fixture)。
+            let platform_item = json!({
+                "id": 1538710,
+                "idstr": "",
+                "type": "track",
+                "query": "love",
+                "score": 9.87,
+                "status": 0,
+                "uniqueId": 1538710,
+                "artistId": 508325,
+                "name": "Love Recycle",
+                "duration": 245,
+                "albumId": 176100,
+                "artist": { "id": 508325, "name": "LoveRecycle" },
+                "album": { "id": 176100, "name": "LoveRecycle" },
+                "cover": {
+                    "big": { "size": 300, "size300": "https://usercontent.jamendo.com?type=album&id=176100&width=300&trackid=1538710" },
+                    "small": { "size": 200, "sizeN": "https://usercontent.jamendo.com?type=album&id=176100&width=200&trackid=1538710" }
+                },
+                "download": {
+                    "mp3": "https://prod-1.storage.jamendo.com/download/track/1538710/mp32/",
+                    "ogg": "https://prod-1.storage.jamendo.com/download/track/1538710/ogg/"
+                },
+                "stream": {
+                    "mp3": "https://prod-1.storage.jamendo.com/?trackid=1538710&format=mp31",
+                    "ogg": "https://prod-1.storage.jamendo.com/?trackid=1538710&format=ogg"
+                }
+            });
+            let legacy = crate::jamendo::parse_track(&platform_item)
+                .expect("真实 parse_track 必须能解析捕获形状");
+            assert_eq!(legacy.id, "1538710");
+            assert_eq!(legacy.source, SourceId::Jamendo);
+            assert_eq!(legacy.name, "Love Recycle");
+            assert_eq!(legacy.singer, "LoveRecycle");
+            assert_eq!(legacy.album_name, "LoveRecycle");
+            assert_eq!(legacy.album_id, "176100");
+            assert_eq!(legacy.duration, Duration::from_secs(245));
+            assert_eq!(
+                legacy.qualities,
+                [Quality::Low128].into_iter().collect(),
+                "download 组 mp3 键 → Low128（两侧 pick_stream 档序一致）"
+            );
+            assert_eq!(
+                legacy.extra.get("track_id").map(String::as_str),
+                Some("1538710")
+            );
+
+            let musid = track_to_song(&jamendo_track_fixture()).expect("jamendo provider must map");
+            assert!(
+                crate::parity::songs_equivalent(&legacy, &musid),
+                "归一对照命中：id 精确 + name/singer/album 归一相等 + 时长秒级一致 + qualities 折档集合相等；extra 差异（legacy 无 stream_*）不进对照面"
+            );
+            assert!(
+                crate::parity::compare_search_items(
+                    std::slice::from_ref(&legacy),
+                    std::slice::from_ref(&musid)
+                ),
+                "搜索产物集对照命中（probe 模式 ParityMatch 的归一口径）"
+            );
+
+            // 失配样例：legacy 侧歌手被改 → 与 musid 产物不等价（probe 记
+            // ParityMismatch）。
+            let mut different = legacy;
+            different.singer = "Someone Else".to_string();
+            assert!(!crate::parity::songs_equivalent(&different, &musid));
+        }
+
+        /// 复刻 musid-dli JamendoProvider::resolve 的离线语义
+        /// （source_jamendo.rs:402-444）：从 track.extra["stream_url"] 取址
+        /// （无则 Provider 错误——运行期回落旧链的触发点）、忽略请求档位
+        /// （曲库恒最优，已在搜索时嵌入 extra）。本桩只测 AdapterMusicSource
+        /// 自身的映射/门控行为（不依赖子 feature）；与**真实**
+        /// JamendoProvider 的一致性由 `source/tests/musid_jamendo_slice.rs`
+        /// （挂 `musid-dli-adapter-jamendo` 门，跑真实 provider）钉住——桩
+        /// 与真实实现漂移时那边必红。
+        struct JamendoStreamStub;
+
+        impl MusicProvider for JamendoStreamStub {
+            fn id(&self) -> &str {
+                "jamendo"
+            }
+            fn name(&self) -> &str {
+                "Jamendo"
+            }
+            fn capabilities(&self) -> ProviderCapabilities {
+                ProviderCapabilities {
+                    track_search: true,
+                    stream_resolve: true,
+                    ..Default::default()
+                }
+            }
+        }
+
+        #[async_trait]
+        impl MdStreamResolver for JamendoStreamStub {
+            async fn resolve(
+                &self,
+                track: &Track,
+                _options: &ResolveOptions,
+            ) -> Result<StreamInfo, MdError> {
+                let url =
+                    track
+                        .extra
+                        .get("stream_url")
+                        .cloned()
+                        .ok_or_else(|| MdError::Provider {
+                            provider: "jamendo".to_string(),
+                            message: "track carries no embedded stream URL".to_string(),
+                        })?;
+                let achieved = match track.extra.get("stream_quality").map(String::as_str) {
+                    Some("Lossless") => StreamQuality::Lossless,
+                    Some("High") => StreamQuality::High,
+                    _ => StreamQuality::Low,
+                };
+                Ok(StreamInfo {
+                    url,
+                    quality: achieved,
+                    format: AudioFormat::Mp3,
+                    duration: track.duration,
+                    expires_at_unix: None,
+                    content_length: None,
+                    checksum: None,
+                    headers: vec![],
+                    fallback_urls: vec![],
+                    index_range: None,
+                    init_range: None,
+                    max_chunk_size: None,
+                    size_is_advisory: true,
+                    checksum_algorithm: None,
+                    fallback_endpoints: vec![],
+                })
+            }
+        }
+
+        fn jamendo_stream_adapter() -> AdapterMusicSource {
+            AdapterMusicSource::new(
+                SourceId::Jamendo,
+                "Jamendo（musid-dli）".to_string(),
+                None,
+                Some(Arc::new(JamendoStreamStub) as Arc<dyn MdStreamResolver>),
+                None,
+                TransportInjection::new(None, 15),
+            )
+        }
+
+        #[tokio::test]
+        async fn jamendo_stream_face_resolves_offline_and_ignores_requested_quality() {
+            // musid 搜到的歌（extra 带 stream_url）：离线 resolve；musid
+            // 忽略请求档位（曲库恒最优），SongUrl.quality 以实际档位回填
+            // （§2.4），cover_url/qualities 经 enrich 从歌曲模型补齐（§3
+            // 第 13、14 条）。
+            let adapter = jamendo_stream_adapter();
+            let song = track_to_song(&jamendo_track_fixture()).expect("jamendo provider must map");
+            let url = adapter
+                .get_song_url(&song, Quality::Flac24)
+                .await
+                .expect("流地址面映射");
+            assert_eq!(
+                url.url,
+                "https://prod-1.storage.jamendo.com/download/track/1538710/mp32/"
+            );
+            assert_eq!(
+                url.quality,
+                Quality::Low128,
+                "实际档位回填（musid 忽略请求档位，恒返回嵌入的 Low）"
+            );
+            assert_eq!(
+                url.cover_url.as_deref(),
+                Some(
+                    "https://usercontent.jamendo.com?type=album&id=176100&width=300&trackid=1538710"
+                ),
+                "enrich_song_url_from_song 从歌曲模型补齐封面"
+            );
+            assert_eq!(url.qualities, vec![Quality::Low128]);
+            assert_eq!(url.duration, Duration::from_secs(245));
+        }
+
+        #[tokio::test]
+        async fn jamendo_legacy_sourced_song_without_stream_url_fails_into_fallback() {
+            // legacy 搜到的歌（extra 只有 track_id，无 stream_url）：musid
+            // resolve 必然失败（Provider 类错误 → FetchError::Other）→
+            // manager 按 V1 语义立即旧链重试并计 MusidErrLegacyOk——能力
+            // 缺失回落规则的动态层（docs §12.2），用户无感知。
+            let adapter = jamendo_stream_adapter();
+            let mut song = SongInfo::new(
+                "1538710".to_string(),
+                SourceId::Jamendo,
+                "Love Recycle".to_string(),
+                "LoveRecycle".to_string(),
+            );
+            song.extra
+                .insert("track_id".to_string(), "1538710".to_string());
+            let error = adapter
+                .get_song_url(&song, Quality::High320)
+                .await
+                .expect_err("musid 无嵌入地址必须失败");
+            assert!(
+                matches!(error, FetchError::Other(_)),
+                "Provider 类错误映射 Other（非 NotFound），由 manager 回落旧链: {error}"
+            );
+            assert!(
+                error.to_string().contains("stream URL"),
+                "错误文本保留 musid 侧语义供诊断: {error}"
+            );
+        }
+
+        // --- V2 切片 2（fivesing，docs §12.4）：三面全 Migrated ---
+
+        fn fivesing_track_fixture() -> Track {
+            from_str::<Track>(fixture!("track_fivesing.json"))
+                .expect("fivesing track fixture must parse")
+        }
+
+        #[test]
+        fn fivesing_track_fixture_maps_with_search_extra_passthrough() {
+            let track = fivesing_track_fixture();
+            let song = track_to_song(&track).expect("fivesing provider must map");
+            assert_eq!(song.source, SourceId::Fivesing);
+            assert_eq!(song.id, "15622111|fc", "id = songid|kind，两侧同形");
+            assert_eq!(song.name, "晴天");
+            assert_eq!(song.singer, "Vk");
+            assert_eq!(song.album_name, "", "5sing 搜索条目无专辑字段");
+            assert_eq!(song.duration, Duration::from_secs(261));
+            assert_eq!(song.cover_url, None, "live 搜索项无 user 键（上游 README）");
+            assert_eq!(
+                song.qualities,
+                [Quality::Low128, Quality::High320, Quality::Flac]
+                    .into_iter()
+                    .collect(),
+                "fs_parse_search_song 的静态三档折档后进集合（§2.4）"
+            );
+            // songid/songtype 经 extra 原样透传：resolve/lyrics 面取址的
+            // 数据前提（musid split_track_id 优先 extra，source_fivesing.rs:154-169）。
+            assert_eq!(
+                song.extra.get("songid").map(String::as_str),
+                Some("15622111")
+            );
+            assert_eq!(song.extra.get("songtype").map(String::as_str), Some("fc"));
+            // 反向回组 Track：id/extra 保真（resolve 的数据链闭合——musid
+            // 搜到的歌再请求地址/歌词时，取址键原样回到 musid）。
+            let rebuilt = song_to_track(&song).expect("fivesing source must map");
+            assert_eq!(rebuilt.id, track.id);
+            assert_eq!(rebuilt.extra, track.extra);
+        }
+
+        #[test]
+        fn fivesing_search_parity_identity_fields_match_with_a_registered_qualities_gap() {
+            // legacy 侧用**真实的** `crate::fivesing::api::parse_search_song`
+            // （fivesing/api.rs，从 search_songs 内联闭包逐字搬出 + pub(crate)
+            // 扩宽，登记见 §12.5）从平台原始响应形状组出 SongInfo——原始
+            // item 与 musid-dli tests/fixtures/fivesing/search_songs.json 的
+            // 第 1 项同形（2026-11-18 逐字 live 捕获，README）。musid 侧：
+            // track_to_song（voicefox 侧 wire 形状 fixture）。任一侧 parse
+            // 改字段，本测试必红。
+            let platform_item = json!({
+                "songId": 15622111,
+                "typeEname": "fc",
+                "songName": "<em class=\"keyword\">晴天</em>",
+                "singer": "Vk",
+                "songSize": 10462607,
+                "type": 2,
+                "typeName": "翻唱"
+            });
+            let legacy = crate::fivesing::api::parse_search_song(&platform_item)
+                .expect("真实 parse_search_song 必须能解析捕获形状");
+            assert_eq!(legacy.id, "15622111|fc");
+            assert_eq!(legacy.source, SourceId::Fivesing);
+            assert_eq!(legacy.name, "晴天");
+            assert_eq!(legacy.singer, "Vk");
+            assert_eq!(legacy.duration, Duration::from_secs(261));
+            assert_eq!(legacy.cover_url, None);
+
+            let musid =
+                track_to_song(&fivesing_track_fixture()).expect("fivesing provider must map");
+            // 归一对照的登记结论（docs §12.2）：身份字段（id/name/singer/
+            // 时长）逐项对齐，唯一分歧字段是 qualities 簿记——legacy 产物
+            // 不携带档位、musid 静态声明三档 → songs_equivalent 系统性
+            // false → probe 搜索面 ParityMatch/Mismatch 对 fivesing 无鉴别
+            // 力（与 §11.8 (b) 登录源噪声同类：簿记差异，不是歌曲身份差异）。
+            assert!(legacy.qualities.is_empty());
+            let mut legacy_with_musid_qualities = legacy.clone();
+            legacy_with_musid_qualities.qualities = musid.qualities.clone();
+            assert!(
+                crate::parity::songs_equivalent(&legacy_with_musid_qualities, &musid),
+                "补齐 qualities 后全部归一字段命中——qualities 是唯一分歧字段"
+            );
+            assert!(
+                !crate::parity::songs_equivalent(&legacy, &musid),
+                "登记口径：qualities 簿记分歧使 probe 搜索面对 fivesing 恒 ParityMismatch"
+            );
+        }
+
+        /// 复刻 musid-dli `FivesingProvider::resolve` 的现取产物形状与档位
+        /// 挑选语义（source_fivesing.rs:546-596）。真实 resolve 是网络现取
+        /// （恒走 getSongUrl 端点），确定性门禁里由桩承载其产物：SQ/HQ/LQ
+        /// 三档静态表（live get_song_url.json 的逐字 URL）+ 挑选规则（档位
+        /// 降序取首个 `<= 请求档位`、请求超出曲库取最高档，:555-562）+
+        /// headers 恒空（登记差异 (a)）+ 备用地址进 fallback_urls/
+        /// fallback_endpoints（quality 回填所选档，:563-578）。真实 provider
+        /// 的离线行为（无 kind 后缀 → split_track_id 失败进动态层）与
+        /// descriptor 由 `source/tests/musid_fivesing_slice.rs`（挂
+        /// `musid-dli-adapter-fivesing` 门，跑真实 provider）钉住；真网行为
+        /// 由运行期 probe 对账覆盖（docs §12.3）。
+        struct FivesingStreamStub;
+
+        impl MusicProvider for FivesingStreamStub {
+            fn id(&self) -> &str {
+                "fivesing"
+            }
+            fn name(&self) -> &str {
+                "5sing"
+            }
+            fn capabilities(&self) -> ProviderCapabilities {
+                ProviderCapabilities {
+                    track_search: true,
+                    stream_resolve: true,
+                    lyrics: true,
+                    playlists: true,
+                    link_resolve: true,
+                    ..Default::default()
+                }
+            }
+        }
+
+        /// live `get_song_url.json`（2026-11-18 逐字捕获）的三档 URL 及其
+        /// 各自的 cloud 备用地址（主站 + cloud 双 host，与捕获逐字一致）。
+        fn fivesing_tier(quality: StreamQuality) -> (&'static str, &'static str) {
+            match quality {
+                StreamQuality::Lossless => (
+                    "https://wsaudiobssdlbig.kugou.com/202611180449/7de097966984f81de648b88ca6827b47/bss/extname/wsaudio/e16fe9656014667c92d5c7a158251a0d.mp3",
+                    "https://wsaudiobssdlbig.cloud.kugou.com/202611180449/8c6b6222a85405d54e8de4f1f15a1762/bss/extname/wsaudio/e16fe9656014667c92d5c7a158251a0d.mp3",
+                ),
+                StreamQuality::High => (
+                    "https://wsaudiobssdlbig.kugou.com/202611180449/e9d6a589a75cb1c94df432294e53ac9e/bss/extname/wsaudio/045802510fa5527105812f85233b1d73.mp3",
+                    "https://wsaudiobssdlbig.cloud.kugou.com/202611180449/4ad2152161e17c6618a543f7a3ae19e8/bss/extname/wsaudio/045802510fa5527105812f85233b1d73.mp3",
+                ),
+                _ => (
+                    "https://wsaudiobssdlbig.kugou.com/202611180449/7deb93b917fd1eb6c3e4c223be3f4f7a/bss/extname/wsaudio/f9d989ccbb5ac496d548e2686e628aa4.mp3",
+                    "https://wsaudiobssdlbig.cloud.kugou.com/202611180449/f0fe886812abbb326292f6c0c25cfae5/bss/extname/wsaudio/f9d989ccbb5ac496d548e2686e628aa4.mp3",
+                ),
+            }
+        }
+
+        #[async_trait]
+        impl MdStreamResolver for FivesingStreamStub {
+            async fn resolve(
+                &self,
+                track: &Track,
+                options: &ResolveOptions,
+            ) -> Result<StreamInfo, MdError> {
+                // split_track_id 语义（source_fivesing.rs:154-169）：extra
+                // 优先、否则 id；无 `|` 即 Provider 错误——真实 provider 的
+                // 该失败路径由 musid_fivesing_slice.rs 钉住，桩不复刻分支。
+                let raw = track
+                    .extra
+                    .get("songid")
+                    .map(|id| {
+                        format!(
+                            "{id}|{}",
+                            track.extra.get("songtype").cloned().unwrap_or_default()
+                        )
+                    })
+                    .unwrap_or_else(|| track.id.id.clone());
+                raw.split_once('|').ok_or_else(|| MdError::Provider {
+                    provider: "fivesing".to_string(),
+                    message: "track id is missing the song type".to_string(),
+                })?;
+                let mut tiers = [
+                    StreamQuality::Lossless,
+                    StreamQuality::High,
+                    StreamQuality::Low,
+                ];
+                tiers.sort_by_key(|quality| std::cmp::Reverse(*quality));
+                let picked = *tiers
+                    .iter()
+                    .find(|quality| **quality <= options.quality)
+                    .unwrap_or(&tiers[0]);
+                let (url, backup) = fivesing_tier(picked);
+                Ok(StreamInfo {
+                    url: url.to_string(),
+                    quality: picked,
+                    format: AudioFormat::Mp3,
+                    duration: track.duration,
+                    expires_at_unix: None,
+                    content_length: None,
+                    checksum: None,
+                    headers: vec![],
+                    fallback_urls: vec![backup.to_string()],
+                    index_range: None,
+                    init_range: None,
+                    max_chunk_size: None,
+                    size_is_advisory: true,
+                    checksum_algorithm: None,
+                    fallback_endpoints: vec![FallbackEndpoint {
+                        url: backup.to_string(),
+                        headers: vec![],
+                        expires_at_unix: None,
+                        content_length: None,
+                        quality: Some(picked),
+                    }],
+                })
+            }
+        }
+
+        fn fivesing_stream_adapter() -> AdapterMusicSource {
+            AdapterMusicSource::new(
+                SourceId::Fivesing,
+                "5sing（musid-dli）".to_string(),
+                None,
+                Some(Arc::new(FivesingStreamStub) as Arc<dyn MdStreamResolver>),
+                None,
+                TransportInjection::new(None, 15),
+            )
+        }
+
+        #[tokio::test]
+        async fn fivesing_stream_face_maps_tier_pick_backfill_and_the_registered_header_gap() {
+            // 现取产物映射：实际档位回填（§2.4）、备用地址进 candidate_urls、
+            // cover_url/qualities 经 enrich 从歌曲模型补齐（§3 第 13、14
+            // 条）、登记差异 (a)：headers 恒空（legacy 挂 MEDIA_REFERER；
+            // 上游 live probe 证实 CDN 已不强制 Referer，musid 对齐 live
+            // 行为——docs §12.2，不改写）。
+            let adapter = fivesing_stream_adapter();
+            let mut song =
+                track_to_song(&fivesing_track_fixture()).expect("fivesing provider must map");
+            // newget 详情路径的封面（live song_info.json user.I），enrich 的
+            // 数据前提。
+            song.cover_url = Some(
+                "https://wsingbssdl.kugou.com/d78267d58dd6192eb32961d9c6b1f77a.jpg".to_string(),
+            );
+
+            let url = adapter
+                .get_song_url(&song, Quality::Flac24)
+                .await
+                .expect("流地址面映射");
+            assert_eq!(
+                url.url,
+                "https://wsaudiobssdlbig.kugou.com/202611180449/7de097966984f81de648b88ca6827b47/bss/extname/wsaudio/e16fe9656014667c92d5c7a158251a0d.mp3",
+                "请求 Flac24（HiRes）超出曲库三档 → 挑 SQ（or-first 分支）"
+            );
+            assert_eq!(url.quality, Quality::Flac, "实际档位回填（SQ）");
+            assert_eq!(
+                url.candidate_urls,
+                vec!["https://wsaudiobssdlbig.cloud.kugou.com/202611180449/8c6b6222a85405d54e8de4f1f15a1762/bss/extname/wsaudio/e16fe9656014667c92d5c7a158251a0d.mp3".to_string()],
+                "squrl_backup 进候选（ordered_fallback_urls）"
+            );
+            assert!(
+                url.headers.is_empty(),
+                "登记差异 (a)：musid 侧 headers 恒空（legacy 挂 Referer；CDN 已不强制，docs §12.2）"
+            );
+            assert_eq!(
+                url.cover_url.as_deref(),
+                Some("https://wsingbssdl.kugou.com/d78267d58dd6192eb32961d9c6b1f77a.jpg"),
+                "enrich_song_url_from_song 从歌曲模型补齐封面"
+            );
+            assert_eq!(
+                url.qualities,
+                vec![Quality::Low128, Quality::High320, Quality::Flac],
+                "enrich 从歌曲模型 qualities（折档后的静态三档）收集"
+            );
+            assert_eq!(
+                url.duration,
+                Duration::from_secs(261),
+                "track.duration 直通"
+            );
+
+            // 显式传档位（§2.4，禁 Default=High）的可观测证据：请求 Low128
+            // 时挑选落到 LQ 档——若适配层用了缺省 High，挑选会落 HQ。
+            let low = adapter
+                .get_song_url(&song, Quality::Low128)
+                .await
+                .expect("低档请求");
+            assert_eq!(low.quality, Quality::Low128, "LQ 档命中 → 实际档位回填");
+            assert_eq!(
+                low.url,
+                "https://wsaudiobssdlbig.kugou.com/202611180449/7deb93b917fd1eb6c3e4c223be3f4f7a/bss/extname/wsaudio/f9d989ccbb5ac496d548e2686e628aa4.mp3"
+            );
+            assert_eq!(
+                low.candidate_urls,
+                vec!["https://wsaudiobssdlbig.cloud.kugou.com/202611180449/f0fe886812abbb326292f6c0c25cfae5/bss/extname/wsaudio/f9d989ccbb5ac496d548e2686e628aa4.mp3".to_string()]
+            );
+        }
+
+        // --- V2 切片 3（apple，docs §12.4）：三面全 Migrated ---
+
+        fn apple_track_fixture() -> Track {
+            from_str::<Track>(fixture!("track_apple.json")).expect("apple track fixture must parse")
+        }
+
+        #[test]
+        fn apple_track_fixture_maps_with_preview_extra_passthrough() {
+            let track = apple_track_fixture();
+            let song = track_to_song(&track).expect("apple provider must map");
+            assert_eq!(song.source, SourceId::Apple);
+            assert_eq!(song.id, "1440833098");
+            assert_eq!(song.name, "晴天");
+            assert_eq!(song.singer, "周杰伦");
+            assert_eq!(song.album_name, "叶惠美");
+            assert_eq!(song.duration, Duration::from_secs(269));
+            assert_eq!(
+                song.cover_url.as_deref(),
+                Some("https://is1-ssl.mzstatic.com/image/thumb/Music125/v4/600x600bb.jpg"),
+                "artwork {{w}}x{{h}} 模板已按 600 解析（apple_parse_song）"
+            );
+            assert_eq!(
+                song.qualities,
+                [Quality::Low128].into_iter().collect(),
+                "preview-only 契约：available_qualities [Low] 折档后进集合（§2.4）"
+            );
+            // song_id/preview_only 经 extra 原样透传：resolve/lyrics 面取址
+            // 的数据前提（musid apple resolve/lyrics 优先 extra["song_id"]
+            // 回落 track.id，source_apple.rs:671-676、:706-710）。
+            assert_eq!(
+                song.extra.get("song_id").map(String::as_str),
+                Some("1440833098")
+            );
+            assert_eq!(
+                song.extra.get("preview_only").map(String::as_str),
+                Some("true")
+            );
+            // 反向回组 Track：id/extra 保真（resolve 的数据链闭合）。
+            let rebuilt = song_to_track(&song).expect("apple source must map");
+            assert_eq!(rebuilt.id, track.id);
+            assert_eq!(rebuilt.extra, track.extra);
+        }
+
+        #[test]
+        fn apple_search_parity_preview_only_with_a_registered_qualities_gap() {
+            // legacy 侧用**真实的** `crate::apple::api::parse_song`
+            // （apple/api.rs，pub(crate) 扩宽登记见 §12.5）从平台原始响应
+            // 形状组出 SongInfo——原始 item 与 musid-dli
+            // tests/fixtures/apple/song_parse.json 的 search_item 同形（该
+            // 目录 README 明文**全部为重建形状**，非 live 捕获；金值取自
+            // 双侧共用的 inline parse 测试）。musid 侧：track_to_song
+            // （voicefox 侧 wire 形状 fixture）。任一侧 parse 改字段必红。
+            let platform_item = json!({
+                "id": "1440833098",
+                "attributes": {
+                    "name": "晴天",
+                    "artistName": "周杰伦",
+                    "albumName": "叶惠美",
+                    "durationInMillis": 269000,
+                    "artwork": {
+                        "url": "https://is1-ssl.mzstatic.com/image/thumb/Music125/v4/{w}x{h}bb.jpg"
+                    }
+                }
+            });
+            let legacy = crate::apple::api::parse_song(&platform_item)
+                .expect("真实 parse_song 必须能解析捕获形状");
+            assert_eq!(legacy.id, "1440833098");
+            assert_eq!(legacy.source, SourceId::Apple);
+            assert_eq!(legacy.name, "晴天");
+            assert_eq!(legacy.singer, "周杰伦");
+            assert_eq!(legacy.album_name, "叶惠美");
+            assert_eq!(legacy.duration, Duration::from_secs(269));
+            assert_eq!(
+                legacy.extra.get("song_id").map(String::as_str),
+                Some("1440833098")
+            );
+
+            let musid = track_to_song(&apple_track_fixture()).expect("apple provider must map");
+            // 登记口径（docs §12.2 apple 块 (b)）：身份字段（id/name/singer/
+            // 专辑/时长）逐项对齐，唯一分歧字段是 qualities 簿记——legacy
+            // 产物不携带档位、musid 声明 preview-only 单档 [Low]→{Low128}
+            // → songs_equivalent 系统性 false → probe 搜索面对 apple 无
+            // 鉴别力（同 fivesing：簿记差异，不是歌曲身份差异）。
+            assert!(legacy.qualities.is_empty());
+            let mut legacy_with_musid_qualities = legacy.clone();
+            legacy_with_musid_qualities.qualities = musid.qualities.clone();
+            assert!(
+                crate::parity::songs_equivalent(&legacy_with_musid_qualities, &musid),
+                "补齐 qualities 后全部归一字段命中——qualities 是唯一分歧字段"
+            );
+            assert!(
+                !crate::parity::songs_equivalent(&legacy, &musid),
+                "登记口径：qualities 簿记分歧使 probe 搜索面对 apple 恒 ParityMismatch"
+            );
+        }
+
+        /// 复刻 musid-dli `AppleMusicProvider::resolve` 的 preview-only 产物
+        /// 形状（source_apple.rs:663-695 有注释 pin 该契约）：忽略请求档位
+        /// 恒回 30 秒 M4a 试听、quality Low、duration 30s、headers 空、无
+        /// 备用地址。本桩只测适配层自身的映射/门控行为；真实 provider 的
+        /// descriptor 与离线行为由 `source/tests/musid_apple_slice.rs` 钉住。
+        struct AppleStreamStub;
+
+        impl MusicProvider for AppleStreamStub {
+            fn id(&self) -> &str {
+                "applemusic"
+            }
+            fn name(&self) -> &str {
+                "Apple Music"
+            }
+            fn capabilities(&self) -> ProviderCapabilities {
+                ProviderCapabilities {
+                    track_search: true,
+                    stream_resolve: true,
+                    lyrics: true,
+                    ..Default::default()
+                }
+            }
+        }
+
+        #[async_trait]
+        impl MdStreamResolver for AppleStreamStub {
+            async fn resolve(
+                &self,
+                _track: &Track,
+                _options: &ResolveOptions,
+            ) -> Result<StreamInfo, MdError> {
+                Ok(StreamInfo {
+                    url:
+                        "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview125/v4/preview.m4a"
+                            .to_string(),
+                    quality: StreamQuality::Low,
+                    format: AudioFormat::M4a,
+                    duration: Some(Duration::from_secs(30)),
+                    expires_at_unix: None,
+                    content_length: None,
+                    checksum: None,
+                    headers: vec![],
+                    fallback_urls: vec![],
+                    index_range: None,
+                    init_range: None,
+                    max_chunk_size: None,
+                    size_is_advisory: true,
+                    checksum_algorithm: None,
+                    fallback_endpoints: vec![],
+                })
+            }
+        }
+
+        #[tokio::test]
+        async fn apple_stream_face_pins_the_preview_only_quality_contract() {
+            // preview-only 契约（docs §12.2 apple 块）：musid 忽略请求档位
+            // 恒回 30s 试听 → SongUrl.quality 以实际档位 Low 回填 Low128，
+            // 与 legacy apple/mod.rs:86-98 的恒 Low128 严格对齐（quality
+            // parity 可严格断言双侧均 Low/Low128）；登记差异 (a)：musid
+            // SongUrl.duration 是 preview 物理时长 30s，legacy 带整曲时长。
+            let adapter = AdapterMusicSource::new(
+                SourceId::Apple,
+                "Apple Music（musid-dli）".to_string(),
+                None,
+                Some(Arc::new(AppleStreamStub) as Arc<dyn MdStreamResolver>),
+                None,
+                TransportInjection::new(None, 15),
+            );
+            let song = track_to_song(&apple_track_fixture()).expect("apple provider must map");
+
+            let url = adapter
+                .get_song_url(&song, Quality::Flac24)
+                .await
+                .expect("流地址面映射");
+            assert_eq!(url.quality, Quality::Low128, "实际档位回填（恒 Low）");
+            assert_eq!(
+                url.url,
+                "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview125/v4/preview.m4a"
+            );
+            assert_eq!(
+                url.duration,
+                Duration::from_secs(30),
+                "登记差异 (a)：musid 带 preview 物理时长（legacy 带整曲时长）"
+            );
+            assert!(url.headers.is_empty(), "musid 侧 headers 恒空");
+            assert_eq!(
+                url.qualities,
+                vec![Quality::Low128],
+                "enrich 从歌曲模型收集"
+            );
+            assert_eq!(
+                url.cover_url.as_deref(),
+                Some("https://is1-ssl.mzstatic.com/image/thumb/Music125/v4/600x600bb.jpg"),
+                "enrich_song_url_from_song 从歌曲模型补齐封面"
+            );
+
+            // 低档请求同形：请求档位不影响产物（preview-only 双侧同病）。
+            let low = adapter
+                .get_song_url(&song, Quality::Low128)
+                .await
+                .expect("低档请求");
+            assert_eq!(low.quality, Quality::Low128);
+            assert_eq!(low.duration, Duration::from_secs(30));
+        }
+
+        // --- V2 切片 4（bilibili，docs §12.4）：搜索/流地址 Migrated ---
+
+        fn bilibili_track_fixture() -> Track {
+            from_str::<Track>(fixture!("track_bilibili.json"))
+                .expect("bilibili track fixture must parse")
+        }
+
+        #[test]
+        fn bilibili_track_fixture_maps_with_video_reference_extra_passthrough() {
+            let track = bilibili_track_fixture();
+            let song = track_to_song(&track).expect("bilibili provider must map");
+            assert_eq!(song.source, SourceId::Bili);
+            assert_eq!(song.id, "BV1xx411c7mD");
+            assert_eq!(song.name, "测试视频", "<em> 高亮两侧同 strip_html");
+            assert_eq!(song.singer, "UP主");
+            assert_eq!(
+                song.album_name, "测试视频",
+                "bilibili 搜索产物以视频标题为专辑（两侧同形）"
+            );
+            assert_eq!(song.album_id, "BV1xx411c7mD");
+            assert_eq!(song.duration, Duration::from_secs(180));
+            assert_eq!(
+                song.cover_url.as_deref(),
+                Some("https://example.com/cover.jpg"),
+                "// 前缀补 https:（normalize_cover 两侧同形）"
+            );
+            assert!(song.qualities.is_empty(), "bilibili 不声明逐条档位");
+            // bvid/cid/aid 经 extra 原样透传：resolve 取址的数据前提
+            // （musid bili resolve 优先 extra["bvid"]/["cid"]，回落 track.id
+            // 后 resolve_cid，source_bilibili.rs:1018-1031）。
+            assert_eq!(
+                song.extra.get("bvid").map(String::as_str),
+                Some("BV1xx411c7mD")
+            );
+            assert_eq!(song.extra.get("cid").map(String::as_str), Some("1001"));
+            assert_eq!(song.extra.get("aid").map(String::as_str), Some("170001"));
+            // 反向回组 Track：id/extra 保真。
+            let rebuilt = song_to_track(&song).expect("bilibili source must map");
+            assert_eq!(rebuilt.id, track.id);
+            assert_eq!(rebuilt.extra, track.extra);
+        }
+
+        #[test]
+        fn bilibili_search_parity_normalized_equivalent() {
+            // legacy 侧用**真实的** `crate::bili::search::parse_song`
+            // （bili/search.rs，pub(crate) 扩宽登记见 §12.5）从平台原始响应
+            // 形状组出 SongInfo——原始 item 与 musid-dli
+            // tests/fixtures/bilibili/search_title_em.json 的 result[0] 同形
+            // （重建形状，README；金值两侧同源）。musid 侧：track_to_song
+            // （voicefox 侧 wire 形状 fixture）。任一侧 parse 改字段必红。
+            let platform_item = json!({
+                "bvid": "BV1xx411c7mD",
+                "title": "测试<em>视频</em>",
+                "author": "UP主",
+                "mid": 42,
+                "cid": 1001,
+                "aid": 170001,
+                "duration": "03:00",
+                "pic": "//example.com/cover.jpg"
+            });
+            let legacy = crate::bili::search::parse_song(&platform_item)
+                .expect("真实 parse_song 必须能解析捕获形状");
+            assert_eq!(legacy.id, "BV1xx411c7mD");
+            assert_eq!(legacy.source, SourceId::Bili);
+            assert_eq!(legacy.name, "测试视频");
+            assert_eq!(legacy.singer, "UP主");
+            assert_eq!(legacy.album_name, "测试视频");
+            assert_eq!(legacy.duration, Duration::from_secs(180));
+            assert_eq!(
+                legacy.cover_url.as_deref(),
+                Some("https://example.com/cover.jpg")
+            );
+
+            let musid =
+                track_to_song(&bilibili_track_fixture()).expect("bilibili provider must map");
+            assert!(
+                crate::parity::songs_equivalent(&legacy, &musid),
+                "归一对照命中：bilibili 搜索面无 fivesing/apple 式簿记分歧（双侧均无档位声明）"
+            );
+            assert!(
+                crate::parity::compare_search_items(
+                    std::slice::from_ref(&legacy),
+                    std::slice::from_ref(&musid)
+                ),
+                "搜索产物集对照命中"
+            );
+
+            let mut different = legacy;
+            different.singer = "另一位UP主".to_string();
+            assert!(!crate::parity::songs_equivalent(&different, &musid));
+        }
+
+        /// musid-dli BilibiliProvider::resolve 的 DASH 产物形状
+        /// （source_bilibili.rs:1016-1091 + choose_audio :852-893）：DASH
+        /// 音频轨 baseUrl 为主、backupUrl 镜像进 fallback_endpoints（同
+        /// Referer/UA 要求）、quality 由带宽挑选（>160k → High）、format
+        /// 恒 Aac。本桩只测适配层自身的映射/门控行为；真实 provider 的
+        /// descriptor 与离线行为由 `source/tests/musid_bilibili_slice.rs`
+        /// 钉住。
+        fn bilibili_dash_stream_info() -> StreamInfo {
+            StreamInfo {
+                url: "https://upos-sz-mirror08c.bilivideo.com/dash-audio.m4s".to_string(),
+                quality: StreamQuality::High,
+                format: AudioFormat::Aac,
+                duration: Some(Duration::from_secs(180)),
+                expires_at_unix: None,
+                content_length: None,
+                checksum: None,
+                // DASH CDN 拒绝无 Referer 请求：两侧恒挂同一组头。
+                headers: vec![
+                    (
+                        "Referer".to_string(),
+                        "https://www.bilibili.com/".to_string(),
+                    ),
+                    (
+                        "User-Agent".to_string(),
+                        "Mozilla/5.0 (X11; Linux x86_64; rv:141.0) Gecko/20100101 Firefox/141.0"
+                            .to_string(),
+                    ),
+                ],
+                fallback_urls: vec![],
+                index_range: None,
+                init_range: None,
+                max_chunk_size: None,
+                size_is_advisory: false,
+                checksum_algorithm: None,
+                fallback_endpoints: vec![FallbackEndpoint {
+                    url: "https://upos-sz-mirrorali.bilivideo.com/dash-audio.m4s".to_string(),
+                    headers: vec![(
+                        "Referer".to_string(),
+                        "https://www.bilibili.com/".to_string(),
+                    )],
+                    expires_at_unix: None,
+                    content_length: None,
+                    quality: Some(StreamQuality::High),
+                }],
+            }
+        }
+
+        struct BilibiliStreamStub;
+
+        impl MusicProvider for BilibiliStreamStub {
+            fn id(&self) -> &str {
+                "bilibili"
+            }
+            fn name(&self) -> &str {
+                "哔哩哔哩"
+            }
+            fn capabilities(&self) -> ProviderCapabilities {
+                ProviderCapabilities {
+                    track_search: true,
+                    stream_resolve: true,
+                    authentication: true,
+                    playlists: true,
+                    charts: true,
+                    ..Default::default()
+                }
+            }
+        }
+
+        #[async_trait]
+        impl MdStreamResolver for BilibiliStreamStub {
+            async fn resolve(
+                &self,
+                _track: &Track,
+                _options: &ResolveOptions,
+            ) -> Result<StreamInfo, MdError> {
+                Ok(bilibili_dash_stream_info())
+            }
+        }
+
+        #[tokio::test]
+        async fn bilibili_stream_face_maps_dash_headers_candidates_and_g3_slots() {
+            // DASH 伴随字段断言（docs §12.4 行 4）：headers 两侧同形原样
+            // 透传（legacy bili/url.rs:61-64 恒挂 Referer+UA）；backupUrl
+            // 镜像折叠进 candidate_urls（FallbackEndpoint 元数据旁路留给
+            // 下载引擎切片，§2.6）；G3：index/init range 走伴随字段（musid
+            // 不产 → None，descriptive-only）；format=Aac 不反推档位
+            // （quality 来自带宽挑选的回填，与 format 无关）。
+            let resolved = stream_to_resolved_url(&bilibili_dash_stream_info());
+            assert_eq!(resolved.format, AudioFormat::Aac);
+            assert_eq!(
+                resolved.index_range, None,
+                "G3：musid 不产 DASH range → 伴随字段 None（descriptive-only）"
+            );
+            assert_eq!(resolved.init_range, None);
+
+            let adapter = AdapterMusicSource::new(
+                SourceId::Bili,
+                "哔哩哔哩（musid-dli）".to_string(),
+                None,
+                Some(Arc::new(BilibiliStreamStub) as Arc<dyn MdStreamResolver>),
+                None,
+                TransportInjection::new(None, 15),
+            );
+            let mut song =
+                track_to_song(&bilibili_track_fixture()).expect("bilibili provider must map");
+            song.cover_url = Some("https://example.com/cover.jpg".to_string());
+
+            let url = adapter
+                .get_song_url(&song, Quality::Low128)
+                .await
+                .expect("流地址面映射");
+            assert_eq!(
+                url.url,
+                "https://upos-sz-mirror08c.bilivideo.com/dash-audio.m4s"
+            );
+            assert_eq!(
+                url.quality,
+                Quality::High320,
+                "实际档位回填（带宽挑选 High；format=Aac 不反推档位）"
+            );
+            assert_eq!(
+                url.headers,
+                vec![
+                    (
+                        "Referer".to_string(),
+                        "https://www.bilibili.com/".to_string()
+                    ),
+                    (
+                        "User-Agent".to_string(),
+                        "Mozilla/5.0 (X11; Linux x86_64; rv:141.0) Gecko/20100101 Firefox/141.0"
+                            .to_string(),
+                    ),
+                ],
+                "DASH CDN 头两侧同形（legacy 恒挂同值，bili/url.rs:61-64）"
+            );
+            assert_eq!(
+                url.candidate_urls,
+                vec!["https://upos-sz-mirrorali.bilivideo.com/dash-audio.m4s".to_string()],
+                "backupUrl 镜像进候选（ordered_fallback_urls）"
+            );
+            assert_eq!(
+                url.duration,
+                Duration::from_secs(180),
+                "track.duration 直通"
+            );
+            assert_eq!(
+                url.cover_url.as_deref(),
+                Some("https://example.com/cover.jpg"),
+                "enrich 从歌曲模型补齐封面"
+            );
+        }
+
+        // --- V2 切片 5（migu，docs §12.4）：三面全 Migrated ---
+
+        fn migu_track_fixture() -> Track {
+            from_str::<Track>(fixture!("track_migu.json")).expect("migu track fixture must parse")
+        }
+
+        #[test]
+        fn migu_track_fixture_maps_with_mrc_extra_passthrough() {
+            let track = migu_track_fixture();
+            let song = track_to_song(&track).expect("migu provider must map");
+            assert_eq!(song.source, SourceId::Mg);
+            assert_eq!(song.id, "3790007");
+            assert_eq!(song.name, "晴天");
+            assert_eq!(song.singer, "周杰伦");
+            assert_eq!(song.album_name, "叶惠美");
+            assert_eq!(song.duration, Duration::from_secs(269));
+            assert_eq!(song.cover_url.as_deref(), Some("https://img.example/a.jpg"));
+            assert_eq!(
+                song.qualities,
+                [Quality::Low128, Quality::Flac].into_iter().collect(),
+                "audioFormats PQ+SQ 折档后进集合（两侧 formatType 同表）"
+            );
+            // copyrightId/contentId 经 extra 原样透传：流地址/歌词面取址的
+            // 数据前提（musid resource_id 优先 extra["contentId"]，
+            // source_migu.rs:596-603；歌词面 mrcUrl/lrcUrl/trcUrl 同链）。
+            assert_eq!(
+                song.extra.get("copyrightId").map(String::as_str),
+                Some("60054701923")
+            );
+            assert_eq!(
+                song.extra.get("contentId").map(String::as_str),
+                Some("600902000006889366")
+            );
+            // 反向回组 Track：id/extra 保真。
+            let rebuilt = song_to_track(&song).expect("migu source must map");
+            assert_eq!(rebuilt.id, track.id);
+            assert_eq!(rebuilt.extra, track.extra);
+        }
+
+        #[test]
+        fn migu_search_parity_normalized_equivalent() {
+            // legacy 侧用**真实的** `crate::mg::song::parse_song`
+            // （mg/song.rs，本就 pub(crate)）从平台原始响应形状组出
+            // SongInfo——原始 item 与 musid-dli
+            // tests/fixtures/migu/search_response.json 的
+            // ok_numeric_total.resultList[0][0] 同形。musid 侧：
+            // track_to_song（voicefox 侧 wire 形状 fixture）。
+            let platform_item = json!({
+                "songId": 3790007,
+                "songName": "晴天",
+                "singerList": [{ "name": "周杰伦" }],
+                "album": "叶惠美",
+                "copyrightId": "60054701923",
+                "contentId": "600902000006889366",
+                "duration": 269,
+                "img3": "https://img.example/a.jpg",
+                "audioFormats": [{ "formatType": "PQ" }, { "formatType": "SQ" }]
+            });
+            let legacy = crate::mg::song::parse_song(&platform_item)
+                .expect("真实 parse_song 必须能解析捕获形状");
+            assert_eq!(legacy.id, "3790007");
+            assert_eq!(legacy.source, SourceId::Mg);
+            assert_eq!(legacy.name, "晴天");
+            assert_eq!(legacy.singer, "周杰伦");
+            assert_eq!(legacy.album_name, "叶惠美");
+            assert_eq!(legacy.duration, Duration::from_secs(269));
+            assert_eq!(
+                legacy.cover_url.as_deref(),
+                Some("https://img.example/a.jpg")
+            );
+            assert_eq!(
+                legacy.qualities,
+                [Quality::Low128, Quality::Flac].into_iter().collect(),
+                "legacy formatType 表 PQ/HQ/SQ/ZQ* 与 musid 同形折档"
+            );
+
+            let musid = track_to_song(&migu_track_fixture()).expect("migu provider must map");
+            // migu 搜索面 qualities 完全对齐（两侧 formatType 同表）——
+            // 无 fivesing/apple 式簿记分歧，归一对照可全等命中。
+            assert!(
+                crate::parity::songs_equivalent(&legacy, &musid),
+                "归一对照命中（qualities 集合含内）"
+            );
+            assert!(
+                crate::parity::compare_search_items(
+                    std::slice::from_ref(&legacy),
+                    std::slice::from_ref(&musid)
+                ),
+                "搜索产物集对照命中"
+            );
+
+            let mut different = legacy;
+            different.name = "七里香".to_string();
+            assert!(!crate::parity::songs_equivalent(&different, &musid));
+        }
+
+        // --- V2 切片 6（kuwo，docs §12.4）：三面全 Migrated ---
+
+        fn kuwo_track_fixture() -> Track {
+            from_str::<Track>(fixture!("track_kuwo.json")).expect("kuwo track fixture must parse")
+        }
+
+        #[test]
+        fn kuwo_track_fixture_maps_with_nminfo_qualities() {
+            let track = kuwo_track_fixture();
+            let song = track_to_song(&track).expect("kuwo provider must map");
+            assert_eq!(song.source, SourceId::Kw);
+            assert_eq!(song.id, "228908");
+            assert_eq!(song.name, "晴天");
+            assert_eq!(
+                song.singer, "周杰伦、费玉清",
+                "musid 按 & 拆歌手、track_to_song 按 、 重join——与 legacy 的 & → 、 等价"
+            );
+            assert_eq!(song.album_name, "叶惠美");
+            assert_eq!(song.album_id, "104004");
+            assert_eq!(song.duration, Duration::from_secs(270));
+            assert_eq!(
+                song.qualities,
+                [Quality::Low128, Quality::High320, Quality::Flac]
+                    .into_iter()
+                    .collect(),
+                "N_MINFO bitrate 320/128/2000 → High/Low/Lossless 折档（22000/20900 不在两侧表中）"
+            );
+            // 反向回组 Track：id 保真。
+            let rebuilt = song_to_track(&song).expect("kuwo source must map");
+            assert_eq!(rebuilt.id, track.id);
+        }
+
+        #[test]
+        fn kuwo_search_parity_normalized_equivalent() {
+            // legacy 侧用**真实的** `crate::kw::search::parse_search_song`
+            // （kw/search.rs，从 search 的内联逐项解析逐字搬出 + pub(crate)
+            // 扩宽，登记见 §12.5）从平台原始响应形状组出 SongInfo——原始
+            // item 与 musid-dli tests/fixtures/kuwo/search_page.json 的
+            // abslist[0] 同形。musid 侧：track_to_song（voicefox 侧 wire
+            // 形状 fixture）。任一侧 parse 改字段必红。
+            let platform_item = json!({
+                "MUSICRID": "MUSIC_228908",
+                "SONGNAME": "晴天",
+                "ARTIST": "周杰伦&费玉清",
+                "ALBUM": "叶惠美",
+                "ALBUMID": "104004",
+                "DURATION": "270",
+                "N_MINFO": "level:bcms,bitrate:22000,format:mgg,size:22.11Mb;level:zply,bitrate:20900,format:mflac,size:178.32Mb;level:high,bitrate:320,format:mp3,size:10.2M;level:standard,bitrate:128,format:mp3,size:4.1M;level:super,bitrate:2000,format:flac,size:30M"
+            });
+            let legacy = crate::kw::search::parse_search_song(&platform_item)
+                .expect("真实 parse_search_song 必须能解析捕获形状");
+            assert_eq!(legacy.id, "228908");
+            assert_eq!(legacy.source, SourceId::Kw);
+            assert_eq!(legacy.name, "晴天");
+            assert_eq!(legacy.singer, "周杰伦、费玉清");
+            assert_eq!(legacy.album_name, "叶惠美");
+            assert_eq!(legacy.album_id, "104004");
+            assert_eq!(legacy.duration, Duration::from_secs(270));
+            assert_eq!(
+                legacy.qualities,
+                [Quality::Low128, Quality::High320, Quality::Flac]
+                    .into_iter()
+                    .collect()
+            );
+
+            let musid = track_to_song(&kuwo_track_fixture()).expect("kuwo provider must map");
+            // kuwo 搜索面 qualities 完全对齐（两侧 bitrate 表同形）——
+            // 归一对照可全等命中。
+            assert!(
+                crate::parity::songs_equivalent(&legacy, &musid),
+                "归一对照命中（qualities 集合含内）"
+            );
+            assert!(
+                crate::parity::compare_search_items(
+                    std::slice::from_ref(&legacy),
+                    std::slice::from_ref(&musid)
+                ),
+                "搜索产物集对照命中"
+            );
+
+            let mut different = legacy;
+            different.album_name = "七里香".to_string();
+            assert!(!crate::parity::songs_equivalent(&different, &musid));
+        }
+
+        // --- V2 切片 7（kugou，docs §12.4）：三面全 Migrated ---
+
+        fn kugou_track_fixture() -> Track {
+            from_str::<Track>(fixture!("track_kugou.json")).expect("kugou track fixture must parse")
+        }
+
+        #[test]
+        fn kugou_track_fixture_maps_with_hash_extra_passthrough() {
+            let track = kugou_track_fixture();
+            let song = track_to_song(&track).expect("kugou provider must map");
+            assert_eq!(song.source, SourceId::Kg);
+            assert_eq!(song.id, "123456");
+            assert_eq!(song.name, "晴天");
+            assert_eq!(song.singer, "周杰伦");
+            assert_eq!(song.album_name, "叶惠美");
+            assert_eq!(song.album_id, "42");
+            assert_eq!(song.duration, Duration::from_secs(269));
+            assert_eq!(
+                song.qualities,
+                [Quality::Low128, Quality::High320, Quality::Flac24]
+                    .into_iter()
+                    .collect(),
+                "FileSize/HQFileSize/ResFileSize > 0（SQ=0 缺席）折档后进集合"
+            );
+            // FileHash 系键经 extra 原样透传：流地址面取址的数据前提
+            // （musid select_hash 按 tier 从 extra 取 hash，回落链
+            // SQFileHash → HQFileHash → FileHash，source_kugou.rs:519-536）。
+            assert_eq!(
+                song.extra.get("FileHash").map(String::as_str),
+                Some("ABCDEF0123")
+            );
+            assert_eq!(
+                song.extra.get("HQFileHash").map(String::as_str),
+                Some("HQ0123")
+            );
+            // 反向回组 Track：id/extra 保真（resolve 的数据链闭合）。
+            let rebuilt = song_to_track(&song).expect("kugou source must map");
+            assert_eq!(rebuilt.id, track.id);
+            assert_eq!(rebuilt.extra, track.extra);
+        }
+
+        #[test]
+        fn kugou_search_parity_normalized_equivalent() {
+            // legacy 侧用**真实的** `crate::kg::search::parse_song`
+            // （kg/search.rs，pub(crate) 扩宽登记见 §12.5）从平台原始响应
+            // 形状组出 SongInfo。musid 侧：track_to_song（voicefox 侧 wire
+            // 形状 fixture；样本值取自 musid-dli source_kugou.rs 的 inline
+            // parse 测试——上游 tests/fixtures/kugou/ 无 search 形状文件，
+            // 如实登记为重建形状）。任一侧 parse 改字段必红。
+            let platform_item = json!({
+                "Audioid": 123456,
+                "SongName": "晴天",
+                "Singers": [{ "name": "周杰伦" }],
+                "AlbumName": "叶惠美",
+                "AlbumID": 42,
+                "Duration": 269,
+                "FileSize": 4312832,
+                "HQFileSize": 10781692,
+                "SQFileSize": 0,
+                "ResFileSize": 12345678,
+                "FileHash": "ABCDEF0123",
+                "HQFileHash": "HQ0123"
+            });
+            let legacy = crate::kg::search::parse_song(&platform_item)
+                .expect("真实 parse_song 必须能解析捕获形状");
+            assert_eq!(legacy.id, "123456");
+            assert_eq!(legacy.source, SourceId::Kg);
+            assert_eq!(legacy.name, "晴天");
+            assert_eq!(legacy.singer, "周杰伦");
+            assert_eq!(legacy.album_name, "叶惠美");
+            assert_eq!(legacy.duration, Duration::from_secs(269));
+            assert_eq!(
+                legacy.qualities,
+                [Quality::Low128, Quality::High320, Quality::Flac24]
+                    .into_iter()
+                    .collect()
+            );
+            assert_eq!(
+                legacy.extra.get("FileHash").map(String::as_str),
+                Some("ABCDEF0123")
+            );
+
+            let musid = track_to_song(&kugou_track_fixture()).expect("kugou provider must map");
+            // kugou 搜索面 qualities 完全对齐（两侧 size>0 → 四档同表）。
+            assert!(
+                crate::parity::songs_equivalent(&legacy, &musid),
+                "归一对照命中（qualities 集合含内）"
+            );
+            assert!(
+                crate::parity::compare_search_items(
+                    std::slice::from_ref(&legacy),
+                    std::slice::from_ref(&musid)
+                ),
+                "搜索产物集对照命中"
+            );
+
+            let mut different = legacy;
+            different.duration = Duration::from_secs(300);
+            assert!(!crate::parity::songs_equivalent(&different, &musid));
+        }
+
+        // --- V2 切片 8（qqmusic/tx，docs §12.4）：三面全 Migrated ---
+
+        fn tx_track_fixture() -> Track {
+            from_str::<Track>(fixture!("track_qqmusic.json")).expect("tx track fixture must parse")
+        }
+
+        #[test]
+        fn tx_track_fixture_maps_with_vkey_extra_passthrough() {
+            let track = tx_track_fixture();
+            let song = track_to_song(&track).expect("qqmusic provider must map");
+            assert_eq!(song.source, SourceId::Tx);
+            assert_eq!(song.id, "003aAYrm3GE0Ac");
+            assert_eq!(song.name, "晴天");
+            assert_eq!(song.singer, "周杰伦、杨瑞代");
+            assert_eq!(song.album_name, "叶惠美");
+            assert_eq!(song.album_id, "002Neh8l0uciQ1");
+            assert_eq!(song.duration, Duration::from_secs(269));
+            assert_eq!(
+                song.qualities,
+                [
+                    Quality::Low128,
+                    Quality::High320,
+                    Quality::Flac,
+                    Quality::Flac24
+                ]
+                .into_iter()
+                .collect(),
+                "size_128mp3/320mp3/flac/hires 全正 → 四档折档集合（Low 恒在 = legacy Low128 恒在同口径）"
+            );
+            // songId/strMediaMid/size_* 经 extra 原样透传：流地址/歌词面
+            // 取址的数据前提（musid resolve 的 media_mid 优先 extra
+            // ["strMediaMid"]，source_qqmusic.rs:815-819；content_length 读
+            // size_* 键 :852；歌词面 songId 数值解析 :873-877）。
+            assert_eq!(
+                song.extra.get("songId").map(String::as_str),
+                Some("483034200")
+            );
+            assert_eq!(
+                song.extra.get("strMediaMid").map(String::as_str),
+                Some("003aAYrm3GE0Ac")
+            );
+            // 反向回组 Track：id/extra 保真（resolve 的数据链闭合）。
+            let rebuilt = song_to_track(&song).expect("qqmusic source must map");
+            assert_eq!(rebuilt.id, track.id);
+            assert_eq!(rebuilt.extra, track.extra);
+        }
+
+        #[test]
+        fn tx_search_parity_normalized_equivalent() {
+            // legacy 侧用**真实的** `crate::tx::search::parse_song`
+            // （tx/search.rs:126，本就 pub(crate)）从平台原始响应形状组出
+            // SongInfo——原始 item 与 musid-dli
+            // tests/fixtures/qqmusic/search_songs.json data.song.list[0]
+            // 同形（该目录为重建形状记录，provenance 见 docs §12.3 批内
+            // 登记）。musid 侧：track_to_song（voicefox 侧 wire 形状
+            // fixture）。任一侧 parse 改字段必红。
+            let platform_item = json!({
+                "id": 483034200,
+                "mid": "003aAYrm3GE0Ac",
+                "title": "晴天",
+                "singer": [{ "name": "周杰伦" }, { "name": "杨瑞代" }],
+                "album": { "mid": "002Neh8l0uciQ1", "name": "叶惠美" },
+                "interval": 269,
+                "file": {
+                    "media_mid": "003aAYrm3GE0Ac",
+                    "size_128mp3": 4312832,
+                    "size_320mp3": 10781692,
+                    "size_flac": 23706814,
+                    "size_hires": 54915322
+                }
+            });
+            let legacy = crate::tx::search::parse_song(&platform_item)
+                .expect("真实 parse_song 必须能解析捕获形状");
+            assert_eq!(legacy.id, "003aAYrm3GE0Ac");
+            assert_eq!(legacy.source, SourceId::Tx);
+            assert_eq!(legacy.name, "晴天");
+            assert_eq!(legacy.singer, "周杰伦、杨瑞代");
+            assert_eq!(legacy.album_name, "叶惠美");
+            assert_eq!(legacy.duration, Duration::from_secs(269));
+            assert_eq!(
+                legacy.qualities,
+                [
+                    Quality::Low128,
+                    Quality::High320,
+                    Quality::Flac,
+                    Quality::Flac24
+                ]
+                .into_iter()
+                .collect()
+            );
+
+            let musid = track_to_song(&tx_track_fixture()).expect("qqmusic provider must map");
+            // tx 搜索面 qualities 完全对齐（size>0 → 四档两侧同表；musid
+            // 恒产 Low 与 legacy 恒产 Low128 在 size_128mp3 全正的真实形状
+            // 下同集合——size_128mp3 缺席的簿记分歧登记在 §12.2 qqmusic 块，
+            // 不进本对照）。
+            assert!(
+                crate::parity::songs_equivalent(&legacy, &musid),
+                "归一对照命中（qualities 集合相等）"
+            );
+            assert!(
+                crate::parity::compare_search_items(
+                    std::slice::from_ref(&legacy),
+                    std::slice::from_ref(&musid)
+                ),
+                "搜索产物集对照命中"
+            );
+
+            let mut different = legacy;
+            different.name = "七里香".to_string();
+            assert!(!crate::parity::songs_equivalent(&different, &musid));
+        }
+
+        // --- V2 切片 9（netease/wy，docs §12.4）：三面全 Migrated ---
+
+        fn wy_track_fixture() -> Track {
+            from_str::<Track>(fixture!("track_wy.json")).expect("wy track fixture must parse")
+        }
+
+        #[test]
+        fn wy_track_fixture_maps_with_pl_level_extra_passthrough() {
+            let track = wy_track_fixture();
+            let song = track_to_song(&track).expect("netease provider must map");
+            assert_eq!(song.source, SourceId::Wy);
+            assert_eq!(song.id, "789");
+            assert_eq!(song.name, "老接口");
+            assert_eq!(song.singer, "周杰伦、费玉清");
+            assert_eq!(song.album_name, "老专辑");
+            assert_eq!(song.album_id, "42");
+            assert_eq!(song.duration, Duration::from_secs(258));
+            assert_eq!(
+                song.qualities,
+                [
+                    Quality::Low128,
+                    Quality::High320,
+                    Quality::Flac,
+                    Quality::Flac24
+                ]
+                .into_iter()
+                .collect(),
+                "musid Low 恒在 + h/sq/hr>0 → 四档；折档后与 legacy 恒产 Low128 + h/sq/hr 同集合（无簿记分歧）"
+            );
+            // pl_level 经 extra 原样透传（musid parse_track 记登录态档位
+            // 上限，source_netease.rs:398-401）；resolve 侧 expires_at_unix
+            // 由 URL 提取（source_netease.rs:527）——G4 过期门对 wy 设防。
+            assert_eq!(
+                song.extra.get("pl_level").map(String::as_str),
+                Some("lossless")
+            );
+            // 反向回组 Track：id/extra 保真。
+            let rebuilt = song_to_track(&song).expect("netease source must map");
+            assert_eq!(rebuilt.id, track.id);
+            assert_eq!(rebuilt.extra, track.extra);
+        }
+
+        #[test]
+        fn wy_search_parity_normalized_equivalent() {
+            // legacy 侧用**真实的** `crate::wy::search::parse_song`
+            // （wy/search.rs:102，本就 pub(crate)）从平台原始响应形状组出
+            // SongInfo。平台 item 形状 = eapi 搜索 v3 资源（ar/al/dt/h/sq/
+            // hr），样本值取自 musid-dli
+            // tests/fixtures/netease/song_detail_legacy.json songs[0]（老
+            // 接口形状 artists/album/duration 的同值 v3 重排——legacy
+            // parse_song 只认 v3 字段名，golden 值与 musid 侧 fixture 同源，
+            // provenance 见 docs §12.3 批内登记）。musid 侧：
+            // track_to_song（voicefox 侧 wire 形状 fixture）。任一侧 parse
+            // 改字段必红。±1s 时长容差（parity.rs:174-179）与折档后
+            // qualities 集合相等（:180）即本对照的口径。
+            let platform_item = json!({
+                "id": 789,
+                "name": "老接口",
+                "ar": [{ "id": 6452, "name": "周杰伦" }, { "id": 2, "name": "费玉清" }],
+                "al": { "id": 42, "name": "老专辑", "picUrl": "https://p" },
+                "dt": 258000,
+                "h": { "size": 8123456 },
+                "sq": { "size": 24567890 },
+                "privilege": { "maxBrLevel": "hires", "plLevel": "lossless" }
+            });
+            let legacy = crate::wy::search::parse_song(&platform_item)
+                .expect("真实 parse_song 必须能解析捕获形状");
+            assert_eq!(legacy.id, "789");
+            assert_eq!(legacy.source, SourceId::Wy);
+            assert_eq!(legacy.name, "老接口");
+            assert_eq!(legacy.singer, "周杰伦、费玉清");
+            assert_eq!(legacy.album_name, "老专辑");
+            assert_eq!(legacy.duration, Duration::from_secs(258));
+            assert_eq!(
+                legacy.qualities,
+                [
+                    Quality::Low128,
+                    Quality::High320,
+                    Quality::Flac,
+                    Quality::Flac24
+                ]
+                .into_iter()
+                .collect()
+            );
+
+            let musid = track_to_song(&wy_track_fixture()).expect("netease provider must map");
+            assert!(
+                crate::parity::songs_equivalent(&legacy, &musid),
+                "归一对照命中（±1s 时长容差 + 折档后 qualities 集合相等）"
+            );
+            assert!(
+                crate::parity::compare_search_items(
+                    std::slice::from_ref(&legacy),
+                    std::slice::from_ref(&musid)
+                ),
+                "搜索产物集对照命中"
+            );
+
+            let mut different = legacy;
+            different.album_name = "叶惠美".to_string();
+            assert!(!crate::parity::songs_equivalent(&different, &musid));
+        }
+
+        // --- V2 切片 10（qianqian，docs §12.4）：三面全 Migrated ---
+
+        fn qianqian_track_fixture() -> Track {
+            from_str::<Track>(fixture!("track_qianqian.json"))
+                .expect("qianqian track fixture must parse")
+        }
+
+        #[test]
+        fn qianqian_track_fixture_maps_with_tsid_extra_passthrough() {
+            let track = qianqian_track_fixture();
+            let song = track_to_song(&track).expect("qianqian provider must map");
+            assert_eq!(song.source, SourceId::Qianqian);
+            assert_eq!(song.id, "T10065400429");
+            assert_eq!(song.name, "等晴天");
+            assert_eq!(song.singer, "周深");
+            assert_eq!(song.album_name, "等晴天");
+            assert_eq!(song.album_id, "P10004348672");
+            assert_eq!(song.duration, Duration::from_secs(268));
+            assert_eq!(
+                song.qualities,
+                [Quality::Low128, Quality::High320, Quality::Flac]
+                    .into_iter()
+                    .collect(),
+                "rateFileInfo 3000/320/128|64 → Lossless/High/Low 折档（两侧 rate 表同形）"
+            );
+            // tsid/album_asset_code 经 extra 原样透传：流地址/歌词面取址的
+            // 数据前提（musid resolve/lyrics 的 TSID 优先 extra["tsid"]，
+            // source_qianqian.rs:786-790、:835-839；空 tsid → 离线
+            // NotFound）。
+            assert_eq!(
+                song.extra.get("tsid").map(String::as_str),
+                Some("T10065400429")
+            );
+            assert_eq!(
+                song.extra.get("album_asset_code").map(String::as_str),
+                Some("P10004348672")
+            );
+            // 反向回组 Track：id/extra 保真。
+            let rebuilt = song_to_track(&song).expect("qianqian source must map");
+            assert_eq!(rebuilt.id, track.id);
+            assert_eq!(rebuilt.extra, track.extra);
+        }
+
+        #[test]
+        fn qianqian_search_parity_normalized_equivalent() {
+            // legacy 侧用**真实的** `crate::qianqian::song::parse_song`
+            // （qianqian/song.rs:172，pub(super) → pub(crate) 扩宽，函数体
+            // 零改动，登记见 docs §12.7）从平台原始响应形状组出 SongInfo
+            // ——原始 item 与 musid-dli tests/fixtures/qianqian/
+            // search_songs.json data.typeTrack[0] 同形（state/errno=22000
+            // envelope、artist[] 带 artistCode/pic、title/duration(秒)/
+            // assetId）。musid 侧：track_to_song（voicefox 侧 wire 形状
+            // fixture）。任一侧 parse 改字段必红。
+            let platform_item = json!({
+                "TSID": "T10065400429",
+                "assetId": "T10065400429",
+                "title": "等晴天",
+                "artist": [{ "artistCode": "A10273267", "name": "周深",
+                             "pic": "https://img01.dmhmusic.com/0206/M00/73/60/ChR461tNCq6ATOwZAAG214sWjCA734.jpg" }],
+                "pic": "https://img01.dmhmusic.com/0513/M00/99/81/ChAKFGnMhpKAdxeRAA8QjCMTD1I496.jpg",
+                "duration": 268,
+                "albumTitle": "等晴天",
+                "albumAssetCode": "P10004348672",
+                "rateFileInfo": {
+                    "3000": { "size": 57635329, "format": "flac" },
+                    "320": { "size": 10759932, "format": "mp3" },
+                    "64": { "size": 2151918, "format": "aac" },
+                    "128": { "size": 4304124, "format": "mp3" }
+                }
+            });
+            let legacy = crate::qianqian::song::parse_song(&platform_item)
+                .expect("真实 parse_song 必须能解析捕获形状");
+            assert_eq!(legacy.id, "T10065400429");
+            assert_eq!(legacy.source, SourceId::Qianqian);
+            assert_eq!(legacy.name, "等晴天");
+            assert_eq!(legacy.singer, "周深");
+            assert_eq!(legacy.album_name, "等晴天");
+            assert_eq!(legacy.album_id, "P10004348672");
+            assert_eq!(legacy.duration, Duration::from_secs(268));
+            assert_eq!(
+                legacy.qualities,
+                [Quality::Low128, Quality::High320, Quality::Flac]
+                    .into_iter()
+                    .collect(),
+                "rateFileInfo size>0 → 3000→Flac、320→High320、128|64→Low128"
+            );
+
+            let musid =
+                track_to_song(&qianqian_track_fixture()).expect("qianqian provider must map");
+            // qianqian 搜索面 qualities 完全对齐（两侧 rate 表同形）——
+            // 归一对照可全等命中。
+            assert!(
+                crate::parity::songs_equivalent(&legacy, &musid),
+                "归一对照命中（qualities 集合相等）"
+            );
+            assert!(
+                crate::parity::compare_search_items(
+                    std::slice::from_ref(&legacy),
+                    std::slice::from_ref(&musid)
+                ),
+                "搜索产物集对照命中"
+            );
+
+            let mut different = legacy;
+            different.singer = "告五人、藤冈靛".to_string();
+            assert!(!crate::parity::songs_equivalent(&different, &musid));
+        }
+
+        // --- V2 切片 11（joox，docs §12.4）：三面全 Migrated ---
+
+        fn joox_track_fixture() -> Track {
+            from_str::<Track>(fixture!("track_joox.json")).expect("joox track fixture must parse")
+        }
+
+        #[test]
+        fn joox_track_fixture_maps_with_songid_extra_passthrough() {
+            let track = joox_track_fixture();
+            let song = track_to_song(&track).expect("joox provider must map");
+            assert_eq!(song.source, SourceId::Joox);
+            assert_eq!(song.id, "bLnv0PqDX_qAlIqapc+Okw==");
+            assert_eq!(song.name, "晴天");
+            assert_eq!(song.singer, "周杰倫");
+            assert_eq!(song.album_name, "葉惠美");
+            assert_eq!(song.album_id, "YiT3xohoUs5qeo9aJ2yjDw==");
+            assert_eq!(song.duration, Duration::from_secs(269));
+            assert!(
+                song.qualities.is_empty(),
+                "搜索/容器响应无 kbps 数据 → available_qualities 空（档位只在 fetch_song_detail，两侧同口径）"
+            );
+            // songid 经 extra 原样透传（加密串）：流地址/歌词面取址的数据
+            // 前提（musid resolve/lyrics 的 songid 优先 extra["songid"]，
+            // source_joox.rs:749-756、:797-804；空 songid → 离线
+            // NotFound）。
+            assert_eq!(
+                song.extra.get("songid").map(String::as_str),
+                Some("bLnv0PqDX_qAlIqapc+Okw==")
+            );
+            // 反向回组 Track：id/extra 保真。
+            let rebuilt = song_to_track(&song).expect("joox source must map");
+            assert_eq!(rebuilt.id, track.id);
+            assert_eq!(rebuilt.extra, track.extra);
+        }
+
+        #[test]
+        fn joox_search_parity_normalized_equivalent() {
+            // legacy 侧用**真实的** `crate::joox::api::songs_from_search`
+            // （joox/api.rs:150，pub(super) → pub(crate) 扩宽，函数体零改
+            // 动，登记见 docs §12.7）从平台原始响应形状组出 SongInfo——
+            // 原始响应与 musid-dli tests/fixtures/joox/search_songs.json
+            // 同形（tracks 为嵌套数组、id/album_id 加密串）。musid 侧：
+            // track_to_song（voicefox 侧 wire 形状 fixture，样本值取自同
+            // fixture 的首项）。任一侧 parse 改字段必红。
+            let response = json!({
+                "error": "",
+                "error_code": 0,
+                "has_more": true,
+                "next_page": 1,
+                "tracks": [
+                    [
+                        {
+                            "album_id": "YiT3xohoUs5qeo9aJ2yjDw==",
+                            "id": "bLnv0PqDX_qAlIqapc+Okw==",
+                            "name": "晴天",
+                            "album_name": "葉惠美",
+                            "artist_list": [
+                                { "id": "JlwrqRxx2ztLLil3yooBkw==", "name": "周杰倫" }
+                            ],
+                            "play_duration": 269,
+                            "images": [
+                                { "width": 1000, "height": 1000,
+                                  "url": "https://image.joox.com/JOOXcover/0/aaf707b7fa2e2c8c/1000" },
+                                { "width": 300, "height": 300,
+                                  "url": "https://image.joox.com/JOOXcover/0/aaf707b7fa2e2c8c/300" }
+                            ],
+                            "vip_flag": 1,
+                            "auth_terminal": 1,
+                            "is_playable": false,
+                            "track_free_action_control": 0
+                        }
+                    ]
+                ]
+            });
+            let legacy = crate::joox::api::songs_from_search(&response);
+            assert_eq!(legacy.len(), 1, "嵌套数组的单项解包两侧同构");
+            let legacy = &legacy[0];
+            assert_eq!(legacy.id, "bLnv0PqDX_qAlIqapc+Okw==");
+            assert_eq!(legacy.source, SourceId::Joox);
+            assert_eq!(legacy.name, "晴天");
+            assert_eq!(legacy.singer, "周杰倫");
+            assert_eq!(legacy.album_name, "葉惠美");
+            assert_eq!(legacy.duration, Duration::from_secs(269));
+            assert!(
+                legacy.qualities.is_empty(),
+                "legacy 搜索产物同样不带档位（parse_song_info 不填 qualities）"
+            );
+
+            let musid = track_to_song(&joox_track_fixture()).expect("joox provider must map");
+            // 歌手 join 分歧（legacy " / " vs musid Track.artists 经 '、'
+            // join）在单项歌手下同串；多项歌手经 parity 归一（filter_str
+            // 分隔符集含 /）无损——簿记分歧登记见 §12.2 joox 块。
+            assert!(
+                crate::parity::songs_equivalent(legacy, &musid),
+                "归一对照命中（qualities 双侧同空集合）"
+            );
+            assert!(
+                crate::parity::compare_search_items(
+                    std::slice::from_ref(legacy),
+                    std::slice::from_ref(&musid)
+                ),
+                "搜索产物集对照命中"
+            );
+
+            let mut different = legacy.clone();
+            different.name = "晴天 (cover)".to_string();
+            assert!(!crate::parity::songs_equivalent(&different, &musid));
+        }
+
+        // --- 登记切片（reg-soda / reg-ytm，docs §12.4 末段）：不迁，断言
+        // --- 随所在 feature 门进外层门禁（--lib）。
+
+        #[cfg(feature = "musid-dli-adapter-reg-soda")]
+        #[test]
+        fn reg_soda_is_voicefox_only_and_never_routes() {
+            // soda 是 voicefox-only 源：musid-dli 0.2.0 的 12 个 source 模块
+            // 无 source_soda（src/lib.rs:40-104 cfg 表）→ 本 feature 没有
+            // musid-dli/source-* 可挂；§1 命名表显式拒绝（命名表双向 None）；
+            // 运行期路由判定显式排除 SourceId::Soda（manager.rs matches! 分
+            // 支）；注册表亦无行（face_route 的 LegacyOnly 镜像）。voicefox
+            // 自实现完整保留（soda/mod.rs search/get_song_url/get_lyric/
+            // search_playlists + api.rs/crypto.rs/play.rs），四面恒旧路径，
+            // 无 parity 对账；未来若 musid-dli 出 soda provider，需先扩
+            // musid-dli namespace 表 + voicefox SourceId 映射 + 新子 feature，
+            // 属上游变更。
+            assert_eq!(source_id_to_provider(SourceId::Soda), None);
+            assert_eq!(provider_to_source_id("soda"), None);
+            assert!(source_route_entry(SourceId::Soda).is_none());
+            for face in [ParityFace::Search, ParityFace::SongUrl, ParityFace::Lyric] {
+                assert!(
+                    matches!(face_route(face, SourceId::Soda), FaceRoute::LegacyOnly(_)),
+                    "soda {} 恒旧路径（无行 → LegacyOnly 镜像）",
+                    face.as_str()
+                );
+            }
+        }
+
+        #[cfg(feature = "musid-dli-adapter-reg-ytm")]
+        #[test]
+        fn reg_ytm_is_musid_dli_only_and_maps_to_no_source() {
+            // youtube-music 是 musid-dli-only 源：voicefox SourceId 枚举无
+            // 对应变体（Kw/Kg/Tx/Wy/Mg/Bili/Soda/Qianqian/Joox/Jamendo/
+            // Fivesing/Apple/Local 十三变体）；musid 侧 RustyPipeProvider
+            // 仅 TrackSearch+StreamResolver 两 trait、无 LyricsProvider，
+            // 位于 `source-youtube-music` feature 后（依赖 rustypipe——
+            // voicefox 不启用该 feature，rustypipe 不进 voicefox feature
+            // 树）。命名表拒绝：provider_to_source_id("youtube-music")==None；
+            // track 携带该 provider 时映射报 UnmappedProvider（§2.1 绝不
+            // 静默改名）。voicefox 若未来引入 ytm 源，属新源接入（扩
+            // SourceId + 命名表 + 评估 rustypipe 依赖），不在本迁移序列。
+            assert_eq!(provider_to_source_id("youtube-music"), None);
+            let ytm_track = Track {
+                id: TrackId::new("youtube-music", "dQw4w9WgXcQ"),
+                title: "登记用例占位".into(),
+                artists: vec![],
+                album: None,
+                album_id: None,
+                duration: None,
+                artwork_url: None,
+                isrc: None,
+                available_qualities: vec![],
+                audio: None,
+                extra: Default::default(),
+            };
+            assert!(
+                matches!(
+                    track_to_song(&ytm_track),
+                    Err(AdapterError::UnmappedProvider(_))
+                ),
+                "youtube-music provider 查表失败必须显式报错（不静默改名/丢弃）"
+            );
         }
     }
 }

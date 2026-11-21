@@ -86,6 +86,15 @@ pub fn bootstrap_musid_stack(
                 "musid-dli 双栈影子源已注册（opt-in）"
             );
         }
+        // V2 逐源路由注册表（docs §12.1）的账面/构建脱节暴露（评审 P4）：
+        // 账面标 Migrated 的源，其对应子 feature 未在本次构建启用时影子源
+        // 不装配，运行时静默走旧路径且 parity 计数恒零——启动时逐源 warn。
+        for gap in adapter_musid::unregistered_migrated_sources(&registered) {
+            tracing::warn!(
+                source = gap.as_str(),
+                "musid 注册表账面已标记 Migrated 的源，本次构建未启用对应 musid-dli-adapter-* 子 feature：该源路由静默走旧路径，parity 计数恒零（§12.1 生效前提）"
+            );
+        }
         manager.set_musid_routes(manager::MusidRouteConfig {
             stack: true,
             search: source.musid_search,

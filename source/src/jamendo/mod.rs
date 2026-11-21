@@ -153,7 +153,9 @@ fn pick_stream(item: &Value) -> Option<(String, &'static str, Quality)> {
     None
 }
 
-fn parse_track(item: &Value) -> Option<SongInfo> {
+/// crate 内可见（V2 parity 测试消费真实 parse 产物；可见性扩宽，语义零变化——
+/// 登记见 docs/MUSID_DLI_ADAPTER.md §12.5）。
+pub(crate) fn parse_track(item: &Value) -> Option<SongInfo> {
     let id = non_zero_id(&item["id"])?;
     let name = item["name"].as_str().unwrap_or_default().trim().to_string();
     if name.is_empty() {

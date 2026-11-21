@@ -1,0 +1,12 @@
+{
+  "derivation_note": "musid-dli Track wire shape (pinned by musid-dli models/track.rs legacy+round-trip tests). Sample values from musid-dli tests/fixtures/netease/song_detail_legacy.json songs[0] and its unit-test pins (source_netease.rs song_link_detail_fixture_parses_legacy_field_names): id 789, title 老接口, artists 周杰伦/费玉清, album 老专辑 (id 42), duration 258000ms, artwork https://p, privilege.maxBrLevel hires / plLevel lossless. Differs from the V0 fixture track_netease.json in one deliberate respect: available_qualities now carries [Low,High,Lossless,HiRes] — the exact set source_netease.rs parse_track produces (Low always declared :388, h/sq>0 → High/Lossless, maxBrLevel hires → HiRes :395), so the v2 parity comparison against the legacy parse output (Low128 always declared, wy/search.rs:152) is a true parse-product equivalence rather than the V0 hand-simplified set. extra pl_level=lossless per source_netease.rs:398-401. Reconstructed, not captured; shape provenance in docs/MUSID_DLI_ADAPTER.md §7/§12.3/§12.7.",
+  "id": { "provider": "netease", "id": "789" },
+  "title": "老接口",
+  "artists": ["周杰伦", "费玉清"],
+  "album": "老专辑",
+  "album_id": "42",
+  "duration": { "secs": 258, "nanos": 0 },
+  "artwork_url": "https://p",
+  "available_qualities": ["Low", "High", "Lossless", "HiRes"],
+  "extra": { "pl_level": "lossless" }
+}

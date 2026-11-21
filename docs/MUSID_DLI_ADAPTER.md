@@ -1,7 +1,12 @@
 # musid-dli 适配层设计（V0 / V1）
 
 > 状态：**V0 已落地**（2026-11-20；映射函数 + fixture 测试）→ **V1 双栈接入
-> 已落地**（2026-11-21；opt-in 四面路由 + 回退计数 + parity 对账，§11）。
+> 已落地**（2026-11-21；opt-in 四面路由 + 回退计数 + parity 对账，§11）→
+> **V2 逐源迁移已完成全表**（2026-11-21；逐源路由注册表 + 能力缺失回落
+> 规则 + parity fixture 方案，§12；切片 1-11 已落地 = jamendo / fivesing /
+> apple / bilibili / migu / kuwo / kugou（v2-batch-1）+ qqmusic / netease /
+> qianqian / joox（v2-batch-2，§12.7），登记项 soda / youtube-music 不迁
+> （§12.4 末两行））。
 >
 > V0 落地物：
 > - 映射代码 `source/src/adapter_musid.rs`，由 `source/src/lib.rs` 在
@@ -39,8 +44,8 @@
 >
 > 依据：2026-11-20 双仓工作树现场盘点（`pairs` 逐条读过源码）+ 本阶段复核。
 > 本文是 voicefox 侧 `lx-source` 与 musid-dli 0.2.0（crates.io）之间的
-> 模型映射契约；V1 双栈的落地语义见 §11，V2-V4 升级顺序见 §5，取消/超时/
-> 换源语义对齐见 §6。
+> 模型映射契约；V1 双栈的落地语义见 §11，V2 逐源迁移框架见 §12，
+> V2-V4 升级顺序见 §5，取消/超时/换源语义对齐见 §6。
 
 ## 0. V0 范围与非范围
 
@@ -431,10 +436,16 @@ getter 供设置页展示；文档注明"上游公开 transport 后接通"）。
      （bilibili 不设——`bili` 恒旧路径）。
   2. `SourceManager` 注册双栈源；session 统一（§2.9）。
   3. 依赖升档：`"=0.2.0"`→`"0.2"`（wire 形状已 pin，V0 禁漂移）。
-- **V2（引擎收敛候选）**：下载引擎切片消费 `ResolvedUrl.fallback_endpoints`
-  per-candidate 元数据；musid-dli `lx-js-bridge` 收敛评估（质量折叠
-  Lossless/HiRes→'flac' 需先对齐 voicefox JS 质量语义）；本地扫描合并候选
-  （musid-dli `local`，避免双扫描器语义漂移）。
+- **V2（逐源迁移，已开篇，框架与账面见 §12；引擎收敛候选另列）**：
+  下载引擎切片消费 `ResolvedUrl.fallback_endpoints` per-candidate 元数据；
+  musid-dli `lx-js-bridge` 收敛评估（质量折叠 Lossless/HiRes→'flac' 需先
+  对齐 voicefox JS 质量语义）；本地扫描合并候选（musid-dli `local`，避免
+  双扫描器语义漂移）。**与 §12 的关系如实声明**：本条目原本只写引擎收敛
+  候选；2026-11-21 盘点给出的逐源迁移序列（jamendo → fivesing → apple →
+  bilibili → migu → kuwo → kugou → qqmusic → netease → qianqian → joox，
+  soda/local 登记不迁）以盘点为准，落在 §12——两者不是同一清单，逐源
+  迁移只覆盖四面（搜索/详情/流地址/歌词），集合面逐源保持旧路径并在各片
+  登记 musid-dli 侧可用性。
 - **V3（取消/缓存统一）**：musid-dli `resolve::resolve_candidates*` +
   `StreamCache` TTL 语义接入（适配层最小缓存，不改 lx-core 模型）；
   `SearchCancelToken` 硬挂接（§6.1）。
@@ -948,3 +959,626 @@ lib 例数不变 + 全量回归双证）：
 3. `get_song_url_inner` 尾部三个错误出口收敛为单一 `final_error` 出口
    （错误文本逐字保持），probe 兜底/err 侧计数在统一出口评估。
 
+## 12. V2 逐源迁移框架（2026-11-21 落地；切片 1 = jamendo 模板）
+
+V2 把 V1 的"四面通用路由"细化为**逐源逐面**的迁移账面：每源一行、每面
+一格的注册表（§12.1）决定该源该面是否经 musid-dli；musid 侧能力缺失/
+语义不等价的面回落旧路径并登记（§12.2）；每个切片按统一的 fixture 方案
+做 parity 对账（§12.3）。盘点结论（2026-11-21，实读双仓）确认 V1 代码面
+上 10 源全部"已接"，差异只在子 feature 与运行期 config，因此 V2 逐源迁移
+= 每源对账 + 改账 + 登记，不需要新适配代码（唯一例外是 bilibili 切片的
+三件结构前置，已随切片 4 落地，§12.4/§12.6）。
+
+与 §5 引擎收敛候选的关系见 §5 的如实声明；`soda`（voicefox-only，
+musid-dli 无此源）与 `youtube-music`（musid-dli-only，voicefox 侧无对应
+源）**登记不迁**（§12.4 末两行）。
+
+### 12.1 逐源路由注册表（`adapter_musid.rs`）
+
+三态账面 `FaceRoute`：
+
+| 状态 | 路由判定 | 语义 |
+|---|---|---|
+| `Migrated` | 放行 | V2 切片已落地：对账 fixture 与回落规则已登记（§12.4） |
+| `V1Routed` | 放行 | V1 双栈已路由、V2 对账切片未落地：运行行为与 V1 完全一致（基线不破坏的关键——V1 的 musid_dual_stack/musid_parity 用例以 Wy 为载体继续 pin 该账面） |
+| `LegacyOnly(reason)` | 拒绝 | 恒旧路径并登记原因；musid 的"该音源不支持"类错误永远到不了用户 |
+
+注册表行 `SourceRouteEntry { source, slice, search, song_url, lyric }`，
+消费点唯一：`manager::musid_route` 在 V1 判定链（总闸 && 面开关 && 命名表
+可映射 && 非 Local/Soda/Bili && enabled && 影子源已注册）**之内**追加
+`adapter_musid::face_route(face, source).routes_to_musid()`。`soda`/`local`
+无行 → `LegacyOnly`（命名表拒绝的镜像）；`bili` 行为 LegacyOnly 三面，与
+manager 既有 `matches!` 排除双保险、语义相同。面级改账独立：切片落地时逐
+格改 `Migrated`/`LegacyOnly`，其余源不受影响（**每源独立可回退**——改回
+一格即回退）。集合面（歌单/专辑/歌手/榜单/链接直解）、登录/会话面、歌曲
+详情面不设行项：影子源未实现 fat-trait 集合方法/登录方法（V1 边界
+§11.8）、详情无独立运行时开关（§11.4 第 4 条），manager 路径不可达。
+
+V1 判定链的次序保持不变（注册表检查插在命名表检查之后、enabled 检查之
+前）；probe 影子与替换模式同经 `musid_route`，所以**未迁移面的 probe 也
+被注册表拒绝**（不烧 musid 配额、不产无意义计数）。
+
+**Migrated 行的生效前提与脱节暴露（评审 P4）**：行的放行还要求对应
+`musid-dli-adapter-<source>` 子 feature 在本次构建中启用（影子源被
+`musid_bootstrap` 装配）。子 feature 未启用时影子源不在 map 里、路由判定
+返回 None → 该源**静默**走旧路径且 parity 计数恒零（V1 既有形态：bootstrap
+只在"一个子 feature 都没开"时 warn，单源缺失原本无任何信号）。V2 起该
+脱节显式暴露：`adapter_musid::unregistered_migrated_sources(registered)`
+在 `bootstrap_musid_stack` 启动时对"账面 Migrated 但未装配"的源逐源 warn
+（`migrated_route_sources`/`unregistered_migrated_sources` 为公开助手，
+单测 pin）。账面"已落地"因此始终可从启动日志与运行期计数两侧核验。
+
+### 12.2 能力缺失回落规则（三层）
+
+硬约束：**能力缺失回落旧路径，不是把 Unsupported 直接抛给用户**。三层：
+
+1. **静态层（注册表）**：musid 侧显式 stub/语义不等价的面在注册表标
+   `LegacyOnly`，路由判定直接拒绝。判定依据是 musid-dli provider 的
+   capabilities/实现形态（编译期可查），不做运行时 capability 探测。
+   首例：jamendo 歌词面——musid `LyricsProvider` 是显式 unsupported stub
+   （musid-dli `source_jamendo.rs:538-542`，"the CC catalog exposes no
+   lyrics"），voicefox 旧路径恒 `FetchError::NotFound`
+   （`jamendo/mod.rs:421-424`）；若路由，无词语义会从 `NotFound` 污染成
+   `Other("该音源不支持…")`（§9 错误映射表的分类语义差异），故不路由。
+2. **动态层（运行期，V1 语义不变）**：路由放行的面里 musid 失败（Err/
+   空产出/过期地址/尝试预算耗尽）→ 立即旧路径同请求重试（§11.4/§11.5
+   的预算切分与计数口径原样生效）。首例：jamendo 流地址面，musid
+   `resolve` 从 `track.extra["stream_url"]` 离线取址（musid-dli
+   `source_jamendo.rs:402-444`，搜索时嵌入）——legacy 搜到的歌 extra 无
+   该键，musid 必然失败（Provider 类错误 → `FetchError::Other`）→ 旧链
+   `fetch_tracks + pick_stream` 兜底，计 `MusidErrLegacyOk`。musid 搜到的
+   歌经 `track_to_song`/`song_to_track` 的 extra 原样透传，嵌入地址回到
+   musid，离线 resolve 成立（adapter 单测 pin 该数据链）。
+3. **观测层（probe）**：恒纯观测（评审 P1 口径不变），musid 产物不进
+   用户路径；probe 影子同经注册表门（§12.1）。
+
+**jamendo 流地址面：快照取址的新鲜度风险（第二轮评审登记，2026-11-21）**。
+musid 路径的取址语义是**搜索时内嵌的快照 URL**（musid-dli
+`jam_parse_track` 在搜索时把 best-tier URL 嵌入 `extra["stream_url"]`，
+`resolve` 恒离线返回该快照，`source_jamendo.rs:402-444`）；legacy 路径是
+播放时 `fetch_tracks` 现取。搜索面已 Migrated → musid 搜到的歌走快照取址
+是 jamendo 的**常态路径而非边角**。风险与观测口径逐条登记：
+
+- **上游自证的 token 缺口**：musid-dli
+  `tests/fixtures/jamendo/README.md:40-41` 明文 "token validity is
+  unknown (an audit gap) and nothing pins the token bytes"——URL 形状被
+  pin，token 字节与有效期无任何背书。
+- **stream 组 URL 携带 `from=` token**：download 组为空的曲目内嵌的是
+  stream 组带 `from=` token 的 URL（上游 fixture track 741555 "Placeholder
+  Stream-Only" 即此形状，`search_response.json:35-43` + `source_jamendo.rs`
+  测试注释 "Track 2 has an empty download dict, so the stream group's mp31
+  URL is embedded instead"）。
+- **G4 过期门不设防**：musid `resolve` 产物 `expires_at_unix: None`
+  （`source_jamendo.rs:432`），voicefox 的 G4 过期门
+  （`adapter_musid.rs:1008-1015`）只拦"带过期时间且已过期"的地址，对这类
+  无信号过期无法拦截。
+- **动态层回退的盲区**：动态层只在 resolve **失败**时触发；陈旧 URL 在
+  resolve **成功**（确定性返回同一快照）之后才在播放器侧 403/播放失败
+  ——`MusidErrLegacyOk` 不计数、legacy 现取不会被尝试，播放器侧失败也不
+  进任何 parity 计数（§11.5 的计数口径只覆盖 resolve 结局）。
+- **观测口径**：§12.3 的"盯 MusidErrLegacyOk"只能发现 resolve 失败型
+  回退，**不能**作为本风险的健康信号；有效观测靠诊断面之外的播放失败
+  信号（播放器首字失败/403 日志，区分源维度）。若实测出现系统性失效，
+  处置选项按 §12.1 执行：把 jamendo 流地址面单独改账 `LegacyOnly`
+  （每源独立可回退，一行改动），或等上游补 expires 信号/现取端点后再改回。
+
+**fivesing 三面（切片 2）的对账登记（2026-11-21）**。fivesing 与 jamendo 的
+关键差异：musid `FivesingProvider::resolve` 是**现取**语义（恒走 getSongUrl
+网络端点，musid-dli `source_fivesing.rs:546-596`），没有 jamendo 式"搜索时
+内嵌快照"的动态层盲区——musid 失败 → 旧链重试的动态层（本节第 2 层）在该
+面正常闭合（manager 级真实双侧链路：musid Provider 错误 → legacy
+`FetchError::NotFound`、`MusidErrLegacyErr` 计数，`musid_fivesing_slice.rs`
+pin）。逐条登记的差异：
+
+- **Referer 头**：legacy `SongUrl` 恒挂
+  `Referer: http://5sing.kugou.com/`（`fivesing/mod.rs:110`，播放侧消费点
+  `application/src/services/playback.rs:123` 应用 `url.headers`）；musid
+  `StreamInfo.headers` 恒空（`source_fivesing.rs:377`）。上游 fixture
+  README 明文登记 live probe 结论（2026-11-18，4KiB Range 请求**无**
+  Referer 得 `206 audio/mpeg`）：**CDN 已不再强制 Referer**，musid 对齐
+  live 行为，legacy 侧头是历史残留、无害——不做适配层改写，适配层单测
+  pin 空 headers 为登记载体。
+- **URL 时效**：getSongUrl 直链内嵌时间戳+hash 路径段（上游 README 明文
+  "so they expire"）且无 expires 信号 → G4 过期门
+  （`adapter_musid.rs:1008-1015`）不设防；两侧同是播放时现取，同病，
+  不存在 jamendo 式"快照成功型失效"回退盲区（musid 现取失败时动态层
+  照常回落旧链现取）。
+- **getSongUrl 的 md5/size 两侧同弃**（上游 README 登记项）：live data 块
+  带 `squrlmd5`/`sqsize` 等键，legacy 留空 `SongUrl.md5/size`、musid 留空
+  `content_length/checksum`——对照面无分歧。
+- **搜索面 qualities 簿记分歧（probe 信号限定）**：legacy `search_songs`
+  不填 `SongInfo.qualities`（`fivesing/api.rs`）、musid
+  `fs_parse_search_song` 静态声明 `[Lossless, High, Low]`
+  （`source_fivesing.rs:422-426`）→ `songs_equivalent` 的 qualities 集合
+  比对（`parity.rs:180`）对 fivesing **系统性 false**：probe 搜索面的
+  ParityMatch/Mismatch 计数对该源无鉴别力（adapter 单测 pin"唯一分歧
+  字段是 qualities"，身份字段 id/name/singer/时长全对齐）。解读口径与
+  §11.8 (b) 登录源 mismatch 噪声同类：簿记差异，不是歌曲身份差异。musid
+  侧携带的静态三档是"5sing 曲库档位声明"，UI `quality_label` 因此可能对
+  musid 搜索产物显示档位而 legacy 显示 "-"——信息更全，不是退化。
+
+**切片 3-7（apple / bilibili / migu / kuwo / kugou）的对账登记
+（2026-11-21，v2-batch-1）**。五个源的可路由面 musid 侧 capabilities 均
+true 且无 jamendo 式"搜索时快照"动态层盲区（全部网络现取），逐源登记的
+差异如下：
+
+- **apple**：
+  (a) preview-only 契约两侧同形——musid `resolve` 忽略请求档位恒回 30 秒
+  M4a 试听（quality Low、duration 30s、descriptor `supported_qualities`
+  = [Low]，`source_apple.rs:589-617` 注释 pin）；legacy `apple/mod.rs:75-99`
+  同样恒 Low128 试听。quality parity 可严格断言双侧均 Low/Low128。
+  (b) `SongUrl.duration` 分歧：legacy 带整曲时长（`apple/mod.rs:89`
+  `detail.song.duration`）、musid 带 preview 物理时长 30s。
+  (c) 搜索面 qualities 簿记分歧（同 fivesing 口径）：legacy `parse_song`
+  不填档位、musid 静态 `[Low]→{Low128}` → probe 搜索面对 apple 恒
+  ParityMismatch（簿记差异；adapter 单测 pin 唯一分歧字段）。
+  (d) 歌词面 PlainText 无时间戳（catalog 无 timing）→
+  `document_to_lyric_data` 的 `lyric` 为空、原文落 `raw_lrc`——musid
+  槽位产物过不了 `lyric_has_content` 内容门，动态层恒回落旧路径
+  （MusidErrLegacyOk），**无错误语义污染**（musid 返回 Ok 非错误）；
+  V1Routed 时该面已路由，本切片不改运行行为。
+  保持旧路径：歌单分类/歌单（musid PlaylistProvider categories/playlists
+  恒 Unsupported）、专辑面（musid AlbumProvider 存在但集合面不路由）、
+  链接直解；歌手/榜单双侧皆无。
+- **bilibili**：三件结构前置已落地——子 feature `musid-dli-adapter-
+  bilibili`（source-* 名 `source-bilibili`）、bootstrap 匿名装配分支
+  （`BilibiliProvider` 恒无参 `new()`）、manager 路由放开（`matches!`
+  排除移除 + 流地址面 bili 早退臂前插 musid 槽位，旧早退臂逐字保持为
+  musid 之后的旧路径；簿记三件套与主链同款）。
+  (a) 歌词面 LegacyOnly：双侧皆无——musid LyricsProvider 硬 stub
+  （"no lyric API exists on Bilibili"，capabilities.lyrics=false）+
+  voicefox `bili/mod.rs:497-499` 恒 NotFound；不路由，旧路径 NotFound
+  语义不被 musid UnsupportedOperation 污染。
+  (b) 登录/会话/用户数据恒旧路径：musid authentication=true（Cookie/
+  SESSDATA，descriptor 诊断位 login=true）但影子源恒匿名（§11.8 零凭据
+  流动）；manager 登录链路（create_qr_login/check_qr_login/logout/
+  is_logged_in）不读影子 map；收藏夹（fav_folders）不经路由判定。
+  (c) 搜索面的前置特例：`search_scoped` 对 BV/av/b23.tv 视频引用关键词
+  有旧直解臂（`manager.rs:645-658`）**先行于 musid 槽位**——bili 搜索面
+  Migrated 仅覆盖普通关键词路径；视频引用直解与链接直解同语义，恒旧
+  路径（musid TrackSearch 本身支持 BV 引用，voicefox 侧不接）。
+  (d) 流地址面 DASH 形状两侧同形：headers（Referer + UA）恒挂
+  （legacy `bili/url.rs:61-64`、musid StreamInfo.headers）；backupUrl
+  镜像进 fallback_endpoints → candidate_urls 折叠；index/init range 走
+  G3 伴随字段（musid 不产 → None，descriptive-only）；format=Aac 不反推
+  档位。
+  (e) **匿名 resolve 可用性未实测（如实登记）**：musid playurl 带
+  `try_look=1` 试看参数（DASH 四分支 fixture 形状 pin），匿名可用性的
+  真网验证属运行期 probe 对账口径；匿名退化（§11.8 (a)）的计数信号是
+  MusidErrLegacyOk。
+- **migu**：登录面双侧匿名（musid authentication=false + 无
+  auth_capability 覆写 → None；voicefox mg 无 login/qr_login 位）——不设
+  登录行项。搜索面 qualities 完全对齐（两侧 formatType PQ/HQ/SQ/ZQ* 同
+  表折档）——无簿记分歧，parity 可全等命中。歌词面 MRC 逐字降级：
+  legacy `mg/lyric.rs` 的 MRC 产 lxlyric + trc 产 tlyric；musid 无
+  YRC/QRC 序列化器（lxlyric 恒 None），路由后逐字降级为纯 LRC 正文 +
+  tlyric 保留（trc → translation），`compare_lyrics` 正文指纹不比逐字
+  （同 kugou/kuwo 口径）。保持旧路径：榜单/专辑/歌单/链接直解（musid
+  ChartProvider/AlbumProvider/PlaylistProvider/LinkResolver 全存在，
+  集合面不路由，musid 侧可用性登记供后续片）；歌手面双侧皆无（musid
+  无 ArtistProvider 实现、artists 位缺省 false；voicefox mg 的 artist
+  位是搜索归一类能力，恒旧路径——后续片接 ArtistProvider 需先在
+  musid-dli 侧补实现）。
+- **kuwo**：登录面 Anonymous web token（musid authentication=false +
+  `auth_capability()` 显式覆写 `AuthCapability::Anonymous`，上游测试
+  pin；§2.8 机制细分不置 voicefox login 位）——恒旧路径。搜索面 N_MINFO
+  档位两侧同表（bitrate 128/320/2000/4000）——parity 可全等命中；22000/
+  20900 等 bitrate 不在两侧表中（同弃）。流地址面双通道（mobile/web
+  并发；无档位请求降级 320k 再 128k；lossless 请求 web 为主、移动端档位
+  URL 进候选）与 legacy `kw/url.rs:228-256` 同形；移动端通道 headers 两侧
+  同挂 okhttp UA。歌词面 lrcx 逐字降级同 migu/kugou 口径（legacy
+  `kw/lyric.rs:93-107` 先 lrcx=1 逐字；musid LyricDocument 无 lxlyric
+  序列化器）。保持旧路径：登录、歌手面（musid 无 ArtistProvider，
+  voicefox kw 的 artist 位恒旧路径并登记缺口）、榜单/专辑/歌单/链接
+  （musid 全存在，集合面不路由登记）。
+- **kugou**：登录/扫码面恒旧路径（voicefox kg/login.rs + session.rs 扫码
+  链路；musid authentication=true 折叠 Cookie 诊断位但影子源恒匿名）。
+  **流地址面的匿名硬退化（本片最重要的登记）**：musid `resolve` 在
+  `login_parts()` 处无会话即失败（"Kugou playback requires login; please
+  scan in first"，`source_kugou.rs:239-258`——酷狗不给未登录用户返回任何
+  播放地址，与 legacy `kg/url.rs` 同病）——影子源恒匿名 → 流地址面
+  musid 槽位在双栈下**必然失败**、动态层回落旧链现取（MusidErrLegacyOk
+  计数恒增）；该面 V1Routed 时已如此路由，本切片不改运行行为，只补对账
+  与观测口径。缺 hash 的歌在 `select_hash` 处先于 login_parts 离线
+  NotFound（`source_kugou.rs:519-536、:717`）。**逐字歌词降级的片级决策**：
+  本切片按批 ask 落地三面全路由——musid 无 YRC/QRC 序列化器（lxlyric 恒
+  None，§2.10），legacy `kg/lyric.rs` parse_krc 产逐字；路由后逐字能力
+  降级为纯 LRC 正文（KRC 词级时间在 musid LyricDocument.lines[].words，
+  不伪造 lxlyric），`compare_lyrics` 正文指纹对照不比逐字。降级的用户
+  可见影响：逐字卡拉OK显示变纯 LRC 高亮——接受该降级并在此登记；若片级
+  评审推翻，回退动作是注册表 kugou 行歌词面改 `LegacyOnly`（一行改动）。
+  搜索面 qualities 两侧同表（FileSize/HQ/SQ/Res > 0 → 四档）——parity
+  可全等命中。保持旧路径：登录/扫码、歌手（musid artists=true 但
+  ArtistProvider 是 search-based fallback，voicefox artist 位恒旧路径）、
+  榜单/专辑/歌单/链接（musid 全存在，集合面不路由登记）。
+
+**切片 8-11（v2-batch-2：tx / wy / qianqian / joox）的对账登记
+（2026-11-21）**。四个源的可路由面 musid 侧 capabilities 均 true、三面
+V1 起即放行（本批不改运行行为，只补对账与登记）；逐源差异如下：
+
+- **tx（qqmusic，切片 8）**：登录/扫码面恒旧路径（QQ + 微信双扫码，
+  voicefox tx/mod.rs:70-73 login/qr_login/wechat_login 位；微信扫码
+  wechat_login 双栈期恒 false，§2.8；musid authentication=true 折叠
+  Cookie 诊断位但影子源恒匿名 new()）。**P5 口径在 tx 上权重最大**
+  （用户基数最大）：musid 匿名面对 cookie 登录用户的 VIP 曲目/档位
+  系统性收窄，probe 对账产生系统性 ParityMismatch 噪声——解读计数先
+  剥离登录态不对称（§11.8 (b)）。流地址面 vkey 请求链两侧同构
+  （musid-dli source_qqmusic.rs:809-863，stream_vkey_ok/
+  stream_vkey_empty_sip 形状 pin；strMediaMid/songId/size_* 经 extra
+  透传）；簿记分歧一处：size_128mp3 缺席时 musid 恒产 `Low` 而 legacy
+  不产 `Low128`（musid 恒声明 Low 档）——真实搜索形状（四档 size 全正）
+  下折档集合相等，adapter 单测 pin 全等命中。歌词面 **QRC 逐字降级**：
+  musid GetPlayLyricInfo 用 crypt:0/qrc:0 取 plain LRC（musid 无
+  YRC/QRC 序列化器，lxlyric 恒 None），legacy tx/lyric.rs crypt:1/qrc:1
+  产 QRC 逐字——路由后逐字降级为纯 LRC 正文 + 翻译/罗马音保留
+  （compare_lyrics 不比逐字，同 kugou/kuwo/migu 口径；降级的回退动作 =
+  注册表 tx 行歌词面改 `LegacyOnly` 一行）。歌词离线失败形态：extra 无
+  数值 songId → InvalidInput（source_qqmusic.rs:873-877）。保持旧路径：
+  登录/扫码、歌手面（musid 无 ArtistProvider、artists=false，voicefox
+  tx/mod.rs:67 artist=true 恒旧路径**登记缺口**）、榜单/专辑/歌单/链接
+  （musid ChartProvider :1467/AlbumProvider :1408/PlaylistProvider
+  :1313/LinkResolver :913 全存在且 capabilities true）集合面不路由登记。
+- **wy（netease，切片 9，放最后）**：主源且登录态依赖最重——musid 恒
+  匿名 vs voicefox cookie 登录（wy/mod.rs:182-184 login/qr_login/
+  user_playlists），结果集/档位系统性收窄是 P5 已登记口径，probe 对账
+  的 mismatch 噪声在 wy 上预期最高，解读计数须先剥离。流地址面 eapi
+  song/enhance/player/url/v1 + outer-url 死兜底 HEAD 探测（musid-dli
+  source_netease.rs:494-601，song_enhance_player_url_v1 形状）——
+  **expires_at_unix 从响应/URL 提取，G4 过期门对 wy 设防**（与 jamendo/
+  fivesing 的 `None` 形态不同，无快照取址风险）。歌词面 eapi
+  song/lyric/v1：musid 无 YRC/QRC 序列化器（lxlyric 恒 None），legacy
+  wy/lyric.rs 的 yrc 逐字路由后降级为纯 LRC 正文（同批口径）。搜索面
+  **无簿记分歧**（legacy 恒产 Low128 = musid 恒产 Low，h/sq/hr 同表），
+  ±1s 时长容差 + 折档后 qualities 集合相等的归一对照可全等命中
+  （adapter 单测 pin）。保持旧路径：登录/扫码/用户歌单；集合面（musid
+  ArtistProvider :766/ChartProvider :809/AlbumProvider :735/
+  PlaylistProvider :652/LinkResolver :840 全存在、capabilities 全 true
+  全家桶）不路由登记——**wy 的歌单同步若依赖 by-id 详情
+  （songs_from_detail 类路径），前置是 musid-dli 0.2.0 无公开
+  per-provider detail trait（track_details 是 crate 内部方法，§11.4
+  第 4 条），需上游先公开**。
+- **qianqian（切片 10，用户启用源）**：登录面双侧皆无认证位
+  （authentication=false + AuthCapability::None）不设行项。
+  **空 tsid 的歌在两栈都在任何网络调用之前失败**（musid resolve/lyrics
+  source_qianqian.rs:791-793/:840-842 与 legacy url.rs:39-41、
+  lyric.rs:19-21 同键同 NotFound）——manager 级真实双侧链路的确定性
+  触发点（musid_qianqian_slice.rs pin MusidErrLegacyErr + legacy
+  "not found" 文本向上）。流地址面 tracklink 双分支两侧同构
+  （free_128 完整文件 + vip_nopath 阶梯退 trail_audio_info 试听；
+  VIP 曲目匿名恒 path-less → NotFound，上游 live-pinned，同病同回落
+  **无回退盲区**；expireTime 进 expires_at_unix，G4 对该源设防）。
+  搜索面 rate 表两侧同形（3000/320/128|64 → Lossless/High/Low 折档后
+  相等）parity 全对齐。歌词面 song_infoandlrc 类形状纯 LRC（legacy
+  千千本就无逐字，无降级）。保持旧路径：歌手面（musid 无
+  ArtistProvider、artists=false，voicefox qianqian/mod.rs:54
+  artist=true 恒旧路径**登记缺口**）；榜单面双侧皆无（voicefox 无
+  leaderboard 位、musid 无 ChartProvider）不设；专辑/歌单/链接（musid
+  AlbumProvider :999/PlaylistProvider :874/LinkResolver :1015 且
+  capabilities true）集合面不路由登记——**musid 侧
+  search_playlist_refused.json（歌单搜索被拒形状）后续接集合面时须
+  处理该语义**（envelope 恒不按 state/errno 把关、`data: []` 解析为
+  空页，source_qianqian.rs:762-764）。用户启用源：翻源后首周盯
+  MusidErrLegacyOk 计数（§12.3）。
+- **joox（切片 11，用户启用源）**：登录面双侧皆无认证位不设行项。
+  搜索面两侧同构（tracks 嵌套数组、id/album_id 加密串、normalize_id
+  两侧逐字同实现——percent-decode only，`+`/`=` 保真）；**歌手 join
+  簿记分歧**：legacy parse_song_info 按 " / " join（上游 parity）、
+  musid Track.artists 逐元素进向量经适配层 '、' join——单项歌手同串、
+  多项歌手经 parity 归一（filter_str 分隔符集含 `/`）无损，adapter
+  单测 pin（§12.3 joox 块）。流地址面 songinfo_stream 两侧同构
+  （select_candidate 与 legacy get_song_url 同序：sort desc → 第一个
+  ≤ 请求档 → 首选兜底；size/md5/expiry 两侧同弃、size_is_advisory=
+  true——下载引擎单连接流式；kbps 320/192/128 → High/Low/Low 同表）。
+  **空 songid 的歌 musid 侧离线 NotFound（resolve/lyrics，
+  source_joox.rs:754-756/:802-804），legacy 无离线守卫走网络——
+  manager 级双失败链不可确定性复现**，失败侧对账由 adapter 级离线
+  用例 + 运行期 probe 承载（与 tx/wy 同类登记）。歌词面 lyric_live
+  形状纯 LRC（web_lyric base64 字段的 live 偏差上游已登记），legacy
+  本就无逐字，无降级。**封面面不接 musid ArtworkProvider**：legacy
+  joox/mod.rs:167 get_cover_url 走歌曲模型回填，适配层 get_cover_url
+  同口径，不设行项。保持旧路径：榜单/歌手双侧皆无（voicefox
+  joox/mod.rs:103-111 仅 playlists/playlist_search/album/link_parse；
+  musid 无 ChartProvider/ArtistProvider）不设；专辑/歌单/链接（musid
+  AlbumProvider :873/PlaylistProvider :839/LinkResolver :908 且
+  capabilities true）集合面不路由登记——**musid 侧
+  playlist_dead_404.html 死链形状后续接集合面时须处理**。用户启用
+  源：翻源后同 qianqian 盯 MusidErrLegacyOk 计数。
+
+### 12.3 parity 对账 fixture 方案
+
+musid-dli `tests/fixtures/<source>/` 是**平台原始响应形状**、由 musid-dli
+私有 parse 消费（§7 偏差声明，不能直接 serde 成 Track/StreamInfo）——在
+V2 的用法是：上游 provider 回归参考 + voicefox 侧 fixture 的样本值来源。
+voicefox 侧对账三件套（每切片同形执行）：
+
+1. **voicefox 侧 wire 形状 fixture**：`source/tests/fixtures/musid/`
+   新增 `track_<source>.json`（musid Track wire 形状 + `derivation_note`
+   注明逐字段来源）。切片 1 落地 `track_jamendo.json`（样本值取自
+   musid-dli `tests/fixtures/jamendo/track_parse.json` 的 item + 
+   `pick_stream.json` 第 4 例：trackid 1538710 / "Love Recycle" /
+   LoveRecycle / 176100 / 245s / download 组 mp32 URL /
+   `available_qualities ["Low"]` / extra 带 `track_id`+`stream_url`+
+   `stream_format`+`stream_quality`）。**provenance 限定（评审 P3）**：
+   上游 fixture 文件自述为按 2026-11-18 live 捕获**重建**的形状记录，原始
+   捕获未随上游仓提交（`tests/fixtures/jamendo/README.md` 明文）；上游
+   fixture 是本样本值在两仓内唯一可独立复核的落盘出处，"live 捕获"本身
+   不构成仓内证据。切片 2 落地 `track_fivesing.json`（样本值取自
+   musid-dli `tests/fixtures/fivesing/search_songs.json` 第 1 项——该目录
+   自述为 2026-11-18 **逐字 live 捕获**且随上游仓提交，provenance 强于
+   jamendo 的重建形状：songId 15622111 / typeEname fc / "晴天"（live 高亮
+   形状 `<em class="keyword">`）/ singer Vk / songSize 10462607 字节按时长
+   两侧共用的 320kbps 公式估 261s / live 搜索项无 `user` 键故无封面 /
+   `available_qualities` 为解析器静态三档声明）。切片 3-7 落地
+   `track_apple.json` / `track_bilibili.json` / `track_migu.json` /
+   `track_kuwo.json` / `track_kugou.json`（样本值来源逐文件
+   `derivation_note` 注明：apple 取自 musid-dli
+   `tests/fixtures/apple/song_parse.json`（该目录 README 明文**全部为重建
+   形状**，金值取自双仓共用的 inline parse 测试）；bilibili 取自
+   `tests/fixtures/bilibili/search_title_em.json`（重建形状，`<em>` 高亮
+   strip 两侧同源）；migu 取自 `tests/fixtures/migu/search_response.json`
+   的 ok_numeric_total 第 1 项（重建形状）；kuwo 取自
+   `tests/fixtures/kuwo/search_page.json` abslist[0]（重建形状）；
+   kugou 上游无 search 形状 fixture 文件，取自 musid-dli
+   `source_kugou.rs` inline parse 测试的 pinned 值（`derivation_note`
+   如实登记为重建形状）——五源均无 jamendo 式"live 捕获"宣称）。
+   切片 8-11 落地 `track_qqmusic.json` / `track_wy.json` /
+   `track_qianqian.json` / `track_joox.json`（provenance 分两档，逐文件
+   `derivation_note` 注明：**qianqian/joox 为 live 捕获档**——上游
+   `tests/fixtures/qianqian/README.md` 明文 search_songs.json 是
+   2026-11-19 匿名 GET 的 gzip 逐字节捕获（前 2/5 项 verbatim），
+   `tests/fixtures/joox/README.md` 明文 search_songs.json 同日捕获
+   （envelope 键 verbatim、前 3/30 项保留），provenance 等于 fivesing、
+   强于重建形状；**qqmusic/netease 为重建形状档**——上游两目录 README
+   明文 "Every fixture here is therefore reconstructed, not captured"
+   （qqmusic 的 README 进一步说明全部取值为占位样本，无 live 捕获
+   宣称）。wy 的样本值沿用 V0 口径取自 `song_detail_legacy.json`
+   songs[0]（id 789/老接口/周杰伦·费玉清/258000ms）；**track_wy.json
+   与 V0 的 track_netease.json 的唯一刻意差异**：available_qualities
+   补上 `Low`——V0 fixture 是手写简化集（无 Low），V2 的 parity 对照
+   要求 fixture 反映 `source_netease.rs parse_track` 的真实产物
+   （Low 恒声明 :388），legacy 侧 parse_song 恒产 Low128（:152），两侧
+   恒声明档同口径后 qualities 集合才可全等命中；V0 fixture 原样保留
+   （V0 映射测试继续 pin）。joox 的 parity 平台响应含 `tracks` 嵌套
+   数组单项（与上游 search_songs.json tracks[0] 同形），legacy 侧消费
+   真实的 `joox::api::songs_from_search`（可见性扩宽登记见 §12.7）。
+2. **adapter 单测**（`adapter_musid.rs::tests::v2_registry`）：fixture →
+   `track_to_song` 断言（含 extra 的 `stream_url` 系键透传与
+   `song_to_track` 保真往返）、`parity::songs_equivalent` /
+   `compare_search_items` 归一对照（legacy 侧 SongInfo 由**真实的**
+   `crate::jamendo::parse_track` 从平台原始响应形状组出——评审 P2：任一
+   侧 parse 改字段必红；`parse_track` 为此做 `pub(crate)` 可见性扩宽，
+   语义零变化，登记见 §12.5）、流地址面行为（离线 resolve + 实际档位
+   回填 + enrich 补齐；无嵌入地址 → 动态层回落触发）。
+3. **运行期路由计数**（`musid_dual_stack.rs`）：桩源双栈用例 pin 注册表
+   放行/拒绝的 manager 行为（jamendo 搜索/流地址 MusidOk、歌词面 musid
+   零调用 + 旧路径 NotFound 向上）。真实网络行为对账靠 probe 模式的
+   `ParityCounters`（恒纯观测、后台落账、最终一致，§11.5）——切片翻源后
+   首周盯 `MusidErrLegacyOk` 计数（用户启用源 qianqian/joox 尤其）。
+
+歌词面 parity 口径维持 §11.6：`compare_lyrics` 只比 `lyric` 正文指纹，
+翻译/逐字豁免（musid-dli 无 YRC/QRC 序列化器，lxlyric 恒 None）。
+
+### 12.4 切片账面（盘点切片 → 注册表行）
+
+逐源顺序以盘点为准（与 §11.8 "集合面 V2 逐源迁移时再评估" 相容）。各源
+**保持旧路径的面**在切片落地时逐条登记进注册表行的 `LegacyOnly` 或留在
+"集合面不设行项"口径：
+
+| # | 源（SourceId） | 切片 | 搜索 | 流地址 | 歌词 | 保持旧路径并登记 |
+|---|---|---|---|---|---|---|
+| 1 | jamendo | v2-jamendo（**已落地**） | Migrated | Migrated | LegacyOnly | 歌词（musid stub，NotFound 语义）；集合面（musid capabilities 恒 false，匿名挂起）；登录面双侧匿名。**流地址面快照新鲜度风险已登记**（搜索时内嵌 URL + stream 组 `from=` token + `expires_at_unix=None` 使 G4 不设防 + 播放侧 403 不进 parity 计数，观测口径与回退选项见 §12.2 末段） |
+| 2 | fivesing | v2-fivesing（**已落地**） | Migrated | Migrated | Migrated | 歌单面（musid 有 PlaylistProvider 且 capabilities.playlists=true，但 V1 影子源不实现 fat-trait 集合方法、manager 路径不可达，search_playlists/fetch_playlist 恒旧路径，登记可后续片）；链接直解（musid LinkResolver 存在但不接，parse_link 恒旧路径）；专辑/歌手/榜单双侧同缺不设行项。**对账登记**：流地址面 Referer 头差异（CDN 已不强制，musid 对齐 live 行为）与 getSongUrl 直链无 expires 信号（G4 不设防，两侧同现取同病）；搜索面 qualities 簿记分歧使 probe 搜索面 ParityMatch/Mismatch 无鉴别力（§12.2 fivesing 块）；歌词面 lxlyric 恒 None 不比（§11.6 口径） |
+| 3 | apple | v2-apple（**已落地**） | Migrated | Migrated | Migrated | 歌单分类/歌单/专辑面/链接直解（musid PlaylistProvider categories 恒 Unsupported、AlbumProvider 存在，集合面不路由）；歌手/榜单双侧皆无。**对账登记**：preview-only 契约两侧同形（quality 严格对齐 Low/Low128）；SongUrl.duration 分歧（legacy 整曲 vs musid 30s）；搜索面 qualities 簿记分歧（probe 搜索面无鉴别力）；歌词面 PlainText → musid 产空 lyric + raw_lrc、恒动态层回落（§12.2 apple 块） |
+| 4 | bili | v2-bilibili（**已落地**） | Migrated | Migrated | LegacyOnly | **三件结构前置已落地**（子 feature `musid-dli-adapter-bilibili` / bootstrap 匿名装配分支 / manager `matches!` 放开 + 流地址面 bili 早退臂前插 musid 槽位）；歌词面双侧皆无（musid 硬 stub + voicefox 恒 NotFound）；登录/会话/用户数据（SESSDATA 扫码链路）恒旧路径；搜索面视频引用关键词（BV/av/b23）走旧直解臂先行于 musid（链接直解同语义）；匿名 resolve 可用性（try_look=1）未实测，真网验证属 probe 对账口径（§12.2 bilibili 块） |
+| 5 | migu | v2-migu（**已落地**） | Migrated | Migrated | Migrated | 登录 Anonymous 机制双侧匿名不设行项；集合面（musid 侧 Chart/Album/Playlist/Link 全存在且 capabilities true，登记供后续片）；歌手面双侧皆无（musid 无 ArtistProvider；voicefox artist 位是搜索归一类能力，恒旧）。**对账登记**：搜索面 qualities 全对齐（formatType 同表）；MRC 逐字歌词降级为纯 LRC + tlyric 保留（§12.2 migu 块） |
+| 6 | kuwo | v2-kuwo（**已落地**） | Migrated | Migrated | Migrated | 登录 Anonymous web token 恒旧路径（musid auth_capability()=Anonymous 上游测试 pin，不置 voicefox login 位）；歌手面（musid 无 ArtistProvider，voicefox artist 位恒旧路径并登记缺口）；榜单/专辑/歌单/链接（musid 全存在）集合面不路由登记。**对账登记**：N_MINFO 档位两侧同表（parity 全对齐）；流地址面 mobile/web 双通道同形 + okhttp UA 两侧同挂；lrcx 逐字降级（§12.2 kuwo 块） |
+| 7 | kugou | v2-kugou（**已落地**） | Migrated | Migrated | Migrated | 登录/扫码恒旧路径（musid Cookie 诊断位 + 影子源恒匿名）；**流地址面匿名硬退化**（musid login_parts 无会话硬错误 → musid 槽位必然失败进动态层，MusidErrLegacyOk 恒增——V1Routed 时已如此，本片不改运行行为）；**逐字歌词降级已按片级决策接受并登记**（musid 无 YRC/QRC 序列化器，路由后 KRC 逐字降为纯 LRC 正文；回退动作 = 注册表歌词面改 LegacyOnly 一行）；歌手（musid artists=true 是 search-based fallback，voicefox 位恒旧）；集合面（musid 全存在）不路由登记（§12.2 kugou 块） |
+| 8 | tx | v2-qqmusic（**已落地**） | Migrated | Migrated | Migrated | 登录/扫码恒旧路径（QQ+微信双扫码，wechat_login 双栈期恒 false §2.8；musid 恒匿名，VIP 收窄是 P5 已登记口径且 tx 用户基数最大——probe mismatch 噪声先剥离登录态不对称）；歌手面（musid 无 ArtistProvider）恒旧路径**登记缺口**；榜单/专辑/歌单/链接（musid 全存在）集合面不路由登记。**对账登记**：QRC 逐字降级为纯 LRC（回退动作=歌词面改 LegacyOnly 一行）；size_128mp3 缺席时 musid 恒产 Low 的簿记分歧（真实形状下折档集合相等）（§12.2 tx 块） |
+| 9 | wy | v2-netease（**已落地**） | Migrated | Migrated | Migrated | 登录/扫码/用户歌单恒旧路径（登录态依赖最重，放最后；musid 恒匿名 vs cookie 登录——probe mismatch 噪声预期最高，P5 口径）；集合面（musid 全家桶 capabilities 全 true）不路由登记，**歌单同步 by-id 详情前置=上游公开 per-provider detail trait**（track_details 是 crate 内部方法，§11.4 第 4 条）。**对账登记**：yrc 逐字降级为纯 LRC（同批口径）；流地址面 expires_at_unix 从 URL 提取（G4 设防，无快照风险）；搜索面无簿记分歧、±1s 容差 + 折档集合相等（§12.2 wy 块） |
+| 10 | qianqian | v2-qianqian（**已落地**） | Migrated | Migrated | Migrated | 用户启用源（翻源后首周盯 MusidErrLegacyOk）；登录面双侧皆无认证位不设行项；歌手面（musid 无 ArtistProvider）恒旧路径**登记缺口**；榜单面双侧皆无不设；专辑/歌单/链接集合面不路由登记（**search_playlist_refused 被拒形状**待后续片处理）。**对账登记**：空 tsid 两栈离线双失败（manager 级真实链路 pin MusidErrLegacyErr）；tracklink free/vip 双分支同构、VIP 匿名 NotFound 同病同回落无盲区、G4 设防；rate 表同形 parity 全对齐（§12.2 qianqian 块） |
+| 11 | joox | v2-joox（**已落地**） | Migrated | Migrated | Migrated | 用户启用源（同 qianqian 盯 MusidErrLegacyOk）；登录面双侧皆无不设；榜单/歌手双侧皆无不设；专辑/歌单/链接集合面不路由登记（**playlist_dead_404 死链形状**待后续片）；**封面面不接 musid ArtworkProvider**（歌曲模型回填同口径）。**对账登记**：歌手 join 分歧（" / " vs '、'）经归一无损；空 songid musid 离线 NotFound、legacy 无离线守卫——manager 级双失败链不可确定性复现，失败侧对账由 adapter 级用例 + probe 承载（§12.2 joox 块） |
+| — | soda | reg-soda（**登记不迁**） | 无行 | 无行 | 无行 | voicefox-only 源：musid-dli 无此 provider，feature 无从定义；自实现完整保留，四面恒旧路径 |
+| — | youtube-music | reg-ytm（**登记不迁**） | — | — | — | musid-dli-only 源：voicefox 无对应 SourceId；musid 侧走 rustypipe 自带栈，不在迁移序列 |
+
+注册表账面与上表一致（切片 1-11 已落地：`jamendo` 行 Migrated×2 +
+LegacyOnly×1，`fivesing`/`apple`/`migu`/`kuwo`/`kugou`/`tx`/`wy`/
+`qianqian`/`joox` 行 Migrated×3，`bilibili` 行 Migrated×2 +
+LegacyOnly×1（歌词）；**无 V1Routed 余行**——§1 命名表的 11 个映射源
+全部完成逐源对账，运行行为与 V1 完全一致：三面 V1 起即放行，V2 只补
+对账与登记）；`registry_covers_
+every_namespace_mappable_source` 单测 pin"行覆盖 = §1 命名表映射源数 +
+行数相等 + 无同源重复行 + 每行 namespace 一致"（评审 P5：`source_route_
+entry` 用 find() 取首行，重复行也须防），防后续切片漏行/重行。
+`migrated_route_sources` 随账面增长（现 = jamendo、fivesing、apple、
+bilibili、migu、kuwo、kugou、tx、wy、qianqian、joox 十一源，行序），
+单测 pin
+行序；`unregistered_migrated_sources` 的全等空断言只在**全部 Migrated 子
+feature 同开**的组合构建下成立（`musid_bootstrap.rs` 的
+`migrated_slices_assemble_without_ledger_gap`，CI 的十一源+lyrics 组合
+步跑到），单子 feature 构建按"不含本切片源"口径断言（部分装配的 warn
+形态是 §12.1 生效前提的预期行为）。`soda`/`youtube-music` 登记行
+（reg-soda/reg-ytm）无注册表行可改账：登记断言随各自
+`musid-dli-adapter-reg-*` feature 进门禁（§12.7）。
+
+### 12.5 V2 门禁（切片 1 实跑，2026-11-21；评审 P1-P5 修订后复跑）
+
+- **真实 provider 编译/行为覆盖（评审 P1 的修复）**：V1 遗留的盲区是按源
+  子 feature 的装配分支（含 `musid_dli::source_<x>` 路径引用）不在任何
+  门禁里——写错路径不会红。切片 1 起两层覆盖：
+  (a) `musid_bootstrap.rs::jamendo_slice_tests`（挂 `musid-dli-adapter-
+  jamendo` 门）：编译真实 `JamendoProvider` 路径，pin 装配产物（id/显示名/
+  descriptor 位全 default/supported_qualities 缺省空）与 `register_
+  available` 装配（Migrated 账面行全部有影子源，P4）；
+  (b) 新集成测试 `source/tests/musid_jamendo_slice.rs`（同门）：**真实**
+  provider 全链路 5 例——离线 resolve（adapter 组 Track → 真实 resolve 取
+  内嵌地址 → 实际档位回填 + enrich）、无内嵌地址失败进动态层、真实歌词
+  stub 的 `Other("该音源不支持…")` 污染证据（§12.2 静态层依据）、真实
+  descriptor 逐位 pin、manager 级路由（真实影子源 + 注册表放行 →
+  MusidOk 计数，零网络）。复刻桩（`adapter_musid.rs::JamendoStreamStub`）
+  只测适配层自身，与真实实现的一致性由本文件钉住；
+  (c) CI `musid-stack` job 新增两步：10 个子 feature 逐个 `cargo check`
+  （全部装配分支的编译覆盖，不限于 jamendo）+ jamendo 子 feature 全量
+  `cargo test`（真实 provider 测试随门进 CI）。
+- 确定性硬门 `cargo test -p lx-source --features musid-dli-adapter --
+  adapter_musid`：**42 通过 / 0 失败**（V1 的 35 + V2 新增 7 例：注册表
+  账面/行数/去重/namespace 一致 pin ×1、Migrated 账面助手 ×1、jamendo
+  fixture 映射 ×1、真实 parse_track 的 parity 归一对照 ×1、流地址面模板
+  ×2，后两者为 `#[tokio::test]`）；
+- `cargo test -p lx-source --features musid-dli-adapter-jamendo`：全量
+  （lib + 全部集成测试）零失败——含上述真实 provider 5 例与 bootstrap
+  装配 2 例；`cargo test -p lx-source --features musid-dli-adapter --test
+  musid_dual_stack`：**20 通过 / 0 失败**（V1 的 19 例在注册表下原样全绿
+  = `V1Routed` 行为保持的双证；新增 jamendo 注册表路由用例 1 例）；
+- 歌词变体 `cargo test -p lx-source --features musid-dli-adapter-lyrics`
+  两套件同口径复跑（结果见交付记录）；默认基线 `cargo test -p lx-source`
+  lib 例数不变（V2 代码全部挂 `musid-dli-adapter` 门；新集成测试文件在
+  默认构建 `#![cfg]` 编译为空）；
+- `cargo fmt --all` 干净；`cargo tree -p lx-source -e normal`（默认）
+  musid 边 = 0（V2 未引入新依赖）。
+
+**旧代码改动登记（"一行不删"边界的本轮例外）**：`jamendo/mod.rs` 的
+`parse_track` 由私有改为 `pub(crate)`（评审 P2：parity 测试消费真实
+parse 产物；仅可见性扩宽，函数体零改动）。其余改动全部是新增代码或
+musid 框架内机械重排。
+
+### 12.6 切片 3-7（v2-batch-1：apple / bilibili / migu / kuwo / kugou）门禁与登记（2026-11-21）
+
+与切片 1/2 同形的三件套逐源落地：注册表行改账（`adapter_musid.rs` 行注释
++ `registry_ledger_pins_the_slice_states` 逐源 pin）、bootstrap 真实
+provider 装配测试（`apple/bilibili/migu/kuwo/kugou_slice_tests`，各挂对应
+子 feature 门）、`source/tests/musid_<source>_slice.rs` 真实 provider 对账
+（descriptor 逐位 pin + 离线守卫/失败路径 + migu/kugou 的 manager 级真实
+双侧链路 + apple/kuwo/kugou 歌词门下的指纹 parity）。五源 wire fixture
+落 `source/tests/fixtures/musid/`（provenance 见 §12.3）。legacy 侧 parity
+消费点可见性扩宽（仅 `pub(crate)`，函数体零改动，`crate::<source>::…`
+路径）：`apple/api.rs parse_song` + `apple/mod.rs` 的 `api` 模块、
+`bili/search.rs parse_song` + `bili/mod.rs` 的 `search` 模块、
+`kg/search.rs parse_song`（模块本就 pub）、`mg/mod.rs` 的 `song` 模块
+（`mg/song.rs parse_song` 本就 pub(crate)）；`kw/search.rs` 的 search
+内联逐项解析**逐字搬出**为 `pub(crate) fn parse_search_song`（fivesing
+切片先例同款机械重排，行为逐字一致）。
+
+**bilibili 切片的结构前置（三件）**：
+1. 子 feature `musid-dli-adapter-bilibili = ["musid-dli-adapter",
+   "musid-dli/source-bilibili"]`（source/Cargo.toml，`source-*` 名对照
+   musid-dli Cargo.toml）；
+2. bootstrap 装配分支 `bilibili(transport)`（恒匿名 `new()`，§11.8 零凭据
+   流动——SESSDATA/收藏夹/扫码登录完全不经 musid）；
+3. manager 放开：`musid_route` 的 `matches!` 排除移除 `SourceId::Bili`
+   （路由判定完全由注册表 bili 行承载）；流地址面的旧 bili 早退臂
+   （`get_song_url_inner`，独立存储语义）**逐字保持**为 musid 槽位之后的
+   旧路径——musid 槽位插入早退臂之前，簿记三件套（try / legacy-ok /
+   err 出口）与主链同款；搜索面的视频引用直解臂（BV/av/b23）保持先行于
+   musid（链接直解同语义，§12.2 bilibili 块 (c)）。默认构建
+   （feature 关）该臂为编译期原样代码，行为零变化。
+
+**本批新增的行为差异登记（摘要，全量见 §12.2 切片 3-7 块）**：apple
+preview-only 双侧同形（quality 严格对齐）+ SongUrl.duration 分歧 + 搜索面
+qualities 簿记分歧（probe 搜索面无鉴别力，同 fivesing 口径）+ PlainText
+歌词 → musid 产空 lyric 恒动态层回落；kugou 流地址面匿名硬退化
+（login_parts 无会话即失败，musid 槽位必然失败进动态层）；kugou/kuwo/migu
+歌词面逐字降级为纯 LRC 正文（lxlyric 恒 None；kugou 降级的回退动作 =
+注册表歌词面改 LegacyOnly 一行）。
+
+V2 各切片的门禁口径沿用 §11.9（外层脚本跑全仓矩阵；逐片只跑窄命令 +
+fmt），新 fixture 与子 feature 覆盖步随所在套件进 CI 的 `musid-stack`
+job。
+
+**本批实跑记录（2026-11-21，全部在本会话执行）**：
+- 外层门禁命令 `cargo test -p lx-source --features musid-dli-adapter-
+  fivesing,musid-dli-adapter-apple,musid-dli-adapter-bilibili,musid-dli-
+  adapter-migu,musid-dli-adapter-kuwo,musid-dli-adapter-kugou --lib`：
+  **292 通过 / 0 失败 / 2 ignored**（默认基线 220 + 切片 1-7 的 lib 单测
+  增量）；同参数 `cargo clippy -p lx-source --all-targets … -- -D
+  warnings -A clippy::double_must_use`：exit 0（修复一例新测试文件的
+  clippy `doc_lazy_continuation`——文档注释行首 `+` 被当列表项）；
+- 同六 feature `--tests` 全目标：lib 292 + js_user_api 4 + dual_stack
+  **26**（切片 1-2 的既有注册表用例 + 本批新增 5 例注册表路由用例：
+  apple / migu / kuwo / kugou 各 1 + bilibili 1 例含歌词 LegacyOnly
+  断言）+ parity 6 + 五源 slice 文件各 3（fivesing 3、jamendo 0——该
+  构建无 jamendo feature）；`musid-dli-adapter-lyrics` 单变体：lib
+  **285** / dual_stack **32**（歌词门用例进）；**七源 + 歌词变体组合**：
+  lib **300** / dual_stack 32 / 七个 slice 文件 4+3+4+4+4+4+5 全绿（含
+  `migrated_slices_assemble_without_ledger_gap` 的全等空分支与
+  apple/kuwo/kugou 歌词指纹 parity）；
+- 默认基线 `cargo test -p lx-source --lib`：**218 通过 / 0 失败 / 2
+  ignored**（220 例，与 V0/V1 完全一致——manager bili 臂改动全挂
+  `musid-dli-adapter` 门，默认构建编译期原样）；`cargo tree -p lx-source
+  -e normal`（默认）musid 边 = 0；`cargo fmt --all` 干净。
+
+
+### 12.7 切片 8-11（v2-batch-2：tx / wy / qianqian / joox）+ 登记切片（reg-soda / reg-ytm）门禁与登记（2026-11-21）
+
+与切片 1-7 同形的三件套逐源落地：
+
+1. **注册表行改账**（`adapter_musid.rs`）：tx/wy/qianqian/joox 四行
+   V1Routed×3 → Migrated×3（行注释逐条登记 §12.2 各块）；账面至此无
+   V1Routed 余行——三面 V1 起即放行，**本批不改运行行为**（V1 的
+   musid_dual_stack/musid_parity 用例以 Wy 为载体继续全绿 = 行为保持的
+   双证；manager.rs 本批零改动，路由判定由 §12.1 注册表承载）。
+   `registry_ledger_pins_the_slice_states` 逐源 pin；`migrated_route_
+   sources_are_visible_to_the_build_wiring` 更新为十一源行序。
+2. **bootstrap 装配测试**（`musid_bootstrap.rs`）：`qqmusic/netease/
+   qianqian/joox_slice_tests` 各挂对应子 feature 门——真实 provider
+   装配产物 pin（id/显示名/descriptor 位/supported_qualities）+
+   `register_available` 装配覆盖；`migrated_slices_assemble_without_
+   ledger_gap` 的全量账面扩到 11 源（CI 的十一源组合步跑到全等空分支）。
+3. **真实 provider 对账**（`source/tests/musid_{qqmusic,netease,
+   qianqian,joox}_slice.rs`，各挂对应子 feature 门）：descriptor 逐位
+   pin（§12.4 行 8-11 的账面依据）；离线失败触发点 pin——tx 歌词面无数值
+   songId → InvalidInput、wy 搜索面空关键词 → InvalidInput、qianqian
+   空 tsid 在 resolve/lyrics 双面 NotFound（**qianqian 另有 manager 级
+   真实双侧链路：两栈同请求离线双失败 → MusidErrLegacyErr + legacy
+   "not found" 文本向上**，fivesing/migu/kugou 同款）、joox 空 songid
+   在 resolve/lyrics 双面 NotFound；歌词门用例（qianqian/joox）挂
+   `musid-dli-adapter-lyrics`。**tx/wy/joox 无 manager 级双失败链**
+   （legacy 侧同请求无离线守卫、必须走网络——如实登记，失败侧对账由
+   adapter 级用例 + 运行期 probe 承载，§12.2 各块）。
+4. **wire fixture**：`track_qqmusic.json`/`track_wy.json`/
+   `track_qianqian.json`/`track_joox.json`（provenance 分两档：
+   qianqian/joox = 上游 live 捕获、qqmusic/netease = 上游重建形状；
+   track_wy 与 V0 track_netease 的刻意差异见 §12.3）；adapter 单测
+   8 例（fixture 映射 + 真实 legacy parse 的 parity 归一对照，tx/wy 的
+   parse_song 本就 pub(crate) 零改动）。
+5. **登记切片（reg-soda / reg-ytm）**：`source/Cargo.toml` 新增
+   `musid-dli-adapter-reg-soda` / `musid-dli-adapter-reg-ytm`——均为
+   `["musid-dli-adapter"]`（**无 musid-dli/source-* 可挂**：soda 是
+   voicefox-only、musid-dli 0.2.0 无 source_soda；ytm 是 musid-dli-only、
+   `source-youtube-music` 依赖 rustypipe，voicefox 不启用——rustypipe
+   不进 voicefox feature 树）。两 feature 只作门禁/账面载体：
+   `adapter_musid.rs` 各 1 例登记断言（soda：命名表双向拒绝 + 无注册表
+   行 + face_route LegacyOnly；ytm：provider_to_source_id("youtube-music")
+   == None + track 携带该 provider 时 `UnmappedProvider`），随所在
+   feature 进外层门禁（--lib）。voicefox 自实现（soda 四面）完整保留；
+   运行行为零变化。
+
+**legacy 侧 parity 消费点可见性扩宽（仅 `pub(crate)`，函数体零改动，
+§12.5 先例同款登记）**：`qianqian/song.rs parse_song`（pub(super) →
+pub(crate)）、`joox/api.rs songs_from_search`（pub(super) → pub(crate)）。
+
+**CI（musid-stack job）**：4 个子 feature 全量 `cargo test` 步（qqmusic/
+netease/qianqian/joox，真实 provider 测试随门进 CI）+ 十一源 + lyrics
+组合步（`migrated_slices_assemble_without_ledger_gap` 全等空分支与
+qianqian/joox 歌词 stub 路由用例在该组合下编译跑通）。
+
+**观测口径（翻源后）**：qianqian/joox 是用户启用源——翻源后首周盯
+`MusidErrLegacyOk` 计数（§12.3）；wy/tx 的 probe 对账计数须先剥离 P5
+登录态不对称（musid 恒匿名 vs cookie 登录，§11.8 (b)）再解读
+ParityMatch/Mismatch 噪声。
+
+**本批实跑记录（2026-11-21，全部在本会话执行）**：
+- 外层门禁命令 `cargo test -p lx-source --features
+  musid-dli-adapter-qqmusic,musid-dli-adapter-netease,
+  musid-dli-adapter-qianqian,musid-dli-adapter-joox,
+  musid-dli-adapter-reg-soda,musid-dli-adapter-reg-ytm --lib`：
+  **298 通过 / 0 失败 / 2 ignored**（默认基线 220 + 批内 lib 单测增量；
+  含 reg-soda/reg-ytm 登记断言 2 例与四源 bootstrap 装配测试 8 例）；
+  同参数 `cargo clippy -p lx-source … --lib -- -D warnings`：exit 0；
+- 确定性硬门 `cargo test -p lx-source --features musid-dli-adapter --
+  adapter_musid`：**65 通过 / 0 失败**（含本批 adapter 单测 8 例 +
+  登记 2 例 + 批 1 既有各例）；
+- 四源组合 `cargo test -p lx-source --features
+  musid-dli-adapter-qqmusic,musid-dli-adapter-netease,
+  musid-dli-adapter-qianqian,musid-dli-adapter-joox --tests` 与
+  歌词变体、默认基线、fmt/tree 门：结果见交付记录（外层门禁复跑口径
+  与 §12.5/§12.6 相同）。

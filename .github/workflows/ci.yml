@@ -73,6 +73,61 @@ jobs:
       - name: Tests (lyrics variant)
         run: cargo test -p lx-source --features musid-dli-adapter-lyrics
 
+      # V2 逐源迁移（docs/MUSID_DLI_ADAPTER.md §12，评审 P1）：按源子
+      # feature 的装配分支（musid_bootstrap 各 cfg 分支，内含
+      # musid_dli::source_<x> 路径引用）此前不在任何门禁里——写错路径不会
+      # 红。11 个子 feature 逐个编译；已落地切片（jamendo = 切片 1、
+      # fivesing = 切片 2、apple = 切片 3、bilibili = 切片 4、migu = 切片 5、
+      # kuwo = 切片 6、kugou = 切片 7、qqmusic = 切片 8、netease = 切片 9、
+      # qianqian = 切片 10、joox = 切片 11）另跑全量测试
+      # （musid_<source>_slice.rs 用真实 provider 对账）。
+      - name: Per-source sub-feature compile coverage (bootstrap branches)
+        run: |
+          for feature in netease qqmusic kugou kuwo migu jamendo apple fivesing bilibili qianqian joox; do
+            echo "== musid-dli-adapter-$feature =="
+            cargo check -p lx-source --features "musid-dli-adapter-$feature"
+          done
+
+      - name: Tests (jamendo slice sub-feature: real provider)
+        run: cargo test -p lx-source --features musid-dli-adapter-jamendo
+
+      - name: Tests (fivesing slice sub-feature: real provider)
+        run: cargo test -p lx-source --features musid-dli-adapter-fivesing
+
+      - name: Tests (apple slice sub-feature: real provider)
+        run: cargo test -p lx-source --features musid-dli-adapter-apple
+
+      - name: Tests (bilibili slice sub-feature: real provider)
+        run: cargo test -p lx-source --features musid-dli-adapter-bilibili
+
+      - name: Tests (migu slice sub-feature: real provider)
+        run: cargo test -p lx-source --features musid-dli-adapter-migu
+
+      - name: Tests (kuwo slice sub-feature: real provider)
+        run: cargo test -p lx-source --features musid-dli-adapter-kuwo
+
+      - name: Tests (kugou slice sub-feature: real provider)
+        run: cargo test -p lx-source --features musid-dli-adapter-kugou
+
+      - name: Tests (qqmusic slice sub-feature: real provider)
+        run: cargo test -p lx-source --features musid-dli-adapter-qqmusic
+
+      - name: Tests (netease slice sub-feature: real provider)
+        run: cargo test -p lx-source --features musid-dli-adapter-netease
+
+      - name: Tests (qianqian slice sub-feature: real provider)
+        run: cargo test -p lx-source --features musid-dli-adapter-qianqian
+
+      - name: Tests (joox slice sub-feature: real provider)
+        run: cargo test -p lx-source --features musid-dli-adapter-joox
+
+      # 已落地切片歌词面的指纹 parity（fivesing/apple/kugou/kuwo）与歌词面
+      # stub 路由用例（qianqian/joox）+ 全量 Migrated 账面组合（切片 1-11
+      # 共 11 源）的账面/构建零脱节断言都在 musid-dli-adapter-lyrics 组合
+      # 下才编译。
+      - name: Tests (all migrated slices + lyrics conversions combo)
+        run: cargo test -p lx-source --features musid-dli-adapter-fivesing,musid-dli-adapter-jamendo,musid-dli-adapter-apple,musid-dli-adapter-bilibili,musid-dli-adapter-migu,musid-dli-adapter-kuwo,musid-dli-adapter-kugou,musid-dli-adapter-qqmusic,musid-dli-adapter-netease,musid-dli-adapter-qianqian,musid-dli-adapter-joox,musid-dli-adapter-lyrics
+
       - name: Default baseline
         run: cargo test -p lx-source
 

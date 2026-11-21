@@ -1,0 +1,15 @@
+{
+  "derivation_note": "musid-dli Track wire shape (pinned by musid-dli models/track.rs legacy+round-trip tests). Sample values from musid-dli tests/fixtures/qianqian/search_songs.json data.typeTrack[0]: TSID/assetId T10065400429, title 等晴天, artist 周深 (artistCode A10273267), album 等晴天 (albumAssetCode P10004348672), duration 268s, pic https://img01.dmhmusic.com/0513/M00/99/81/ChAKFGnMhpKAdxeRAA8QjCMTD1I496.jpg, rateFileInfo 3000/320/64/128 all size>0. Shape per source_qianqian.rs parse_track (:345-395): available_qualities [Lossless,High,Low] from the rates set (3000→Lossless, 320→High, 128|64→Low), extra tsid + album_asset_code strings. Provenance (that directory's README): search_songs.json is a LIVE CAPTURE (2026-11-19, anonymous read-only GET, gzip-decoded byte-for-byte, first 2 of 5 items verbatim) — provenance tier equal to fivesing/joox, stronger than the reconstructed qqmusic/netease shape records. docs/MUSID_DLI_ADAPTER.md §12.3/§12.7.",
+  "id": { "provider": "qianqian", "id": "T10065400429" },
+  "title": "等晴天",
+  "artists": ["周深"],
+  "album": "等晴天",
+  "album_id": "P10004348672",
+  "duration": { "secs": 268, "nanos": 0 },
+  "artwork_url": "https://img01.dmhmusic.com/0513/M00/99/81/ChAKFGnMhpKAdxeRAA8QjCMTD1I496.jpg",
+  "available_qualities": ["Low", "High", "Lossless"],
+  "extra": {
+    "tsid": "T10065400429",
+    "album_asset_code": "P10004348672"
+  }
+}

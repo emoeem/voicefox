@@ -1,0 +1,17 @@
+{
+  "derivation_note": "musid-dli Track wire shape (pinned by musid-dli models/track.rs legacy+round-trip tests). Sample values from the musid-dli source_kugou.rs inline parse test parses_kg_search_items_and_grp_variants (source_kugou.rs:2299-2336). Provenance (stated honestly): upstream musid-dli has NO committed search-shape fixture for kugou — tests/fixtures/kugou/ carries sign/KRC/category/link/login files only — so this is a RECONSTRUCTED wire shape over the crate's own pinned parse values (Audioid 123456 / 晴天 / 周杰伦 / 叶惠美 / AlbumID 42 / Duration 269 / FileSize 4312832 + HQFileSize 10781692 + SQFileSize 0 + ResFileSize 12345678 / FileHash ABCDEF0123 + HQFileHash HQ0123). available_qualities [Low, High, HiRes] (SQFileSize 0 → no Lossless) folds to {Low128, High320, Flac24}, identical to the legacy kg/search.rs parse_song set. extra carries the hash keys (FileHash/HQFileHash; SQFileHash absent, ResFileHash not in the pinned item) and the size keys (>0 only) — the resolve face reads them back via select_hash (source_kugou.rs:519-536).",
+  "id": { "provider": "kugou", "id": "123456" },
+  "title": "晴天",
+  "artists": ["周杰伦"],
+  "album": "叶惠美",
+  "album_id": "42",
+  "duration": { "secs": 269, "nanos": 0 },
+  "available_qualities": ["Low", "High", "HiRes"],
+  "extra": {
+    "FileHash": "ABCDEF0123",
+    "HQFileHash": "HQ0123",
+    "FileSize": "4312832",
+    "HQFileSize": "10781692",
+    "ResFileSize": "12345678"
+  }
+}
