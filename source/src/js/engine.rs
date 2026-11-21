@@ -38,8 +38,6 @@ impl JsEngine {
     ///
     /// * `source_path` - 用户音源 JS 文件的路径
     pub fn new(source_path: &str) -> Result<Self, String> {
-        let wrapper_js = include_str!("wrapper.js");
-
         // 将 wrapper.js 写入当前用户缓存目录的私有子目录，避免多用户共用
         // /tmp 时出现符号链接或目录抢占竞态。
         let wrapper_dir = dirs::cache_dir()
@@ -54,9 +52,7 @@ impl JsEngine {
             std::fs::set_permissions(&wrapper_dir, std::fs::Permissions::from_mode(0o700))
                 .map_err(|e| format!("无法设置 JS 引擎缓存目录权限: {}", e))?;
         }
-        let wrapper_path = wrapper_dir.join("wrapper.js");
-        std::fs::write(&wrapper_path, wrapper_js)
-            .map_err(|e| format!("无法写入 wrapper.js: {}", e))?;
+        let wrapper_path = install_wrapper(&wrapper_dir, include_str!("wrapper.js"))?;
 
         let wrapper_path_string = wrapper_path
             .to_str()
@@ -417,6 +413,48 @@ fn child_env_keys() -> &'static [&'static str] {
     }
 }
 
+/// 将 wrapper 脚本原子写入 `dir` 并返回其路径。
+fn install_wrapper(dir: &std::path::Path, content: &str) -> Result<std::path::PathBuf, String> {
+    let path = dir.join("wrapper.js");
+    let is_installed = || std::fs::read(&path).is_ok_and(|existing| existing == content.as_bytes());
+    if is_installed() {
+        return Ok(path);
+    }
+
+    // 临时文件以独占方式创建，重名时换用下一个序号。
+    static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
+    let (temp, mut file) = loop {
+        let temp = dir.join(format!(
+            ".wrapper-{}-{}.tmp",
+            std::process::id(),
+            TEMP_SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)
+        {
+            Ok(file) => break (temp, file),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(format!("无法写入 wrapper.js: {error}")),
+        }
+    };
+    let written = file.write_all(content.as_bytes());
+    drop(file);
+    match written.and_then(|()| std::fs::rename(&temp, &path)) {
+        Ok(()) => Ok(path),
+        Err(error) => {
+            let _ = std::fs::remove_file(&temp);
+            // 目标内容与待写入内容一致时可直接使用。
+            if is_installed() {
+                Ok(path)
+            } else {
+                Err(format!("无法写入 wrapper.js: {error}"))
+            }
+        }
+    }
+}
+
 /// `--allow-fs-read` 的路径口径：Windows 下统一成正斜杠。
 ///
 /// Node 的权限树按路径前缀节点匹配，反斜杠路径（尤其作为目录前缀授权时）
@@ -502,7 +540,76 @@ fn configure_background_command(command: &mut Command) {
 
 #[cfg(test)]
 mod tests {
-    use super::{child_env_keys, permission_path, readable_source_dir};
+    use super::{child_env_keys, install_wrapper, permission_path, readable_source_dir};
+
+    /// 每个测试独占的空目录。
+    fn wrapper_test_dir(name: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("voicefox-wrapper-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn wrapper_install_writes_full_content_without_leftovers() {
+        let dir = wrapper_test_dir("fresh");
+        let content = include_str!("wrapper.js");
+
+        let path = install_wrapper(&dir, content).unwrap();
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
+        let entries: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(entries, ["wrapper.js"], "目录中残留临时文件");
+    }
+
+    #[test]
+    fn unchanged_wrapper_is_not_rewritten() {
+        let dir = wrapper_test_dir("unchanged");
+        let content = include_str!("wrapper.js");
+        let path = install_wrapper(&dir, content).unwrap();
+        let past =
+            std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000);
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(past)
+            .unwrap();
+
+        install_wrapper(&dir, content).unwrap();
+
+        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(modified, past);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn stale_wrapper_is_replaced_not_rewritten_in_place() {
+        use std::io::Read;
+
+        let dir = wrapper_test_dir("stale");
+        let content = include_str!("wrapper.js");
+        let path = dir.join("wrapper.js");
+        std::fs::write(&path, "// stale").unwrap();
+        // 保持旧文件打开，模拟正在读取它的 node 进程。
+        let mut reader = std::fs::File::open(&path).unwrap();
+
+        assert_eq!(install_wrapper(&dir, content).unwrap(), path);
+
+        // 已打开的句柄仍读到完整的旧内容，说明目标文件经整体替换。
+        let mut old = String::new();
+        reader.read_to_string(&mut old).unwrap();
+        let new = std::fs::read_to_string(&path).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(old, "// stale");
+        assert_eq!(new, content);
+    }
 
     #[test]
     fn wrapper_disables_dynamic_string_code_generation() {
