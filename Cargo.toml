@@ -42,7 +42,10 @@ palette = "0.7"
 ratatui-image = { version = "11", default-features = false, features = ["crossterm"] }
 
 # HTTP
-reqwest = { version = "0.12", features = ["json"] }
+# 与 musid-dli 同口径（default-features=false + rustls-tls）：native-tls 的
+# openssl-sys 把构建机的 OpenSSL SONAME 烧进二进制（libssl.so.4 ↔ .so.3 跨
+# 环境即拒载），rustls 纯 Rust 无系统 TLS 依赖，构建产物随处可跑。
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 # Crypto
 md-5 = "0.10"
