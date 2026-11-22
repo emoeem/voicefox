@@ -10,8 +10,8 @@ env:
   CARGO_TERM_COLOR: always
   # audio-only 的 libmpv 构建，随 sha256 一同固定
   # 升级时同时改这两行：https://github.com/Uyanide/mpv-winbuild-audio/releases
-  LIBMPV_TAG: v0.41.0-1
-  LIBMPV_SHA256: 4cbc2f77c1380b0fb4d7d1f0373d881038f5f974f1c4799d0405eda54a488ee5
+  LIBMPV_TAG: v0.42.0-1
+  LIBMPV_SHA256: 1da3d28d5b4c68fdb9ad7ef5c70f151e1e78da07d3fdea50394d7cb38b30c475
 
 jobs:
   # ── Lint：fmt + clippy 零警告门禁 ──
@@ -292,6 +292,29 @@ jobs:
             }
           }
 
+          $buildInfo = Get-ChildItem -Path libmpv-extract -Recurse -File -Filter BUILDINFO.txt |
+            Select-Object -First 1
+
+          if ($null -eq $buildInfo) {
+            throw "BUILDINFO.txt is missing from the libmpv archive"
+          }
+
+          $licenses = Join-Path $buildInfo.Directory.FullName "licenses"
+
+          if (-not (Test-Path (Join-Path $licenses "mpv/LICENSE.LGPL"))) {
+            throw "licenses/mpv/LICENSE.LGPL is missing from the libmpv archive"
+          }
+
+          $dllHash = (Get-FileHash mpv-source/64/libmpv-2.dll -Algorithm SHA256).Hash.ToLowerInvariant()
+
+          if (-not (Select-String -Path $buildInfo.FullName -SimpleMatch -Quiet $dllHash)) {
+            throw "BUILDINFO.txt does not describe the bundled libmpv-2.dll ($dllHash)"
+          }
+
+          New-Item -ItemType Directory -Force -Path mpv-source/notices | Out-Null
+          Copy-Item $buildInfo.FullName mpv-source/notices/BUILDINFO.txt
+          Copy-Item $licenses mpv-source/notices/licenses -Recurse
+
           "MPV_SOURCE=$((Get-Location).Path)\mpv-source" |
             Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
@@ -316,6 +339,9 @@ jobs:
           Copy-Item `
             mpv-source/64/libmpv-2.dll `
             dist/libmpv-2.dll
+
+          New-Item -ItemType Directory -Force -Path dist/third_party | Out-Null
+          Copy-Item mpv-source/notices dist/third_party/libmpv -Recurse
 
           Push-Location dist
 
@@ -387,7 +413,8 @@ jobs:
 
             7z a voicefox-windows-x86_64.zip `
               voicefox.exe `
-              libmpv-2.dll | Out-Host
+              libmpv-2.dll `
+              third_party | Out-Host
 
             if ($LASTEXITCODE -ne 0) {
               throw "Packaging Windows artifact failed with exit code $LASTEXITCODE"

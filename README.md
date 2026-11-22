@@ -67,6 +67,8 @@ voicefox 将多音源音乐搜索、在线播放、本地音乐库、歌词、�
 
 Release 提供包含 `voicefox.exe` 与 `libmpv-2.dll` 的压缩包。
 
+`libmpv-2.dll` 来自 [mpv-winbuild-audio](https://github.com/Uyanide/mpv-winbuild-audio)，以 LGPL-2.1-or-later 授权。压缩包内附带许可证文本与记录构建信息的 `BUILDINFO.txt`。
+
 ### Linux
 
 Release 提供仅包含 `voicefox` 可执行文件的压缩包。
